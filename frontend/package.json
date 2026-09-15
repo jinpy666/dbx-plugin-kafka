@@ -31,7 +31,7 @@
     "@vitest/coverage-v8": "^4.1.11",
     "@vue/test-utils": "^2.5.0",
     "happy-dom": "^15.11.7",
-    "typescript": "~6.0.3",
+    "typescript": "~7.0.2",
     "vite": "8.0.16",
     "vitest": "^4.1.8",
     "vue-tsc": "^3.2.2"
