@@ -39,7 +39,9 @@ import {
   propertiesToConnectionForm,
   serializeMessagesToCsv,
   serializeMessagesToJson,
+  serializeMessagesToTsv,
   sortTopics,
+  sortTopicsPinned,
   scoreTopicName,
   sumLag,
   switchTimeInputMode,
@@ -269,6 +271,17 @@ describe("topic ranking", () => {
     expect(filterTopics(topics, "ORD")).toHaveLength(1);
     expect(filterTopics(topics, "  ")).toHaveLength(2);
   });
+
+  // Lane4 打磨：收藏置顶——先按 sortTopics 排，收藏项稳定提前；收藏项内部
+  // 保持同一相对顺序；internal 收藏同样置顶（用户显式收藏优先于沉底）。
+  it("pins favorites to the top while keeping the base order (Lane4)", () => {
+    const topics = [{ name: "_internal.state" }, { name: "zzz-raw" }, { name: "order-events" }, { name: "users" }];
+    expect(sortTopicsPinned(topics, new Set())).toEqual(sortTopics(topics));
+    const pinned = sortTopicsPinned(topics, new Set(["users", "_internal.state"]));
+    expect(pinned.map((topic) => topic.name)).toEqual(["users", "_internal.state", "order-events", "zzz-raw"]);
+    // 不改入参
+    expect(topics.map((topic) => topic.name)).toEqual(["_internal.state", "zzz-raw", "order-events", "users"]);
+  });
 });
 
 describe("lag aggregation", () => {
@@ -349,6 +362,19 @@ describe("export serialization", () => {
     const json = JSON.parse(serializeMessagesToJson([msg({ key: "k", valueBase64: b64("body") })]));
     expect(json).toHaveLength(1);
     expect(json[0]).toMatchObject({ topic: "orders", partition: 0, offset: 1, key: "k", value: "body" });
+  });
+
+  // Lane4 打磨：TSV 导出——转义规则与 CSV 不同（无引号包裹，制表符/换行/回车
+  // 反斜杠转义，反斜杠自身先转义），列序与 CSV 一致。
+  it("serializes TSV with tab/newline escaping and CSV column order", () => {
+    const tsv = serializeMessagesToTsv([
+      msg({ key: "k\t1", valueText: "line1\nline2\rback\\slash", headers: { trace: "abc" } }),
+      msg({ key: "plain", valueText: "no escapes" }),
+    ]);
+    const [header, first, second] = tsv.split("\r\n");
+    expect(header).toBe("topic\tpartition\toffset\ttimestamp\tkey\tvalue\theaders");
+    expect(first).toBe("orders\t0\t1\t1700000000000\tk\\t1\tline1\\nline2\\rback\\\\slash\ttrace=abc");
+    expect(second).toBe("orders\t0\t1\t1700000000000\tplain\tno escapes\t");
   });
 });
 

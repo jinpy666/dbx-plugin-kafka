@@ -596,6 +596,13 @@ export const messages = {
       planApplied: "Plan applied",
       needGroup: "Select a consumer group first",
     },
+    // Lane4 前端打磨文案（TSV 导出 / internal 显隐 / 收藏星标）。
+    polish: {
+      exportTsv: "Export TSV",
+      internalToggle: "Show internal topics",
+      favoriteAdd: "Favorite topic",
+      favoriteRemove: "Unfavorite topic",
+    },
   },
   "zh-CN": {
     hostApiUnavailable: "DBX Host API 不可用",
@@ -1189,6 +1196,13 @@ export const messages = {
       planEmpty: "暂无保存的方案",
       planApplied: "方案已应用",
       needGroup: "请先选择消费组",
+    },
+    // Lane4 前端打磨文案（TSV 导出 / internal 显隐 / 收藏星标）。
+    polish: {
+      exportTsv: "导出 TSV",
+      internalToggle: "显示内部 topic",
+      favoriteAdd: "收藏 topic",
+      favoriteRemove: "取消收藏",
     },
   },
   "zh-TW": {
@@ -1784,6 +1798,13 @@ export const messages = {
       planApplied: "方案已套用",
       needGroup: "請先選擇消費群組",
     },
+    // Lane4 前端打磨文案（TSV 匯出 / internal 顯隱 / 收藏星標）。
+    polish: {
+      exportTsv: "匯出 TSV",
+      internalToggle: "顯示內部 topic",
+      favoriteAdd: "收藏 topic",
+      favoriteRemove: "取消收藏",
+    },
   },
   es: {
     hostApiUnavailable: "La API Host de DBX no está disponible",
@@ -2377,6 +2398,13 @@ export const messages = {
       planEmpty: "No hay planes guardados",
       planApplied: "Plan aplicado",
       needGroup: "Seleccione primero un grupo de consumo",
+    },
+    // Lane4 前端打磨文案（TSV 导出 / internal 显隐 / 收藏星标）。
+    polish: {
+      exportTsv: "Exportar TSV",
+      internalToggle: "Mostrar topics internos",
+      favoriteAdd: "Marcar topic como favorito",
+      favoriteRemove: "Quitar de favoritos",
     },
   },
   it: {
@@ -2972,6 +3000,13 @@ export const messages = {
       planApplied: "Piano applicato",
       needGroup: "Seleziona prima un gruppo di consumo",
     },
+    // Lane4 前端打磨文案（TSV 导出 / internal 显隐 / 收藏星标）。
+    polish: {
+      exportTsv: "Esporta TSV",
+      internalToggle: "Mostra topic interni",
+      favoriteAdd: "Aggiungi topic ai preferiti",
+      favoriteRemove: "Rimuovi dai preferiti",
+    },
   },
   ja: {
     hostApiUnavailable: "DBX Host API を利用できません",
@@ -3566,6 +3601,13 @@ export const messages = {
       planApplied: "プランを適用しました",
       needGroup: "先にコンシューマーグループを選択してください",
     },
+    // Lane4 前端打磨文案（TSV エクスポート / internal 表示切替 / お気に入り）。
+    polish: {
+      exportTsv: "TSV をエクスポート",
+      internalToggle: "内部 topic を表示",
+      favoriteAdd: "topic をお気に入りに追加",
+      favoriteRemove: "お気に入りから削除",
+    },
   },
   "pt-BR": {
     hostApiUnavailable: "API Host do DBX indisponível",
@@ -4159,6 +4201,13 @@ export const messages = {
       planEmpty: "Nenhum plano salvo",
       planApplied: "Plano aplicado",
       needGroup: "Selecione primeiro um grupo de consumo",
+    },
+    // Lane4 前端打磨文案（TSV 导出 / internal 显隐 / 收藏星标）。
+    polish: {
+      exportTsv: "Exportar TSV",
+      internalToggle: "Mostrar tópicos internos",
+      favoriteAdd: "Favoritar tópico",
+      favoriteRemove: "Desfavoritar tópico",
     },
   },
 };

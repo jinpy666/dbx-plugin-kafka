@@ -640,6 +640,9 @@ button:disabled, input:disabled, select:disabled, textarea:disabled { cursor: no
    样式走全局（与 .mini-button 同基线，热区 ≥ 行高）。 */
 .grid-action-button { min-height: 20px; border: 1px solid var(--border); border-radius: 4px; padding: 0 7px; background: var(--background); color: var(--muted-foreground); font-size: 10px; line-height: 1; cursor: pointer; }
 .grid-action-button:hover { background: var(--accent); color: var(--foreground); border-color: color-mix(in srgb, var(--primary) 55%, var(--border)); }
+/* Lane4 打磨：Topics 管理表收藏星标列（★=已收藏；星形字号需大于默认 10px）。 */
+.topic-star-button { min-width: 28px; font-size: 13px; }
+.topic-star-button:hover { color: var(--primary); }
 /* F6-1：即时搜索输入框（Messages 结果区 / Stream 工具条共用基线）。 */
 .quick-filter-input { min-height: 26px; width: 200px; max-width: 40vw; }
 /* F6-3：本地/UTC 时区切换（工具条小号按钮）。 */
@@ -648,3 +651,11 @@ button:disabled, input:disabled, select:disabled, textarea:disabled { cursor: no
 
 /* F6-5：topic 树健康徽标（isHealthy===false 红点；title=N 个分区不健康）。 */
 .tree-health-dot { flex: 0 0 7px; width: 7px; height: 7px; border-radius: 999px; background: var(--destructive); box-shadow: 0 0 0 2px color-mix(in srgb, var(--destructive) 25%, transparent); }
+
+/* Lane4 打磨：topic 收藏星标（默认弱对比，hover/已收藏实心高亮；
+   tabindex=-1 不入 Tab 序，树键盘模型保持单 tab stop）。 */
+.tree-star { display: inline-flex; align-items: center; flex: 0 0 auto; border: 0; padding: 0; background: transparent; color: color-mix(in srgb, var(--muted-foreground) 55%, transparent); cursor: pointer; }
+.tree-star svg { width: 13px; height: 13px; }
+.tree-star:hover { color: var(--primary); }
+.tree-star.is-fav { color: var(--primary); }
+.tree-star.is-fav svg { fill: currentColor; }

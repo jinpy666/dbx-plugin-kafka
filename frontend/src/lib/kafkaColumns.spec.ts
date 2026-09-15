@@ -33,7 +33,7 @@ import {
   topicOffsetColumns,
 } from "./kafkaColumns";
 import { setWorkbenchLocale, messages, t } from "./i18n";
-import type { MessageRow, SchemaVersionVm } from "./kafkaColumns";
+import type { MessageRow, SchemaVersionVm, TopicVm } from "./kafkaColumns";
 import type { KafkaMessage } from "./api";
 
 describe("column builders", () => {
@@ -333,5 +333,41 @@ describe("number cell thousands formatting (P2-23 regression guard)", () => {
     expect(lagFormatter({ value: 0 })).toBe("0");
     // zh-CN 千分位与 en 同为 3 位分组（跟随宿主 locale 即可）
     expect(lagFormatter({ value: 5000 })).toBe("5,000");
+  });
+});
+
+// Lane4 前端打磨：topic 表收藏星标列（回调可选；星形文案经 isFavorite 现读）。
+describe("topic favorite star column (Lane4)", () => {
+  const row = (name: string): TopicVm => ({ name, partitionCount: 1, replicationFactor: 1, internalText: "", raw: { name, partitionCount: 1, replicationFactor: 1 } });
+
+  it("adds a favorite star column only when a callback is given", () => {
+    setWorkbenchLocale("en");
+    expect(topicColumns().some((col) => col.colId === "action-favorite")).toBe(false);
+    const seen: string[] = [];
+    const cols = topicColumns({
+      onToggleFavorite: (target) => seen.push(target.name),
+      isFavorite: (target) => target.name === "users",
+    });
+    expect(cols[0]!.colId).toBe("action-favorite");
+    expect(cols).toHaveLength(5);
+    const action = cols[0] as unknown as { cellRenderer: (params: { data?: TopicVm }) => HTMLElement };
+    // 已收藏：实心星 + 取消收藏文案；未收藏：空心星 + 收藏文案
+    const favButton = action.cellRenderer({ data: row("users") });
+    expect(favButton.textContent).toBe("★");
+    expect(favButton.getAttribute("aria-label")).toBe(t("polish.favoriteRemove"));
+    document.body.appendChild(favButton);
+    favButton.click();
+    expect(seen).toEqual(["users"]);
+    favButton.remove();
+    const plainButton = action.cellRenderer({ data: row("orders") });
+    expect(plainButton.textContent).toBe("☆");
+    expect(plainButton.getAttribute("aria-label")).toBe(t("polish.favoriteAdd"));
+    document.body.appendChild(plainButton);
+    plainButton.click();
+    expect(seen).toEqual(["users", "orders"]);
+    plainButton.remove();
+    // data 缺省时不触发回调。
+    expect(() => action.cellRenderer({ data: undefined })).not.toThrow();
+    expect(seen).toEqual(["users", "orders"]);
   });
 });

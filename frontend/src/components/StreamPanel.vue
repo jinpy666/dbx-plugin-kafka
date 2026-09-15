@@ -6,10 +6,10 @@
 // 虚拟滚动抗高频追加），autoScroll 勾选时每批事件落表后跳到末页最新行。
 import { computed, onBeforeUnmount, ref, shallowRef, watch } from "vue";
 import type { ColDef } from "ag-grid-community";
-import { Pause, Play, Square } from "@lucide/vue";
+import { Download, Pause, Play, Square } from "@lucide/vue";
 import DbxAgGrid from "./DbxAgGrid.vue";
 import { kafkaApi, type KafkaMessage, type KafkaStreamErrorEvent, type KafkaStreamMessagesEvent, type MatchMode, type OffsetStrategy, type SchemaAttach, type SchemaFormat, type SchemaSubject, type StreamStatus } from "../lib/api";
-import { appendStreamRows, debounce } from "../lib/kafkaModel";
+import { appendStreamRows, debounce, serializeMessagesToCsv, serializeMessagesToJson, serializeMessagesToTsv } from "../lib/kafkaModel";
 import { MINIMAL_MESSAGE_FIELDS, messageColumns, toMessageRows, workbenchTimestampTz, type MessageRow } from "../lib/kafkaColumns";
 import { friendlyKafkaError } from "../lib/kafkaErrors";
 import { t } from "../lib/i18n";
@@ -269,6 +269,31 @@ function positiveInt(value: unknown, fallback: number): number {
   return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
 }
 
+// -- 导出（Lane4 打磨）：把当前已加载/缓冲内行导出为 JSON/CSV/TSV。纯前端
+// 序列化（复用 MessagesPanel 同款 kafkaModel 序列化器 + Blob 下载兜底），
+// 不触发任何消费请求；行分隔/转义与 MessagesPanel 的 CSV 一致，TSV 用
+// 制表符转义（见 kafkaModel.tsvEscape）。
+
+function downloadText(name: string, contentType: string, text: string) {
+  // Host API 1.0 无 save-file 桥，Blob URL 下载为约定兜底（MessagesPanel 同款）。
+  const blob = new Blob([text], { type: `${contentType};charset=utf-8` });
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement("a");
+  anchor.href = url;
+  anchor.download = name;
+  anchor.click();
+  window.setTimeout(() => URL.revokeObjectURL(url), 10_000);
+}
+
+function exportRows(format: "json" | "csv" | "tsv") {
+  if (rows.value.length === 0) return;
+  const content =
+    format === "json" ? serializeMessagesToJson(rows.value) : format === "csv" ? serializeMessagesToCsv(rows.value) : serializeMessagesToTsv(rows.value);
+  const contentType = format === "tsv" ? "text/tab-separated-values" : format === "csv" ? "text/csv" : "application/json";
+  downloadText(`${props.topic || "kafka-stream"}.${format}`, contentType, content);
+  emit("notify", t("messages.exportDone", { name: format.toUpperCase() }));
+}
+
 defineExpose({ pushEvent });
 </script>
 
@@ -370,6 +395,37 @@ defineExpose({ pushEvent });
       <!-- P2-4：分页按钮 ≥32px 热区（原 36×20px 易脱靶），禁用态带说明 title -->
       <button class="qb-add stream-pager" type="button" :disabled="!sessionActive" :title="t('stream.loadOlder')" @click="loadOlder">{{ t("stream.loadOlder") }}</button>
       <button class="qb-add stream-pager" type="button" :disabled="!sessionActive" :title="t('stream.loadNewer')" @click="loadNewer">{{ t("stream.loadNewer") }}</button>
+      <!-- Lane4 打磨：缓冲内行导出 JSON/CSV/TSV（纯前端序列化，不发请求） -->
+      <button
+        class="toolbar-button"
+        type="button"
+        :title="t('messages.exportJson')"
+        :disabled="rows.length === 0"
+        data-testid="stream-export-json"
+        @click="exportRows('json')"
+      >
+        <Download aria-hidden="true" /><span>JSON</span>
+      </button>
+      <button
+        class="toolbar-button"
+        type="button"
+        :title="t('messages.exportCsv')"
+        :disabled="rows.length === 0"
+        data-testid="stream-export-csv"
+        @click="exportRows('csv')"
+      >
+        <Download aria-hidden="true" /><span>CSV</span>
+      </button>
+      <button
+        class="toolbar-button"
+        type="button"
+        :title="t('polish.exportTsv')"
+        :disabled="rows.length === 0"
+        data-testid="stream-export-tsv"
+        @click="exportRows('tsv')"
+      >
+        <Download aria-hidden="true" /><span>TSV</span>
+      </button>
     </div>
 
     <div class="grid-box grid-box--fill">

@@ -458,8 +458,45 @@ export function aclColumns(): ColDef<AclVm>[] {
   ];
 }
 
-export function topicColumns(): ColDef<TopicVm>[] {
+/**
+ * topic 表列（Lane4 打磨）：可选收藏星标列（传入 onToggleFavorite 才出现）。
+ * 星标文案在 cellRenderer 内经 isFavorite 回调现读（模块级收藏态），配合
+ * 调用方在收藏变化时重建 columnDefs 即可刷新；列不排序/过滤，不参与
+ * 窄容器降级集（不入 MINIMAL_TOPIC_FIELDS）。
+ */
+export function topicColumns(
+  options: { onToggleFavorite?: (row: TopicVm) => void; isFavorite?: (row: TopicVm) => boolean } = {},
+): ColDef<TopicVm>[] {
+  const favoriteColumn: ColDef<TopicVm>[] = options.onToggleFavorite
+    ? [
+        {
+          colId: "action-favorite",
+          headerName: "",
+          sortable: false,
+          resizable: false,
+          filter: false,
+          suppressMovable: true,
+          width: 40,
+          cellRenderer: (params: { data?: TopicVm | null }) => {
+            const button = document.createElement("button");
+            button.type = "button";
+            button.className = "grid-action-button topic-star-button";
+            // data 缺省（虚拟滚动竞态）按未收藏兜底渲染，不触发回调。
+            const fav = params.data ? options.isFavorite?.(params.data) === true : false;
+            button.textContent = fav ? "★" : "☆";
+            button.title = t(fav ? "polish.favoriteRemove" : "polish.favoriteAdd");
+            button.setAttribute("aria-label", button.title);
+            button.addEventListener("click", (event) => {
+              event.stopPropagation();
+              if (params.data) options.onToggleFavorite?.(params.data);
+            });
+            return button;
+          },
+        } as ColDef<TopicVm>,
+      ]
+    : [];
   return [
+    ...favoriteColumn,
     textColumn("name", "topics.colTopic", { flex: 2, cellClass: "mono-s" }),
     textColumn("internalText", "topics.colInternal", { maxWidth: 90, filter: false }),
     numberColumn("partitionCount", "topics.colPartitions", { maxWidth: 100 }),
