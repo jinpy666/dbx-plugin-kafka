@@ -54,6 +54,7 @@ import {
   parsePartitionList,
   parsePartitionOffsetsText,
   serializeMessagesToJson,
+  serializeMessagesToTsv,
   switchTimeInputMode,
   timestampIso,
   validateConsumeForm,
@@ -719,8 +720,16 @@ async function removePreset(id: string) {
 
 // -- export ------------------------------------------------------------------------
 
-async function exportMessages(format: "json" | "csv") {
+async function exportMessages(format: "json" | "csv" | "tsv") {
   if (!result.value || result.value.messages.length === 0) return;
+  // Lane4 打磨：后端 kafka/messages/export 仅接受 json/csv（其余 -32000），
+  // TSV 走前端序列化——直接导出当前已加载结果行（复用 kafkaModel 的保真
+  // value 文本与 TSV 转义；列序/行分隔与后端 CSV 一致），不发额外请求。
+  if (format === "tsv") {
+    downloadText("kafka-messages.tsv", "text/tab-separated-values", serializeMessagesToTsv(result.value.messages));
+    emit("notify", t("messages.exportDone", { name: "TSV" }));
+    return;
+  }
   try {
     const response = await kafkaApi.messagesExport({
       ...buildParams(),
@@ -1294,6 +1303,15 @@ watch(() => props.topic, () => void loadPresets(), { immediate: true });
         </button>
         <button class="toolbar-button" :title="t('messages.exportCsv')" :disabled="result.messages.length === 0" @click="exportMessages('csv')">
           <Download aria-hidden="true" /><span>CSV</span>
+        </button>
+        <button
+          class="toolbar-button"
+          :title="t('polish.exportTsv')"
+          :disabled="result.messages.length === 0"
+          data-testid="export-tsv"
+          @click="exportMessages('tsv')"
+        >
+          <Download aria-hidden="true" /><span>TSV</span>
         </button>
       </span>
     </div>

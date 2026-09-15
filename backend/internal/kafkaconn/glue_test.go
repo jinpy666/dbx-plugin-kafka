@@ -597,6 +597,18 @@ func TestGlueSchemaServiceFlow(t *testing.T) {
 		t.Errorf("CreateSchema compatibility not applied: %+v", fresh)
 	}
 
+	// register + normalize=true → Glue 无归一化语义，显式报错（不静默忽略、
+	// 不发起任何 Glue 调用）。
+	if _, err := service.RegisterSchema(ctx, SchemaRegisterRequest{
+		ConnectionID: "glue", Subject: "normalized-value", Format: "avro", Schema: testAvroSchemaGlue,
+		Normalize: true,
+	}); err == nil || !strings.Contains(err.Error(), "normalize is not supported") {
+		t.Errorf("RegisterSchema(normalize) error = %v", err)
+	}
+	if fake.schemas["normalized-value"] != nil {
+		t.Error("RegisterSchema(normalize) must not create the schema")
+	}
+
 	// delete/version + delete subject
 	deleted, err := service.DeleteSchema(ctx, SchemaDeleteRequest{
 		ConnectionID: "glue", Subject: "orders-value", Version: 3,

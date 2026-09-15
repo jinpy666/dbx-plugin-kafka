@@ -1,9 +1,12 @@
 // @vitest-environment happy-dom
 // TopicTree 组件测试：业务排序 + internal 沉底渲染、过滤框、选中态与 select 事件。
-import { describe, expect, it } from "vitest";
+// Lane4 打磨：internal 显隐开关 + 收藏星标置顶（收藏态为模块级共享状态，
+// 用例前经 setTopicFavorites([]) 复位，避免用例间串扰）。
+import { beforeEach, describe, expect, it } from "vitest";
 import { mount } from "@vue/test-utils";
 import TopicTree from "./TopicTree.vue";
 import type { KafkaTopic } from "../lib/api";
+import { setTopicFavorites } from "../lib/topicFavorites";
 import { t } from "../lib/i18n";
 
 const topics: KafkaTopic[] = [
@@ -186,5 +189,59 @@ describe("TopicTree keyboard navigation (roving tabindex)", () => {
     expect(wrapper.find(".tree-row[tabindex='0']").text()).toContain("order-events");
     await wrapper.setProps({ selectedTopic: "_schemas" });
     expect(wrapper.find(".tree-row[tabindex='0']").text()).toContain("_schemas");
+  });
+});
+
+// Lane4 前端打磨：internal 显隐开关 + 收藏星标置顶。
+describe("TopicTree internal toggle + favorites (Lane4)", () => {
+  beforeEach(() => {
+    localStorage.clear();
+    setTopicFavorites([]);
+  });
+
+  it("hides internal topics via the eye toggle and restores them (default = show)", async () => {
+    const wrapper = mountTree();
+    const names = () => wrapper.findAll(".tree-name").map((node) => node.text());
+    expect(names()).toEqual(["order-events", "users", "_schemas"]);
+    const toggle = () => wrapper.find('[data-testid="internal-toggle"]');
+    // 默认显示：aria-pressed=false（未被隐藏）
+    expect(toggle().attributes("aria-pressed")).toBe("false");
+    await toggle().trigger("click");
+    expect(names()).toEqual(["order-events", "users"]);
+    expect(toggle().attributes("aria-pressed")).toBe("true");
+    // 隐藏只过滤展示：总数徽章仍按 props.topics 计
+    expect(wrapper.find(".tree-count").text()).toBe(t("messages.uiTreeFilterCount", { matched: 2, total: 3 }));
+    // 隐藏态记忆落 localStorage（与侧栏宽度同款模式）
+    expect(localStorage.getItem("dbx.kafka.ui.showInternal")).toBe("0");
+    // 再点恢复显示，记忆回到「显示」
+    await toggle().trigger("click");
+    expect(names()).toEqual(["order-events", "users", "_schemas"]);
+    expect(localStorage.getItem("dbx.kafka.ui.showInternal")).toBe("1");
+  });
+
+  it("pins a starred topic to the top and toggles the star state without selecting the row", async () => {
+    const wrapper = mountTree();
+    const names = () => wrapper.findAll(".tree-name").map((node) => node.text());
+    const star = () => wrapper.find('[data-testid="star-users"]');
+    expect(star().classes()).not.toContain("is-fav");
+    expect(star().attributes("aria-label")).toBe(t("polish.favoriteAdd"));
+    await star().trigger("click");
+    // 星标点击不触发行选中（@click.stop）
+    expect(wrapper.emitted("select")).toBeUndefined();
+    // users 置顶；internal 沉底保持
+    expect(names()).toEqual(["users", "order-events", "_schemas"]);
+    expect(wrapper.find('[data-testid="star-users"]').classes()).toContain("is-fav");
+    expect(wrapper.find('[data-testid="star-users"]').attributes("aria-label")).toBe(t("polish.favoriteRemove"));
+    // 再点取消收藏，恢复原排序
+    await wrapper.find('[data-testid="star-users"]').trigger("click");
+    expect(names()).toEqual(["order-events", "users", "_schemas"]);
+  });
+
+  it("pins internal topics too when explicitly starred (user intent wins over sinking)", async () => {
+    setTopicFavorites(["_schemas"]);
+    const wrapper = mountTree();
+    const names = wrapper.findAll(".tree-name").map((node) => node.text());
+    expect(names).toEqual(["_schemas", "order-events", "users"]);
+    expect(wrapper.findAll(".badge-internal")).toHaveLength(1);
   });
 });

@@ -499,8 +499,12 @@ func (b *glueBackend) checkCompatibility(ctx context.Context, subject string, ve
 // registerSchema：先 GetSchema 探测——不存在 → CreateSchema（首个版本，
 // 兼容级别取请求 compatibility，缺省 NONE）；存在 → RegisterSchemaVersion
 // （幂等：Glue 对重复定义返回既有版本）。references 为 Confluent 概念，
-// Glue 忽略。
-func (b *glueBackend) registerSchema(ctx context.Context, subject, format, schema string, refs []SchemaReference, compatibility string) (SchemaMeta, error) {
+// Glue 忽略。normalize 为 Confluent REST 语义，Glue 无归一化端点 → 显式
+// 报错（诚实拒绝，不静默忽略）。
+func (b *glueBackend) registerSchema(ctx context.Context, subject, format, schema string, refs []SchemaReference, compatibility string, normalize bool) (SchemaMeta, error) {
+	if normalize {
+		return SchemaMeta{}, errf("normalize is not supported by the AWS Glue schema registry backend (Confluent-compatible registries only)")
+	}
 	if err := b.requireRegistry(); err != nil {
 		return SchemaMeta{}, err
 	}

@@ -154,8 +154,18 @@ type ProduceRequest struct {
 	ValueBase64 string `json:"valueBase64,omitempty"`
 	// Schema 可选：SR 挂载 —— 有 schema 时 value/valueBase64 是未编码载荷，
 	// sidecar 按 SR 元数据编码为载荷并打包 Confluent wire format
-	// （magic byte 0 + 4 字节大端 schemaID + 载荷）。
+	// （magic byte 0 + 4 字节大端 schemaID + 载荷；PROTOBUF 另含 message
+	// index 数组段）。
 	Schema *SchemaRef `json:"schema,omitempty"`
+
+	// Acks 投递确认级别："all"（默认，等待全部 ISR）| "1"（仅 leader）。
+	// "0"（fire-and-forget）不支持：生产走同步 ProduceSync 语义，franz-go
+	// 的 promise 依赖 broker 响应，acks=0 会等到请求超时才失败。
+	Acks string `json:"acks,omitempty"`
+	// EnableIdempotence 幂等生产开关（Kafka 服务端去重）。缺省/true =
+	// franz-go 默认行为（幂等开，要求 acks=all）；false 关闭幂等
+	// （DisableIdempotentWrite）。acks=1 时必须显式 false。
+	EnableIdempotence *bool `json:"enableIdempotence,omitempty"`
 
 	// Source 操作来源标注（MCP 设计 §4：MCP 写路径 "mcp"；工作台不携带）。
 	Source string `json:"source,omitempty"`
@@ -209,6 +219,14 @@ func (s *Service) Produce(ctx context.Context, req ProduceRequest) (*ProduceResu
 	if err != nil {
 		return nil, err
 	}
+	acks, err := normalizeProduceAcks(req.Acks)
+	if err != nil {
+		return nil, err
+	}
+	deliveryOpts, err := produceDeliveryOpts(acks, req.EnableIdempotence)
+	if err != nil {
+		return nil, err
+	}
 
 	// 载荷/键解析：value 与 valueBase64 二选一（同给报错）；key 同理。
 	payload, err := producePayloadBytes(req)
@@ -249,6 +267,7 @@ func (s *Service) Produce(ctx context.Context, req ProduceRequest) (*ProduceResu
 	if ok {
 		extraOpts = append(extraOpts, kgo.ProducerBatchCompression(codec))
 	}
+	extraOpts = append(extraOpts, deliveryOpts...)
 
 	client, closeClient, err := s.consumeClient(req.ConnectionID, extraOpts...)
 	if err != nil {
@@ -1550,6 +1569,39 @@ func produceCompressionCodec(method string) (kgo.CompressionCodec, bool, error) 
 	default:
 		return kgo.CompressionCodec{}, false, errf("compression must be none, gzip, lz4, zstd, or snappy")
 	}
+}
+
+// normalizeProduceAcks 归一化投递确认级别（"all" | "1"；空 = all）。acks=0
+// 显式拒绝：生产走同步 ProduceSync，franz-go 的 promise 依赖 broker 响应，
+// acks=0（broker 不回）会拖到请求超时，不是可用的 fire-and-forget。
+func normalizeProduceAcks(value string) (string, error) {
+	switch strings.ToLower(trimSpace(value)) {
+	case "", "all", "-1":
+		return "all", nil
+	case "1", "leader":
+		return "1", nil
+	case "0", "none":
+		return "", errf("acks=0 is not supported: synchronous produce waits for broker responses (use acks \"all\" or \"1\")")
+	default:
+		return "", errf("acks must be \"all\" or \"1\"")
+	}
+}
+
+// produceDeliveryOpts 把 acks/enableIdempotence 映射为 kgo producer opts。
+// franz-go v1.20 默认即幂等生产 + acks=all，故默认分支零 opt；
+// acks=1 / 关幂等需 DisableIdempotentWrite（kgo 校验：幂等开启时 acks 必为 all）。
+func produceDeliveryOpts(acks string, enableIdempotence *bool) ([]kgo.Opt, error) {
+	idempotent := enableIdempotence == nil || *enableIdempotence
+	if acks == "1" {
+		if idempotent {
+			return nil, errf("idempotent producer requires acks=all (set enableIdempotence=false for acks=1)")
+		}
+		return []kgo.Opt{kgo.DisableIdempotentWrite(), kgo.RequiredAcks(kgo.LeaderAck())}, nil
+	}
+	if !idempotent {
+		return []kgo.Opt{kgo.DisableIdempotentWrite(), kgo.RequiredAcks(kgo.AllISRAcks())}, nil
+	}
+	return nil, nil
 }
 
 // consumeMaxScanRecords 扫描上限（默认 max(1000, limit×10)，§5.3）。

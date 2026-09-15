@@ -2,7 +2,9 @@
 // SchemasPanel 组件测试（Phase 3 F5 Schema 三件套）：
 // - 克隆：版本表行操作「克隆」→ 注册弹窗预填 schema 文本 + subject 原值可改；
 // - 模板：注册弹窗 format 选定后「插入模板」（AVRO/JSON/Protobuf 代码常量）；
-// - 树视图：详情区 树/文本 toggle（AVRO 递归树；PROTOBUF 保持文本 + 行内提示）。
+// - 树视图：详情区 树/文本 toggle（AVRO 递归树；PROTOBUF 保持文本 + 行内提示）；
+// - 注册提交（schemaWrite）：schema 文本走 CodeEditor（stub 转接 v-model），
+//   normalize 复选框仅勾选时随 kafka/schema/register 提交。
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { flushPromises, mount } from "@vue/test-utils";
 import { defineComponent, h, type PropType } from "vue";
@@ -73,6 +75,23 @@ const DbxAgGridStub = defineComponent({
 
 const invokeMock = vi.fn();
 
+// CodeEditor stub（CodeMirror 挂载与断言无关；v-model 走 input 事件，
+// 与 ProducePanel.spec.ts 同款）。
+const CodeEditorStub = defineComponent({
+  name: "CodeEditorStub",
+  props: { modelValue: { type: String, default: "" }, disabled: { type: Boolean, default: false } },
+  emits: ["update:modelValue"],
+  setup(props, { emit }) {
+    return () =>
+      h("textarea", {
+        class: "code-editor-stub",
+        value: props.modelValue,
+        disabled: props.disabled,
+        onInput: (event: Event) => emit("update:modelValue", (event.target as HTMLTextAreaElement).value),
+      });
+  },
+});
+
 function installBridge(handler: (method: string, params: Record<string, unknown>) => unknown) {
   invokeMock.mockReset();
   invokeMock.mockImplementation(async (method: string, params: Record<string, unknown> = {}) => handler(method, params));
@@ -112,7 +131,7 @@ function confluentBridge() {
 function mountPanel() {
   return mount(SchemasPanel, {
     props: { canWrite: true, canDelete: true },
-    global: { stubs: { DbxAgGrid: DbxAgGridStub, teleport: true } },
+    global: { stubs: { DbxAgGrid: DbxAgGridStub, CodeEditor: CodeEditorStub, teleport: true } },
   });
 }
 
@@ -215,10 +234,109 @@ describe("SchemasPanel clone (F5)", () => {
     expect(modalText.exists()).toBe(true);
     // 弹窗标题为克隆语义。
     expect(modalText.text()).toContain(t("schemas.cloneTitle", { version: 1 }));
-    // schema 文本已预填（GetSchema 数据），subject 默认原值可改。
+    // schema 文本已预填（GetSchema 数据，经 CodeEditor stub 转接），subject 默认原值可改。
     const subjectInput = modalText.find("input").element as HTMLInputElement;
     expect(subjectInput.value).toBe("order-events-value");
     const schemaTextarea = modalText.find("textarea").element as HTMLTextAreaElement;
     expect(schemaTextarea.value).toBe(AVRO_V1);
+  });
+});
+
+describe("SchemasPanel register submit (schemaWrite)", () => {
+  function registerBridge() {
+    const bridge = confluentBridge();
+    return (method: string, params: Record<string, unknown>) => {
+      if (method === "kafka/schema/register") {
+        return { id: 12, version: 3 };
+      }
+      return bridge(method, params);
+    };
+  }
+
+  async function openRegisterModal() {
+    installBridge(registerBridge());
+    const wrapper = mountPanel();
+    await flushPromises();
+    await wrapper.findAll(".qb-add")[0].trigger("click"); // 注册按钮
+    await flushPromises();
+    await wrapper.find('[data-testid="insert-template"]').trigger("click"); // 预填合法 AVRO
+    await flushPromises();
+    return wrapper;
+  }
+
+  async function submitRegister(wrapper: ReturnType<typeof mountPanel>) {
+    const body = () => wrapper.find(".modal-backdrop .modal .settings-body");
+    await body().find('input[type="text"]').setValue("new-subject-value");
+    await wrapper.findAll(".modal-backdrop .modal footer .primary-button")[0].trigger("click");
+    await flushPromises();
+    const registerCalls = invokeMock.mock.calls.filter(([method]) => method === "kafka/schema/register");
+    expect(registerCalls.length).toBeGreaterThan(0);
+    return registerCalls[registerCalls.length - 1][1] as Record<string, unknown>;
+  }
+
+  it("submits without normalize by default and with normalize=true when ticked", async () => {
+    const wrapper = await openRegisterModal();
+    const params = await submitRegister(wrapper);
+    expect(params).toMatchObject({ subject: "new-subject-value", format: "avro", schema: SCHEMA_TEMPLATE_AVRO, registry: "confluent" });
+    expect(params.normalize).toBeUndefined();
+
+    // 重开弹窗（openRegister 重置表单）→ 重填文本并勾选 normalize → 提交携带 true。
+    await wrapper.findAll(".qb-add")[0].trigger("click");
+    await flushPromises();
+    await wrapper.find('[data-testid="insert-template"]').trigger("click");
+    await flushPromises();
+    const checkbox = wrapper.find('[data-testid="register-normalize"]');
+    expect((checkbox.element as HTMLInputElement).checked).toBe(false);
+    await checkbox.setValue(true);
+    const paramsNormalized = await submitRegister(wrapper);
+    expect(paramsNormalized.normalize).toBe(true);
+  });
+
+  it("resets the normalize checkbox when opening the register modal from a clone", async () => {
+    installBridge(registerBridge());
+    const wrapper = mountPanel();
+    await flushPromises();
+    await selectFirstSubject(wrapper);
+    // 先勾选 normalize 并成功提交（关闭弹窗），确保后续弹窗拿到复位后的表单。
+    await wrapper.findAll(".qb-add")[0].trigger("click");
+    await flushPromises();
+    await wrapper.find('[data-testid="insert-template"]').trigger("click");
+    await flushPromises();
+    await wrapper.find('[data-testid="register-normalize"]').setValue(true);
+    await wrapper.findAll(".modal-backdrop .modal footer .primary-button")[0].trigger("click");
+    await flushPromises();
+
+    // 版本表行操作「克隆」→ 弹窗 normalize 复位为未勾选，schema 文本为来源版本。
+    await wrapper.findAll("button[data-table-key='schema-versions']")[0].trigger("click");
+    await flushPromises();
+    expect((wrapper.find('[data-testid="register-normalize"]').element as HTMLInputElement).checked).toBe(false);
+    expect((wrapper.find(".modal-backdrop .modal textarea").element as HTMLTextAreaElement).value).toBe(AVRO_V1);
+  });
+
+  // 回归：register 成功后 selectSubject 只读 row.subject。
+  // 修复前成功回调传 { raw: { subject } } 形状，row.subject 为 undefined →
+  // 选中被清空、versions/list 不再为新 subject 发起。
+  it("keeps the newly registered subject selected after register (reselect regression)", async () => {
+    installBridge(registerBridge());
+    const wrapper = mountPanel();
+    await flushPromises();
+    await wrapper.findAll(".qb-add")[0].trigger("click"); // 注册按钮
+    await flushPromises();
+    await wrapper.find('[data-testid="insert-template"]').trigger("click"); // 预填合法 AVRO
+    await flushPromises();
+    const versionsCallsFor = (subject: string) =>
+      invokeMock.mock.calls.filter(
+        ([method, params]) => method === "kafka/schema/versions/list" && (params as Record<string, unknown>).subject === subject,
+      ).length;
+    expect(versionsCallsFor("new-subject-value")).toBe(0);
+
+    await wrapper.find(".modal-backdrop .modal .settings-body input[type='text']").setValue("new-subject-value");
+    await wrapper.findAll(".modal-backdrop .modal footer .primary-button")[0].trigger("click");
+    await flushPromises();
+
+    // 修复后：提交成功 → loadSubjects + selectSubject({ subject }) → 新 subject 的版本表重新加载。
+    expect(versionsCallsFor("new-subject-value")).toBeGreaterThanOrEqual(1);
+    // 选中未被清空：版本表已渲染新 subject 的版本行（bridge 对未知 subject 走 AVRO 双版本兜底）。
+    expect(wrapper.findAll(".grid-stub[data-key='schema-versions'] .grid-stub-row").length).toBeGreaterThan(0);
   });
 });

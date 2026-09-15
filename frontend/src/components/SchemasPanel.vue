@@ -11,6 +11,7 @@ import { computed, onMounted, ref, watch } from "vue";
 import { GitCompare, Plus, RefreshCw, ShieldQuestion, Trash2, X } from "@lucide/vue";
 import type { ColDef } from "ag-grid-community";
 import DbxAgGrid from "./DbxAgGrid.vue";
+import CodeEditor from "./CodeEditor.vue";
 import SchemaTree from "./SchemaTree.vue";
 import {
   kafkaApi,
@@ -155,6 +156,8 @@ const registerOpen = ref(false);
 const registerSubject = ref("");
 const registerFormat = ref<SchemaFormat>("avro");
 const registerSchemaText = ref("");
+// normalize：Confluent SR 可选查询参数（SR 侧归一化存储文本；glue 后端明确拒绝）。
+const registerNormalize = ref(false);
 // F5 克隆：来源版本号（弹窗标题/提示用；普通注册为 null）。
 const registerClonedFrom = ref<number | null>(null);
 // PROTOBUF schema 是 proto3 文本（非 JSON），不做 JSON 校验（SR 侧校验）。
@@ -164,6 +167,8 @@ const registerJsonError = computed(() => {
   const parsed = parseJsonCandidate(registerSchemaText.value);
   return parsed.ok ? "" : parsed.error;
 });
+// 注册编辑器语言：AVRO/JSON 走 json 高亮 + 错误行标红；PROTOBUF 是 proto3 纯文本。
+const registerEditorLanguage = computed(() => (registerFormat.value === "protobuf" ? "text" : "json"));
 
 const checkOpen = ref(false);
 const checkSubject = ref("");
@@ -300,7 +305,7 @@ async function applyCompat() {
     compatLevel.value = response.level ?? compatChoice.value;
     emit("notify", t("schemas.compatSetDone"));
     await loadSubjects();
-    if (selectedSubject.value) await selectSubject({ raw: { subject: selectedSubject.value } } as SubjectVm);
+    if (selectedSubject.value) await selectSubject({ subject: selectedSubject.value } as SubjectVm);
   } catch (cause) {
     emit("error", cause instanceof Error ? cause.message : String(cause));
   } finally {
@@ -314,6 +319,7 @@ function openRegister() {
   registerSubject.value = selectedSubject.value ? `${selectedSubject.value}` : "";
   registerFormat.value = "avro";
   registerSchemaText.value = "";
+  registerNormalize.value = false;
   registerClonedFrom.value = null;
   registerOpen.value = true;
 }
@@ -328,6 +334,7 @@ async function cloneVersion(row: SchemaVersionVm) {
     registerSubject.value = selectedSubject.value;
     registerFormat.value = (["avro", "json", "protobuf"].includes(detailRow.format) ? detailRow.format : "avro") as SchemaFormat;
     registerSchemaText.value = detailRow.schema ?? "";
+    registerNormalize.value = false;
     registerClonedFrom.value = row.version;
     registerOpen.value = true;
   } catch (cause) {
@@ -337,7 +344,6 @@ async function cloneVersion(row: SchemaVersionVm) {
 
 /** F5 模板：format 选定后插入对应静态模板（覆盖当前文本）。 */
 function insertTemplate() {
-  console.log("INSERT called, format=", registerFormat.value);
   registerSchemaText.value = schemaTemplateFor(registerFormat.value);
 }
 
@@ -367,11 +373,12 @@ async function submitRegister() {
   busy.value = true;
   emit("error", "");
   try {
-    const response = await kafkaApi.schemaRegister(subject, registerFormat.value, registerSchemaText.value, registry.value);
+    const response = await kafkaApi.schemaRegister(subject, registerFormat.value, registerSchemaText.value, registry.value, registerNormalize.value || undefined);
     registerOpen.value = false;
     emit("notify", t("schemas.registered", { version: response.version, id: response.id }));
     await loadSubjects();
-    await selectSubject({ raw: { subject } } as SubjectVm);
+    // selectSubject 只读 row.subject：传 { raw: ... } 形状会把选中清空。
+    await selectSubject({ subject } as SubjectVm);
   } catch (cause) {
     emit("error", cause instanceof Error ? cause.message : String(cause));
   } finally {
@@ -460,7 +467,7 @@ async function submitDelete() {
     }
     deletePlan.value = null;
     await loadSubjects();
-    if (plan.kind === "version" && selectedSubject.value) await selectSubject({ raw: { subject: selectedSubject.value } } as SubjectVm);
+    if (plan.kind === "version" && selectedSubject.value) await selectSubject({ subject: selectedSubject.value } as SubjectVm);
   } catch (cause) {
     emit("error", cause instanceof Error ? cause.message : String(cause));
   } finally {
@@ -679,12 +686,23 @@ onMounted(async () => {
             </label>
             <label class="settings-field">
               <span>{{ t("schemas.registerSchemaJson") }}</span>
-              <textarea v-model="registerSchemaText" rows="10" class="mono" spellcheck="false" />
+              <CodeEditor
+                v-model="registerSchemaText"
+                :language="registerEditorLanguage"
+                :invalid="registerJsonError !== ''"
+                :placeholder="t('schemaWrite.editorPlaceholder')"
+                min-height="180px"
+                max-height="320px"
+              />
             </label>
             <div class="inline-actions">
               <button class="toolbar-button" type="button" data-testid="insert-template" @click="insertTemplate">
                 {{ t("schemas.insertTemplate") }}
               </button>
+              <label class="checkbox" :title="t('schemaWrite.normalizeHint')">
+                <input v-model="registerNormalize" type="checkbox" :disabled="!canWrite" data-testid="register-normalize" />
+                <span>{{ t("schemaWrite.normalize") }}</span>
+              </label>
             </div>
             <p v-if="registerJsonError" class="form-error">{{ t("schemas.registerInvalidJson") }}: {{ registerJsonError }}</p>
           </div>

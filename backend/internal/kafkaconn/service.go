@@ -239,6 +239,9 @@ func (s *Service) SnapshotStatuses() []ConnectionStatus {
 		if entry.profile.kerberosEnabled() {
 			status.Kerberos = &KerberosStatus{Enabled: true}
 		}
+		// Lane 3（conn-properties）：粘贴 properties 导入摘要（仅键名/计数，
+		// 值一律不透出；未使用导入时为 nil 省略）。
+		status.PropertiesImport = entry.profile.PropertiesImport
 		statuses = append(statuses, status)
 		entry.mu.Unlock()
 	}

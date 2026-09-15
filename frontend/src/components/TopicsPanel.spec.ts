@@ -9,13 +9,17 @@ import { flushPromises, mount } from "@vue/test-utils";
 import { defineComponent, h, type PropType } from "vue";
 import TopicsPanel from "./TopicsPanel.vue";
 import { setKafkaConnectionId, type KafkaTopic } from "../lib/api";
+import { setTopicFavorites } from "../lib/topicFavorites";
 import { t } from "../lib/i18n";
 
 // -- DbxAgGrid 轻量 stub（镜像真实桥形状，见 GroupsPanel.spec 同款） -----------------
+// Lane4：额外透出 columnDefs 的列数/首个 colId（收藏星标列断言用）与行 name 文本
+// （收藏置顶排序断言用）。
 const DbxAgGridStub = defineComponent({
   name: "DbxAgGridStub",
   props: {
     rowData: { type: Array as PropType<unknown[]>, default: () => [] },
+    columnDefs: { type: Array as PropType<Array<{ colId?: string }>>, default: () => [] },
     tableKey: { type: String, default: "" },
     rowSelection: { type: [String, Boolean] as PropType<"single" | false>, default: "single" as const },
     emitRowClick: { type: Boolean, default: true },
@@ -25,16 +29,25 @@ const DbxAgGridStub = defineComponent({
     return () =>
       h(
         "div",
-        { class: "grid-stub", "data-key": props.tableKey },
+        {
+          class: "grid-stub",
+          "data-key": props.tableKey,
+          "data-cols": String(props.columnDefs.length),
+          "data-first-col": String(props.columnDefs[0]?.colId ?? ""),
+        },
         (props.rowData ?? []).map((row, index) =>
-          h("button", {
-            type: "button",
-            class: "grid-stub-row",
-            onClick: () => {
-              if (props.rowSelection) emit("selection-changed", row);
-              if (props.emitRowClick) emit("row-click", row);
+          h(
+            "button",
+            {
+              type: "button",
+              class: "grid-stub-row",
+              onClick: () => {
+                if (props.rowSelection) emit("selection-changed", row);
+                if (props.emitRowClick) emit("row-click", row);
+              },
             },
-          }),
+            (row as { name?: string }).name ?? "",
+          ),
         ),
       );
   },
@@ -365,5 +378,37 @@ describe("TopicsPanel gating + selection refresh", () => {
     await wrapper.setProps({ topics: [{ name: "other", partitionCount: 1, replicationFactor: 1 }] });
     await flushPromises();
     expect(wrapper.text()).not.toContain(t("topics.describeTitle", { topic: "order-events" }));
+  });
+});
+
+// -- Lane4 前端打磨：收藏星标列 + 收藏置顶排序 --------------------------------
+
+describe("TopicsPanel favorites (Lane4)", () => {
+  const multi: KafkaTopic[] = [
+    { name: "_schemas", partitionCount: 1, replicationFactor: 1, isInternal: true },
+    { name: "users", partitionCount: 3, replicationFactor: 1 },
+    { name: "order-events", partitionCount: 2, replicationFactor: 1 },
+  ];
+
+  beforeEach(() => {
+    localStorage.clear();
+    setTopicFavorites([]);
+  });
+
+  it("renders the star column first and pins favorite topics above the rest", async () => {
+    setTopicFavorites(["users"]);
+    const wrapper = mountPanel({ topics: multi });
+    await flushPromises();
+    const grid = () => wrapper.find('.grid-stub[data-key="topics"]');
+    // 星标列在最前（5 列 = 星标 + name/internal/partitions/replication）
+    expect(grid().attributes("data-first-col")).toBe("action-favorite");
+    expect(grid().attributes("data-cols")).toBe("5");
+    const names = () => wrapper.findAll('.grid-stub[data-key="topics"] .grid-stub-row').map((row) => row.text());
+    // 收藏 users 置顶，internal 沉底保持
+    expect(names()).toEqual(["users", "order-events", "_schemas"]);
+    // 取消收藏 → 恢复业务评分序（order-events → users → _schemas）
+    setTopicFavorites([]);
+    await flushPromises();
+    expect(names()).toEqual(["order-events", "users", "_schemas"]);
   });
 });

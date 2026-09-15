@@ -188,6 +188,89 @@ describe("ProducePanel Flow (F4)", () => {
   });
 });
 
+describe("ProducePanel delivery params + flow stop conditions (Lane 2)", () => {
+  it("sends acks/enableIdempotence only when they differ from backend defaults", async () => {
+    const produced: Array<Record<string, unknown>> = [];
+    installBridge((method, params) => {
+      if (method !== "kafka/messages/produce") return {};
+      produced.push(params);
+      return { partition: 0, offset: produced.length - 1 };
+    });
+    const wrapper = mountPanel();
+    await flushPromises();
+    await wrapper.find(".produce-value-editor textarea, .code-editor-stub").setValue("hello");
+    // 默认：acks=all + 幂等开 = 后端默认 → 请求不带这两字段。
+    await wrapper.find(".produce-actions .produce-send-button").trigger("click");
+    await flushPromises();
+    expect(produced).toHaveLength(1);
+    expect(produced[0]).not.toHaveProperty("acks");
+    expect(produced[0]).not.toHaveProperty("enableIdempotence");
+
+    // acks=1 + 关幂等：显式携带。
+    await wrapper.find('[data-testid="produce-acks"]').setValue("1");
+    await wrapper.find('[data-testid="produce-idempotence"]').setValue(false);
+    await wrapper.find(".produce-actions .produce-send-button").trigger("click");
+    await flushPromises();
+    expect(produced).toHaveLength(2);
+    expect(produced[1].acks).toBe("1");
+    expect(produced[1].enableIdempotence).toBe(false);
+  });
+
+  it("stops the flow generator when the record limit is reached", async () => {
+    const produced: Array<Record<string, unknown>> = [];
+    installBridge((method, params) => {
+      if (method !== "kafka/messages/produce") return {};
+      produced.push(params);
+      return { partition: 0, offset: produced.length - 1 };
+    });
+    const wrapper = mountPanel();
+    await flushPromises();
+    await wrapper.find('[data-testid="flow-toggle"]').setValue(true);
+    await wrapper.find('[data-testid="flow-group"] select').setValue("template");
+    await wrapper.findAll(".code-editor-stub")[2].setValue('{"n":1}');
+    await wrapper.find('[data-testid="flow-max-records"]').setValue("2");
+    await startFlow(wrapper);
+
+    // 首 tick 1 条；上限 2 → 第 2 tick 达标后自动停止（不再发第 3 条）。
+    expect(produced).toHaveLength(1);
+    await vi.advanceTimersByTimeAsync(1000);
+    await flushPromises();
+    expect(produced).toHaveLength(2);
+    await vi.advanceTimersByTimeAsync(5000);
+    await flushPromises();
+    expect(produced).toHaveLength(2);
+    expect(wrapper.find('[data-testid="flow-badge"]').exists()).toBe(false);
+    expect(wrapper.find('[data-testid="flow-hint"]').text()).toContain(t("produceAdv.flowAutoStoppedRecords"));
+  });
+
+  it("stops the flow generator when the duration limit is reached", async () => {
+    const produced: Array<Record<string, unknown>> = [];
+    installBridge((method, params) => {
+      if (method !== "kafka/messages/produce") return {};
+      produced.push(params);
+      return { partition: 0, offset: produced.length - 1 };
+    });
+    const wrapper = mountPanel();
+    await flushPromises();
+    await wrapper.find('[data-testid="flow-toggle"]').setValue(true);
+    await wrapper.find('[data-testid="flow-group"] select').setValue("template");
+    await wrapper.findAll(".code-editor-stub")[2].setValue('{"n":1}');
+    await wrapper.find('[data-testid="flow-max-duration"]').setValue("1500");
+    await startFlow(wrapper);
+
+    // t=0 发 1 条（1500ms 内），t=1000 发第 2 条，t=2000 时长已超 → 停。
+    expect(produced).toHaveLength(1);
+    await vi.advanceTimersByTimeAsync(1000);
+    await flushPromises();
+    expect(produced).toHaveLength(2);
+    await vi.advanceTimersByTimeAsync(2000);
+    await flushPromises();
+    expect(produced).toHaveLength(2);
+    expect(wrapper.find('[data-testid="flow-badge"]').exists()).toBe(false);
+    expect(wrapper.find('[data-testid="flow-hint"]').text()).toContain(t("produceAdv.flowAutoStoppedDuration"));
+  });
+});
+
 describe("ProducePanel partition guard (F6-4)", () => {
   it("shows the partition count badge from the selected topic", async () => {
     installBridge();

@@ -510,3 +510,60 @@ describe("MessagesPanel MCP intent (M3)", () => {
     expect(miss.reason).toContain("partition+offset");
   });
 });
+
+// -- Lane4 前端打磨：TSV 导出（纯前端序列化，不发 export 请求） ----------------
+
+describe("MessagesPanel TSV export (Lane4)", () => {
+  it("exports the loaded result as TSV client-side with tab/newline escaping and no export request", async () => {
+    installBridge({
+      "kafka/presets/list": { presets: [] },
+      "kafka/messages/consume": {
+        messages: [
+          { topic: "order-events", partition: 0, offset: 7, timestamp: 1_700_000_000_000, key: "k\t1", valueText: "line1\nline2", headers: { trace: "abc" } },
+        ],
+        scanned: 3,
+        matched: 1,
+        limited: false,
+        hasMore: false,
+      },
+    });
+    const createObjectURL = vi.spyOn(URL, "createObjectURL").mockReturnValue("blob:mock");
+    const revokeObjectURL = vi.spyOn(URL, "revokeObjectURL").mockImplementation(() => {});
+    const anchorClick = vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(() => {});
+    const wrapper = mountPanel();
+    await flushPromises();
+    await wrapper.find('[data-testid="consume-run"]').trigger("click");
+    await flushPromises();
+    const tsvButton = wrapper.find('[data-testid="export-tsv"]');
+    expect(tsvButton.exists()).toBe(true);
+    expect(tsvButton.attributes("disabled")).toBeUndefined();
+    await tsvButton.trigger("click");
+    await flushPromises();
+    // 纯前端导出：不触发 kafka/messages/export 桥调用
+    expect(invokeMock.mock.calls.filter(([method]) => method === "kafka/messages/export")).toHaveLength(0);
+    expect(createObjectURL).toHaveBeenCalledTimes(1);
+    const blob = createObjectURL.mock.calls[0]![0] as Blob;
+    expect(blob.type).toBe("text/tab-separated-values;charset=utf-8");
+    const [header, row] = (await blob.text()).split("\r\n");
+    expect(header).toBe("topic\tpartition\toffset\ttimestamp\tkey\tvalue\theaders");
+    expect(row).toBe("order-events\t0\t7\t1700000000000\tk\\t1\tline1\\nline2\ttrace=abc");
+    expect(anchorClick).toHaveBeenCalledTimes(1);
+    // 10s 延迟回收：flushPromises 不推进 timer，revoke 未发生
+    expect(revokeObjectURL).not.toHaveBeenCalled();
+    expect(wrapper.emitted("notify")?.at(-1)).toEqual([t("messages.exportDone", { name: "TSV" })]);
+  });
+
+  it("keeps the TSV button disabled without results", async () => {
+    installBridge({
+      "kafka/presets/list": { presets: [] },
+      "kafka/messages/consume": { messages: [], scanned: 0, matched: 0, limited: false, hasMore: false },
+    });
+    const wrapper = mountPanel();
+    await flushPromises();
+    // 无结果时结果区未渲染，导出按钮不存在（与 JSON/CSV 同容器）
+    expect(wrapper.find('[data-testid="export-tsv"]').exists()).toBe(false);
+    await wrapper.find('[data-testid="consume-run"]').trigger("click");
+    await flushPromises();
+    expect(wrapper.find('[data-testid="export-tsv"]').exists()).toBe(true);
+  });
+});

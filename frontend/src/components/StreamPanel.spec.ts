@@ -156,9 +156,10 @@ describe("StreamPanel", () => {
     expect(invokeMock.mock.calls.find(([method]) => method === "kafka/stream/stop")?.[1]).toMatchObject({ sessionId: "stream-1" });
     expect(wrapper.find(".stream-meta .badge").text()).toBe(t("stream.stateIdle"));
     expect(wrapper.find(".stream-meta .mono-s").text()).toBe("—");
-    // 按钮组回到 Start
+    // 按钮组回到 Start（toolbar-button 断言收敛到表单区：stream-meta 另有
+    // Lane4 导出 JSON/CSV/TSV 按钮，不随会话结束消失）
     expect(wrapper.find(".primary-button.compact").text()).toContain(t("stream.start"));
-    expect(wrapper.find(".toolbar-button").exists()).toBe(false);
+    expect(wrapper.find(".kafka-form .toolbar-button").exists()).toBe(false);
   });
 
   it("appends stream message events for the active session and drops foreign ones", async () => {
@@ -274,5 +275,51 @@ describe("StreamPanel", () => {
     const wrapper = mountPanel({ topic: "" });
     await flushPromises();
     expect(wrapper.find(".primary-button.compact").attributes("disabled")).toBeDefined();
+  });
+});
+
+// -- Lane4 前端打磨：缓冲行导出 JSON/CSV/TSV（纯前端序列化，不发请求） --------
+
+describe("StreamPanel export (Lane4)", () => {
+  it("exports buffered rows client-side; buttons disabled without rows", async () => {
+    installBridge({ "kafka/stream/start": { sessionId: "stream-1" } });
+    const createObjectURL = vi.spyOn(URL, "createObjectURL").mockReturnValue("blob:mock");
+    const anchorClick = vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(() => {});
+    const wrapper = mountPanel();
+    await flushPromises();
+    // 无行：三个导出按钮禁用
+    for (const testid of ["stream-export-json", "stream-export-csv", "stream-export-tsv"]) {
+      expect(wrapper.find(`[data-testid="${testid}"]`).attributes("disabled")).toBeDefined();
+    }
+    await startSession(wrapper);
+    pushEvent(wrapper, {
+      sessionId: "stream-1",
+      messages: [message(1, "a\tb"), message(2, "c\nd")],
+      totalScanned: 2,
+      totalMatched: 2,
+      paused: false,
+      bufferSize: 2,
+    });
+    await flushPromises();
+    for (const testid of ["stream-export-json", "stream-export-csv", "stream-export-tsv"]) {
+      expect(wrapper.find(`[data-testid="${testid}"]`).attributes("disabled")).toBeUndefined();
+    }
+    // TSV：制表符/换行转义
+    await wrapper.find('[data-testid="stream-export-tsv"]').trigger("click");
+    const tsvBlob = createObjectURL.mock.calls.at(-1)![0] as Blob;
+    expect(tsvBlob.type).toBe("text/tab-separated-values;charset=utf-8");
+    const [header, row1, row2] = (await tsvBlob.text()).split("\r\n");
+    expect(header).toBe("topic\tpartition\toffset\ttimestamp\tkey\tvalue\theaders");
+    expect(row1).toContain("a\\tb");
+    expect(row2).toContain("c\\nd");
+    expect(wrapper.emitted("notify")?.at(-1)).toEqual([t("messages.exportDone", { name: "TSV" })]);
+    // JSON：2 条消息的稳定数组
+    await wrapper.find('[data-testid="stream-export-json"]').trigger("click");
+    const jsonBlob = createObjectURL.mock.calls.at(-1)![0] as Blob;
+    expect(JSON.parse(await jsonBlob.text())).toHaveLength(2);
+    // 导出纯前端：start 仅一次，无任何 export/再次消费请求
+    expect(anchorClick).toHaveBeenCalledTimes(2);
+    expect(invokeMock.mock.calls.filter(([method]) => method === "kafka/stream/start")).toHaveLength(1);
+    expect(invokeMock.mock.calls.filter(([method]) => String(method).includes("export"))).toHaveLength(0);
   });
 });

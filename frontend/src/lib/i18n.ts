@@ -596,6 +596,31 @@ export const messages = {
       planApplied: "Plan applied",
       needGroup: "Select a consumer group first",
     },
+    // Lane4 前端打磨文案（TSV 导出 / internal 显隐 / 收藏星标）。
+    polish: {
+      exportTsv: "Export TSV",
+      internalToggle: "Show internal topics",
+      favoriteAdd: "Favorite topic",
+      favoriteRemove: "Unfavorite topic",
+    },
+    schemaWrite: {
+      normalize: "Normalize",
+      normalizeHint: "Ask the registry to normalize the stored schema text (Confluent only)",
+      editorPlaceholder: "Paste or edit the schema definition",
+    },
+    produceAdv: {
+      acks: "Required acks",
+      idempotence: "Idempotent producer",
+      idempotenceHint: "Server-side dedup (requires acks=all)",
+      flowMaxRecords: "Stop after messages (0 = no limit)",
+      flowMaxDurationMs: "Stop after ms (0 = no limit)",
+      flowAutoStoppedRecords: "Generator stopped: message limit reached",
+      flowAutoStoppedDuration: "Generator stopped: time limit reached",
+    },
+    connProps: {
+      summary: "{mapped} mapped · {ignored} ignored",
+      ignoredKeys: "Ignored keys: {keys}",
+    },
   },
   "zh-CN": {
     hostApiUnavailable: "DBX Host API 不可用",
@@ -1189,6 +1214,31 @@ export const messages = {
       planEmpty: "暂无保存的方案",
       planApplied: "方案已应用",
       needGroup: "请先选择消费组",
+    },
+    // Lane4 前端打磨文案（TSV 导出 / internal 显隐 / 收藏星标）。
+    polish: {
+      exportTsv: "导出 TSV",
+      internalToggle: "显示内部 topic",
+      favoriteAdd: "收藏 topic",
+      favoriteRemove: "取消收藏",
+    },
+    schemaWrite: {
+      normalize: "归一化",
+      normalizeHint: "要求注册表归一化存储的 schema 文本（仅 Confluent）",
+      editorPlaceholder: "粘贴或编辑 schema 定义",
+    },
+    produceAdv: {
+      acks: "确认级别 (acks)",
+      idempotence: "幂等生产者",
+      idempotenceHint: "Broker 端去重（要求 acks=all）",
+      flowMaxRecords: "发送满条数后停止（0 = 不限）",
+      flowMaxDurationMs: "发送满时长后停止（0 = 不限）",
+      flowAutoStoppedRecords: "生成已停止：达到条数上限",
+      flowAutoStoppedDuration: "生成已停止：达到时长上限",
+    },
+    connProps: {
+      summary: "已映射 {mapped} 项 · 已忽略 {ignored} 项",
+      ignoredKeys: "忽略的键：{keys}",
     },
   },
   "zh-TW": {
@@ -1784,6 +1834,31 @@ export const messages = {
       planApplied: "方案已套用",
       needGroup: "請先選擇消費群組",
     },
+    // Lane4 前端打磨文案（TSV 匯出 / internal 顯隱 / 收藏星標）。
+    polish: {
+      exportTsv: "匯出 TSV",
+      internalToggle: "顯示內部 topic",
+      favoriteAdd: "收藏 topic",
+      favoriteRemove: "取消收藏",
+    },
+    schemaWrite: {
+      normalize: "正規化",
+      normalizeHint: "要求登錄檔正規化儲存的 schema 文字（僅 Confluent）",
+      editorPlaceholder: "貼上或編輯 schema 定義",
+    },
+    produceAdv: {
+      acks: "確認級別 (acks)",
+      idempotence: "冪等生產者",
+      idempotenceHint: "Broker 端去重（要求 acks=all）",
+      flowMaxRecords: "送滿訊息數後停止（0 = 不限）",
+      flowMaxDurationMs: "送滿時長後停止（0 = 不限）",
+      flowAutoStoppedRecords: "產生已停止：達到訊息數上限",
+      flowAutoStoppedDuration: "產生已停止：達到時間上限",
+    },
+    connProps: {
+      summary: "已映射 {mapped} 項 · 已忽略 {ignored} 項",
+      ignoredKeys: "忽略的鍵：{keys}",
+    },
   },
   es: {
     hostApiUnavailable: "La API Host de DBX no está disponible",
@@ -2377,6 +2452,31 @@ export const messages = {
       planEmpty: "No hay planes guardados",
       planApplied: "Plan aplicado",
       needGroup: "Seleccione primero un grupo de consumo",
+    },
+    // Lane4 前端打磨文案（TSV 导出 / internal 显隐 / 收藏星标）。
+    polish: {
+      exportTsv: "Exportar TSV",
+      internalToggle: "Mostrar topics internos",
+      favoriteAdd: "Marcar topic como favorito",
+      favoriteRemove: "Quitar de favoritos",
+    },
+    schemaWrite: {
+      normalize: "Normalizar",
+      normalizeHint: "Pide al registro normalizar el texto del esquema almacenado (solo Confluent)",
+      editorPlaceholder: "Pega o edita la definición del esquema",
+    },
+    produceAdv: {
+      acks: "ACKs requeridos",
+      idempotence: "Productor idempotente",
+      idempotenceHint: "Desduplicación en el broker (requiere acks=all)",
+      flowMaxRecords: "Detener tras mensajes (0 = sin límite)",
+      flowMaxDurationMs: "Detener tras ms (0 = sin límite)",
+      flowAutoStoppedRecords: "Generador detenido: límite de mensajes alcanzado",
+      flowAutoStoppedDuration: "Generador detenido: límite de tiempo alcanzado",
+    },
+    connProps: {
+      summary: "{mapped} mapeadas · {ignored} ignoradas",
+      ignoredKeys: "Claves ignoradas: {keys}",
     },
   },
   it: {
@@ -2972,6 +3072,31 @@ export const messages = {
       planApplied: "Piano applicato",
       needGroup: "Seleziona prima un gruppo di consumo",
     },
+    // Lane4 前端打磨文案（TSV 导出 / internal 显隐 / 收藏星标）。
+    polish: {
+      exportTsv: "Esporta TSV",
+      internalToggle: "Mostra topic interni",
+      favoriteAdd: "Aggiungi topic ai preferiti",
+      favoriteRemove: "Rimuovi dai preferiti",
+    },
+    schemaWrite: {
+      normalize: "Normalizza",
+      normalizeHint: "Chiede al registro di normalizzare il testo dello schema memorizzato (solo Confluent)",
+      editorPlaceholder: "Incolla o modifica la definizione dello schema",
+    },
+    produceAdv: {
+      acks: "ACK richiesti",
+      idempotence: "Producer idempotente",
+      idempotenceHint: "Deduplicazione lato broker (richiede acks=all)",
+      flowMaxRecords: "Ferma dopo messaggi (0 = nessun limite)",
+      flowMaxDurationMs: "Ferma dopo ms (0 = nessun limite)",
+      flowAutoStoppedRecords: "Generatore fermato: limite di messaggi raggiunto",
+      flowAutoStoppedDuration: "Generatore fermato: limite di tempo raggiunto",
+    },
+    connProps: {
+      summary: "{mapped} mappate · {ignored} ignorate",
+      ignoredKeys: "Chiavi ignorate: {keys}",
+    },
   },
   ja: {
     hostApiUnavailable: "DBX Host API を利用できません",
@@ -3566,6 +3691,31 @@ export const messages = {
       planApplied: "プランを適用しました",
       needGroup: "先にコンシューマーグループを選択してください",
     },
+    // Lane4 前端打磨文案（TSV エクスポート / internal 表示切替 / お気に入り）。
+    polish: {
+      exportTsv: "TSV をエクスポート",
+      internalToggle: "内部 topic を表示",
+      favoriteAdd: "topic をお気に入りに追加",
+      favoriteRemove: "お気に入りから削除",
+    },
+    schemaWrite: {
+      normalize: "正規化",
+      normalizeHint: "レジストリに保存時のスキーマテキストの正規化を依頼します（Confluent のみ）",
+      editorPlaceholder: "スキーマ定義を貼り付けまたは編集",
+    },
+    produceAdv: {
+      acks: "確認応答 (acks)",
+      idempotence: "冪等プロデューサー",
+      idempotenceHint: "ブローカー側の重複排除（acks=all が必要）",
+      flowMaxRecords: "指定件数で停止 (0 = 無制限)",
+      flowMaxDurationMs: "指定ミリ秒で停止 (0 = 無制限)",
+      flowAutoStoppedRecords: "生成を停止しました: 件数上限に到達",
+      flowAutoStoppedDuration: "生成を停止しました: 時間上限に到達",
+    },
+    connProps: {
+      summary: "マッピング {mapped} 件 · 無視 {ignored} 件",
+      ignoredKeys: "無視されたキー: {keys}",
+    },
   },
   "pt-BR": {
     hostApiUnavailable: "API Host do DBX indisponível",
@@ -4159,6 +4309,31 @@ export const messages = {
       planEmpty: "Nenhum plano salvo",
       planApplied: "Plano aplicado",
       needGroup: "Selecione primeiro um grupo de consumo",
+    },
+    // Lane4 前端打磨文案（TSV 导出 / internal 显隐 / 收藏星标）。
+    polish: {
+      exportTsv: "Exportar TSV",
+      internalToggle: "Mostrar tópicos internos",
+      favoriteAdd: "Favoritar tópico",
+      favoriteRemove: "Desfavoritar tópico",
+    },
+    schemaWrite: {
+      normalize: "Normalizar",
+      normalizeHint: "Pede ao Registry para normalizar o texto do esquema armazenado (somente Confluent)",
+      editorPlaceholder: "Cole ou edite a definição do esquema",
+    },
+    produceAdv: {
+      acks: "ACKs exigidos",
+      idempotence: "Produtor idempotente",
+      idempotenceHint: "Desduplicação no broker (requer acks=all)",
+      flowMaxRecords: "Parar após mensagens (0 = sem limite)",
+      flowMaxDurationMs: "Parar após ms (0 = sem limite)",
+      flowAutoStoppedRecords: "Gerador parado: limite de mensagens atingido",
+      flowAutoStoppedDuration: "Gerador parado: limite de tempo atingido",
+    },
+    connProps: {
+      summary: "{mapped} mapeadas · {ignored} ignoradas",
+      ignoredKeys: "Chaves ignoradas: {keys}",
     },
   },
 };

@@ -15,6 +15,9 @@ export type DecodeMode = "none" | "base64";
 export type Decompression = "none" | "gzip" | "lz4" | "zstd" | "snappy";
 export type Compression = "none" | "gzip" | "lz4" | "zstd" | "snappy";
 
+/** 投递确认级别（Lane 2）：all（默认）| 1（仅 leader）；acks=0 后端不支持（同步 produce）。 */
+export type ProduceAcks = "all" | "1";
+
 export interface KafkaMessage {
   topic: string;
   partition: number;
@@ -244,6 +247,13 @@ export interface KafkaConnectionStatus {
   kerberos?: { enabled: boolean };
   /** 连接元数据来源（ZK 模式 = zookeeper）。 */
   connectionSource?: string;
+  /** 粘贴 properties 导入摘要（Lane 3；仅计数+键名，值不透出；旧 sidecar 缺省 = 未使用导入）。 */
+  propertiesImport?: {
+    mapped: number;
+    mappedKeys?: string[];
+    ignored: number;
+    ignoredKeys?: string[];
+  };
 }
 
 // -- Schema Registry（Phase 2 冻结契约，方法与形状见任务书） -------------------------
@@ -454,6 +464,10 @@ export const kafkaApi = {
     count?: number;
     compression?: Compression;
     schema?: SchemaAttach;
+    /** 投递确认级别（缺省 all）。 */
+    acks?: ProduceAcks;
+    /** 幂等生产开关（缺省 true = franz-go 默认幂等开；false 关闭）。 */
+    enableIdempotence?: boolean;
   }) {
     return callKafka<ProduceResult>("kafka/messages/produce", params);
   },
@@ -550,10 +564,12 @@ export const kafkaApi = {
       registry ? { ...base, registry } : base,
     );
   },
-  schemaRegister(subject: string, format: SchemaFormat, schema: string, registry?: SchemaRegistryProvider) {
+  schemaRegister(subject: string, format: SchemaFormat, schema: string, registry?: SchemaRegistryProvider, normalize?: boolean) {
+    const base: Record<string, unknown> = { subject, format, schema };
+    if (normalize) base.normalize = true;
     return callKafka<SchemaRegisterResult>(
       "kafka/schema/register",
-      registry ? { subject, format, schema, registry } : { subject, format, schema },
+      registry ? { ...base, registry } : base,
     );
   },
   schemaDelete(subject: string, registry?: SchemaRegistryProvider) {

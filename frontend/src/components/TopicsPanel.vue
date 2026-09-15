@@ -23,7 +23,8 @@ import {
   type TopicOffsetVm,
   type TopicVm,
 } from "../lib/kafkaColumns";
-import { offsetTimeToParam, parseHeadersJson, sortTopics } from "../lib/kafkaModel";
+import { offsetTimeToParam, parseHeadersJson, sortTopicsPinned } from "../lib/kafkaModel";
+import { isFavoriteTopic, toggleTopicFavorite, topicFavorites } from "../lib/topicFavorites";
 import { friendlyKafkaError } from "../lib/kafkaErrors";
 import { useModalBehavior } from "../lib/modalBehavior";
 import { t } from "../lib/i18n";
@@ -71,10 +72,15 @@ type OffsetTimeMode = "earliest" | "latest" | "max-timestamp" | "log-start" | "c
 const offsetTimeMode = ref<OffsetTimeMode>("latest");
 const offsetCustomTime = ref("");
 
-// P2-3：与侧栏 TopicTree 同源排序（sortTopics：internal 沉底 + 业务评分），
-// 修复管理表默认顺序与侧栏树不一致。
-const topicGridRows = computed(() => toTopicRows(sortTopics(props.topics)));
-const topicGridCols = computed(() => topicColumns() as ColDef<TopicVm>[]);
+// P2-3：与侧栏 TopicTree 同源排序（sortTopicsPinned：internal 沉底 + 业务评分
+// + Lane4 收藏置顶），修复管理表默认顺序与侧栏树不一致。
+// 两个 computed 都读 topicFavorites()（模块级响应式收藏集）：收藏切换即重建
+// 行序与星标列（DbxAgGrid 以 setGridOption 批量应用 columnDefs/rowData）。
+const topicGridRows = computed(() => toTopicRows(sortTopicsPinned(props.topics, topicFavorites())));
+const topicGridCols = computed(() => {
+  topicFavorites();
+  return topicColumns({ onToggleFavorite: (row) => toggleTopicFavorite(row.name), isFavorite: (row) => isFavoriteTopic(row.name) }) as ColDef<TopicVm>[];
+});
 const partitionGridRows = computed(() => toPartitionRows(partitions.value));
 const partitionGridCols = computed(() => partitionColumns() as ColDef<PartitionVm>[]);
 const offsetGridRows = computed(() => toTopicOffsetRows(offsetRows.value));

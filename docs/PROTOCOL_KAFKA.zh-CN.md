@@ -213,6 +213,12 @@ msk_session_token、oauth_static_token）。
   （二进制 key 保真，与 `key` 二选一）、`headers?:map<string,string>`、
   `partition?:int`、`count?:int`（批量条数，≤1000，默认 1）、
   `compression?:"gzip"|"lz4"|"zstd"|"snappy"`、
+  `acks?:"all"|"1"`（投递确认级别，缺省 `all`；`1` = 仅 leader 确认。
+  **`0` 不支持**：生产为同步 ProduceSync 语义，客户端 promise 依赖 broker
+  响应，acks=0 会拖到请求超时才失败 → 传 `0`/`none` 返回 `-32602`）、
+  `enableIdempotence?:bool`（幂等生产 / Kafka 服务端去重，缺省 `true` =
+  客户端默认幂等开；`false` 显式关闭。`acks=1` 必须配合
+  `enableIdempotence=false`，否则 `-32602`）、
   `schema?:{subject, version?:int, format?:"avro"|"json"|"protobuf"}`（Phase 2
   avro/json；Phase 3 增 protobuf）。
 - **schema 挂载语义**（Phase 2）：提供 `schema` 时 `value`/`valueBase64`
@@ -222,9 +228,16 @@ msk_session_token、oauth_static_token）。
   （protojson → 动态消息），并打包 Confluent wire format
   （magic byte 0 + 4 字节大端 schemaID + 载荷）后生产。SR 未配置（sr_url
   空）或元数据不存在 → `-32000`。
+  **PROTOBUF wire framing**：schemaID 与 protobuf 载荷之间还有 Confluent
+  message index 数组段——目标 message 的声明序号路径（顶层序号 → 逐级嵌套
+  序号）各以一个 varint 紧密拼接，无长度前缀（单顶层 message = 单字节
+  `0x00`）；message 消歧沿用 subject 约定（剥 `-key`/`-value` 后缀取尾段
+  PascalCase 唯一命中，否则报错列出候选）。AVRO/JSON 无此段；消费侧对
+  早期版本漏写该段的历史记录自动回退按原始载荷解码。
 - 返回：`{partition:int, offset:int, timestamp:int}`（首条消息定位；
   count>1 时为末条 offset）。
-- 错误：read_only → `-32000`（blocked）；count 超限 → `-32602`；
+- 错误：read_only → `-32000`（blocked）；count 超限 / acks 取值非法 /
+  acks=1 与幂等冲突 → `-32602`；
   topic 不存在且未自动创建 → `-32000`；审计。
 
 **`kafka/messages/consume`**
@@ -234,7 +247,8 @@ msk_session_token、oauth_static_token）。
   解包（魔数字节 0 + schemaID），解析 SR 元数据（指定 `subject` 时按
   subject+version 取，否则按 schemaID 反查 `/schemas/ids/<id>`），把载荷
   解码为 JSON 文本（Avro 二进制 → JSON；JSON 透传校验；PROTOBUF →
-  动态消息 → protojson 渲染，Phase 3）。命中消息附加
+  剥 message index 段 → 动态消息 → protojson 渲染，Phase 3；对早期版本
+  漏写 index 段的历史记录自动回退按原始载荷解码）。命中消息附加
   `schemaId`、`schemaSubject`、`schemaVersion` 字段；解码失败**不中断
   消费**，置 `decodeError`。元数据按 schemaID / subject+version 在本次
   消费（或流式会话）内缓存，同 ID 只请求一次 SR。
@@ -377,11 +391,18 @@ Registry 管理面（Phase 3，见文末 **Phase 3（AWS Glue）** 小节）。�
 
 **`kafka/schema/register`**（写，过 read_only；非 allow_delete 级）
 
-- 请求：`subject:string`、`format:string`、`schema:string`、
-  `references?`。幂等：SR 对重复 schema 返回既有 id。
-- 返回：`{id:int, version:int}`（version 为注册后 latest；回读失败时为 0）。
+- 请求：`subject:string`、`format:string`、`schema:string`、`references?`、
+  `normalize?:bool`（缺省 `false`；`true` 时以
+  `POST /subjects/{subject}/versions?normalize=true` 注册，由 SR 归一化
+  存储文本——仅 confluent 后端支持）。幂等：SR 对重复 schema 返回既有
+  id。create/update 同一方法：为新 subject 注册即建第一版，为已有
+  subject 注册即追加新版本（前端"克隆"= 用选中版本内容预填注册表单，
+  无独立后端方法）。
+- 返回：`{id:int, version:int, versionId?:string}`（version 为注册后
+  latest；回读失败时为 0；`versionId` 仅 glue 后端填充）。
 - 错误：read_only → `-32000`（blocked）；SR 拒绝（schema 无效/
-  兼容性不过）→ `-32000`；审计。
+  兼容性不过）→ `-32000`；glue 后端 + `normalize=true` → `-32000`
+  （明确不支持报错，不静默忽略）；审计。
 
 **`kafka/schema/delete`**（critical：过 allow_delete + read_only）
 
@@ -440,6 +461,8 @@ DeleteSchemaVersions / DeleteSchema）：
   版本；请求可选 `compatibility` 指定初始级别，缺省 `NONE`；`references`
   为 Confluent 概念、Glue 忽略）；存在 → RegisterSchemaVersion（幂等：
   Glue 对重复定义返回既有版本）。返回 `{id:0, version, versionId}`。
+  `normalize=true` → `-32000`（Glue 无归一化语义，明确报错不静默忽略，
+  且不发起任何 Glue 调用）。
 - **delete/version** = DeleteSchemaVersions（单版本区间）；返回
   `{deletedVersions:[version]}`（SDK 未建模被删版本号清单，按错误清单折算，
   Glue 报版本删除错误 → `-32000` 透传）。**delete**（subject 整删）=
@@ -658,6 +681,7 @@ sidecar 兜底校验）。SR 后端由新增决策字段 **`schema_registry`**�
 | msk_secret_access_key | password | **secret** | — | oauth_token_source ∈ [msk_iam] | 显式凭据 SK（与 AK 成对；凭据红线：secret binding） |
 | msk_session_token | password | **secret** | — | oauth_token_source ∈ [msk_iam] | 可选 STS 会话令牌 |
 | oauth_static_token | password | **secret** | — | oauth_token_source ∈ [static_token] | 静态 bearer token；required_when 见矩阵（凭据红线：secret binding） |
+| **properties_import** | textarea | **secret** | — | —（常显，恒可选） | **粘贴 properties 导入**（Lane 3）：Kafka 客户端 properties 片段直贴对话框；语义见 §9.3 |
 
 ### 9.1 required_when 矩阵（agent I，与 sidecar 兜底校验一一对应）
 
@@ -705,3 +729,43 @@ SR provider 解析以 `schema_registry` 开关为准（`resolveSchemaProvider`�
 - **降级注意**：宿主 <1.1 不识别两条件时按 optional 降级（全部字段平铺、
   无前端必填拦截），此时 sidecar 兜底校验仍保证必填组合不缺（规则 3
   "宿主 1.1 特性 optional 降级"的落地形态）。
+
+### 9.3 粘贴 properties 导入（Lane 3，properties_import）
+
+对标 Confluent 插件「粘贴即连」：用户把 Kafka 客户端 properties 片段直接
+粘进连接对话框的 `properties_import` 字段，保存/测试时 sidecar 解析并合并
+进结构化连接字段。
+
+- **凭据红线**：字段 binding 为 **secret**——粘贴文本（可能内嵌
+  jaas/basic.auth 密码）经宿主 secret binding 加密存储、仅在
+  connection/connect|test 时经 `connection_secrets.properties_import` 下发
+  明文到 sidecar，插件不持久化、不进日志/审计。**config 通道中的同名键
+  一律不消费**（防非对话框写路径明文持久化，`props_test.go` 有回归）。
+- **解析语法**（`backend/internal/kafkaconn/props.go`，java.util.Properties
+  语义子集）：`#`/`!` 注释行；第一个未转义 `=` / `:` / 空白为分隔符；
+  行尾奇数反斜杠续行（续行前导空白跳过）；`\t \n \r \f \\ \uXXXX` 转义
+  （非法 `\u` 保守保留原文）；重复键后者覆盖；空值键跳过不覆盖表单值。
+- **映射表**（paste-wins：粘贴非空值覆盖表单值；取值面外的值整键忽略）：
+  `bootstrap.servers`→bootstrap_servers；`security.protocol`→security_protocol；
+  `sasl.mechanism`→sasl_mechanism；`sasl.jaas.config`→按机制提取
+  （PLAIN/SCRAM→sasl_username + sasl_password(secret)；GSSAPI→principal/
+  keyTab；OAUTHBEARER 无映射目标，token 须走表单 oauth_token_source）；
+  `sasl.kerberos.service.name`→kerberos_service_name；
+  `ssl.endpoint.identification.algorithm`（none→tls_insecure_skip_verify）；
+  `ssl.truststore.certificates`→tls_ca_cert；`ssl.keystore.certificate.chain`→
+  tls_client_cert；`ssl.keystore.key`→tls_client_key(secret)；
+  `schema.registry.url`→sr_url + schema_registry=confluent；
+  `basic.auth.credentials.source`（仅 USER_INFO 支持）+
+  `basic.auth.user.info` / `schema.registry.basic.auth.user.info`→
+  sr_username + sr_password(secret)；`client.id`→client_id。
+  **Java keystore 路径类键**（`ssl.truststore.location/password`、
+  `ssl.keystore.location/password`、`ssl.key.password` 等）没有对应字段
+  （TLS 走 PEM 内联模型），进忽略清单。
+- **合并时机**：发生在 `NormalizeProfile`/`Validate`/
+  `validateRequiredCombination` 之前——粘贴驱动的 SASL_SSL + jaas 凭据
+  组合直接通过 required_when 兜底校验；半粘贴（缺凭据等）仍按矩阵报
+  `-32602`。
+- **解析摘要**：`kafka/connections/statuses` 每连接新增可选
+  `propertiesImport: {mapped, mappedKeys?, ignored, ignoredKeys?}`（仅计数
+  与键名，值一律不透出）；未使用导入时省略。工作台连接面板对当前连接
+  展示「已映射 N 项 / 已忽略 M 项」。

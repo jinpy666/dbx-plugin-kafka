@@ -1,12 +1,16 @@
 <script setup lang="ts">
 // 左栏 topic 树：业务 topic 按评分排序、internal（_ 前缀 / 后端标记）沉底，
 // 过滤框本地过滤，选中态由父级持有（selectedTopic 单一来源）。
-// 侧栏收空间：右缘 resizer 拖拽调宽（180–480px，localStorage 记忆，双击重置）、
-// 折叠成 40px 竖条（折叠时不渲染树内容），过滤框 / 快捷键聚焦 + 匹配/总数徽章。
+// Lane4 打磨：internal 显隐开关（默认显示；隐藏仅过滤展示，不动数据请求）+
+// topic 收藏星标（置顶排序，收藏态见 lib/topicFavorites：仅前端 localStorage
+// best-effort，不落插件 store）。侧栏收空间：右缘 resizer 拖拽调宽
+// （180–480px，localStorage 记忆，双击重置）、折叠成 40px 竖条（折叠时不渲染
+// 树内容），过滤框 / 快捷键聚焦 + 匹配/总数徽章。
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
-import { ChevronsLeft, ChevronsRight, HardDrive, RefreshCw, Search, X } from "@lucide/vue";
+import { ChevronsLeft, ChevronsRight, Eye, EyeOff, HardDrive, RefreshCw, Search, Star, X } from "@lucide/vue";
 import type { KafkaTopic } from "../lib/api";
-import { filterTopics, sortTopics } from "../lib/kafkaModel";
+import { filterTopics, sortTopicsPinned } from "../lib/kafkaModel";
+import { isFavoriteTopic, toggleTopicFavorite, topicFavorites } from "../lib/topicFavorites";
 import { friendlyKafkaError } from "../lib/kafkaErrors";
 import { t } from "../lib/i18n";
 
@@ -100,7 +104,39 @@ function onResizeReset() {
 const keyword = ref("");
 const filterInput = ref<HTMLInputElement | null>(null);
 
-const visible = computed(() => filterTopics(sortTopics(props.topics), keyword.value));
+// Lane4：internal 显隐开关（默认显示，localStorage 记忆与侧栏宽度同款降级）。
+// 隐藏只过滤展示层（visible computed），不动 topics 数据请求与总数徽章。
+const SHOW_INTERNAL_KEY = "dbx.kafka.ui.showInternal";
+
+function readStoredShowInternal(): boolean {
+  try {
+    return localStorage.getItem(SHOW_INTERNAL_KEY) !== "0";
+  } catch {
+    return true;
+  }
+}
+
+const showInternal = ref(readStoredShowInternal());
+
+function toggleInternal() {
+  showInternal.value = !showInternal.value;
+  persist(SHOW_INTERNAL_KEY, showInternal.value ? "1" : "0");
+}
+
+// 收藏置顶（排序见 kafkaModel.sortTopicsPinned；收藏态为模块级共享状态）。
+const favorites = computed(() => topicFavorites());
+
+function isFav(name: string): boolean {
+  return isFavoriteTopic(name);
+}
+
+function toggleStar(name: string) {
+  toggleTopicFavorite(name);
+}
+
+const visible = computed(() =>
+  filterTopics(sortTopicsPinned(props.topics, favorites.value), keyword.value).filter((topic) => showInternal.value || !isInternal(topic)),
+);
 
 // P2-18：树错误区与 App 错误横幅同源——friendlyKafkaError 友好化正文，
 // 未覆盖/与原文不同时把原始串留在 title 悬停里供排查。
@@ -237,6 +273,18 @@ onBeforeUnmount(() => window.removeEventListener("keydown", onGlobalKeydown));
           <span class="badge tree-count">{{ t("messages.uiTreeFilterCount", { matched: visible.length, total: props.topics.length }) }}</span>
         </span>
         <span class="actions">
+          <!-- Lane4：internal 显隐开关（Eye=显示中 / EyeOff=已隐藏；aria-pressed=隐藏态） -->
+          <button
+            class="icon-button"
+            :title="t('polish.internalToggle')"
+            :aria-label="t('polish.internalToggle')"
+            :aria-pressed="!showInternal"
+            data-testid="internal-toggle"
+            @click="toggleInternal"
+          >
+            <Eye v-if="showInternal" />
+            <EyeOff v-else />
+          </button>
           <button class="icon-button" :disabled="loading" :title="t('refresh')" @click="emit('refresh')">
             <RefreshCw :class="{ spinning: loading }" />
           </button>
@@ -284,6 +332,20 @@ onBeforeUnmount(() => window.removeEventListener("keydown", onGlobalKeydown));
             <span class="tree-label">
               <HardDrive aria-hidden="true" class="icon-13" :class="isInternal(topic) ? 'icon-neutral' : 'icon-violet'" />
               <span class="tree-name mono">{{ topic.name }}</span>
+            </span>
+            <!-- Lane4：收藏星标（span role=button + tabindex=-1：树保持单 tab stop
+                 键盘模型；@click.stop 防止触发行选中；实心=已收藏） -->
+            <span
+              class="tree-star"
+              :class="{ 'is-fav': isFav(topic.name) }"
+              role="button"
+              tabindex="-1"
+              :aria-label="t(isFav(topic.name) ? 'polish.favoriteRemove' : 'polish.favoriteAdd')"
+              :title="t(isFav(topic.name) ? 'polish.favoriteRemove' : 'polish.favoriteAdd')"
+              :data-testid="`star-${topic.name}`"
+              @click.stop="toggleStar(topic.name)"
+            >
+              <Star aria-hidden="true" />
             </span>
             <!-- F6-5：不健康红点（title = N 个分区不健康），无额外请求 -->
             <span

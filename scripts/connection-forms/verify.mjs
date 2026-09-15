@@ -179,6 +179,8 @@ for (const connection_source of options("connection_source")) {
               current.visible("client_id", true);
               current.visible("read_only", true);
               current.visible("allow_delete", read_only === false);
+              current.visible("properties_import", true);
+              current.required("properties_import", false);
             }
           }
         }
@@ -189,4 +191,19 @@ for (const connection_source of options("connection_source")) {
 
 assert.equal(byKey.allow_delete.type, "boolean");
 assert.equal(byKey.tls_insecure_skip_verify.type, "boolean");
+
+// Lane 3（conn-properties）：粘贴 properties 导入字段契约 —— textarea +
+// secret binding（粘贴文本中的密码经宿主加密存储，绝不明文持久化）、
+// 无条件常显、恒可选（不参与 required_when 矩阵）。
+const propsImport = byKey.properties_import;
+assert(propsImport, "properties_import field missing");
+assert.equal(propsImport.type, "textarea", "properties_import must be a textarea");
+assert.equal(propsImport.binding, "secret", "properties_import must be secret-bound (pasted passwords are never persisted in plain text)");
+assert.equal(propsImport.visible_when, undefined, "properties_import must be always visible");
+assert.equal(propsImport.required_when, undefined, "properties_import must be optional");
+for (const locale of locales) {
+  const localized = manifest.localizations[locale]?.contributions?.[provider.id]?.fields?.properties_import;
+  assert(localized?.description?.trim(), `${locale}/properties_import: missing description`);
+}
+console.log("PASS Kafka properties-import field: textarea + secret binding, unconditional and optional, seven-language labels");
 console.log(`PASS Kafka connection form: ${scenarios} combinations; field ordering and seven-language labels/options`);

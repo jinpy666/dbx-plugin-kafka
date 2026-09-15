@@ -337,6 +337,17 @@ export function filterTopics<T extends TopicSortItem>(topics: T[], keyword: stri
   return topics.filter((topic) => topic.name.toLowerCase().includes(needle));
 }
 
+/**
+ * 收藏置顶排序（Lane4 前端打磨）：先按 sortTopics 排（业务评分 + internal
+ * 沉底不变），再把收藏项稳定提前。收藏项内部保持同一相对顺序；internal topic
+ * 被收藏时同样置顶（用户显式收藏优先于 internal 沉底）。返回新数组，不改入参。
+ */
+export function sortTopicsPinned<T extends TopicSortItem>(topics: T[], pinnedNames: ReadonlySet<string>): T[] {
+  const sorted = sortTopics(topics);
+  if (pinnedNames.size === 0) return sorted;
+  return [...sorted.filter((topic) => pinnedNames.has(topic.name)), ...sorted.filter((topic) => !pinnedNames.has(topic.name))];
+}
+
 // -- lag aggregation ------------------------------------------------------------
 
 export interface LagRow {
@@ -357,15 +368,19 @@ function csvEscape(value: string): string {
 
 const CSV_COLUMNS = ["topic", "partition", "offset", "timestamp", "key", "value", "headers"] as const;
 
+/** headers 列文本（CSV/TSV 共用）：k=v;… 连接，空 headers 返回空串。 */
+function exportHeadersText(message: KafkaMessage): string {
+  return message.headers && Object.keys(message.headers).length > 0
+    ? Object.entries(message.headers)
+        .map(([key, value]) => `${key}=${value}`)
+        .join("; ")
+    : "";
+}
+
 /** 消息数组 → CSV 文本（RFC 4180 转义；headers 序列化为 k=v;… JSON 兜底）。 */
 export function serializeMessagesToCsv(messages: KafkaMessage[]): string {
   const lines = [CSV_COLUMNS.join(",")];
   for (const message of messages) {
-    const headers = message.headers && Object.keys(message.headers).length > 0
-      ? Object.entries(message.headers)
-          .map(([key, value]) => `${key}=${value}`)
-          .join("; ")
-      : "";
     lines.push(
       [
         message.topic,
@@ -374,10 +389,37 @@ export function serializeMessagesToCsv(messages: KafkaMessage[]): string {
         String(message.timestamp),
         message.key ?? "",
         messageFullValueText(message),
-        headers,
+        exportHeadersText(message),
       ]
         .map(csvEscape)
         .join(","),
+    );
+  }
+  return lines.join("\r\n");
+}
+
+// TSV 转义与 CSV 不同：无引号包裹机制，字段内的分隔符（制表符）与换行必须
+// 转义才能保列/行结构；反斜杠先转义避免歧义（对齐 Hive/MySQL LOAD DATA 约定）。
+function tsvEscape(value: string): string {
+  return value.replace(/\\/g, "\\\\").replace(/\t/g, "\\t").replace(/\n/g, "\\n").replace(/\r/g, "\\r");
+}
+
+/** 消息数组 → TSV 文本（列序与 CSV 一致；转义见 tsvEscape，行分隔同为 CRLF）。 */
+export function serializeMessagesToTsv(messages: KafkaMessage[]): string {
+  const lines = [CSV_COLUMNS.join("\t")];
+  for (const message of messages) {
+    lines.push(
+      [
+        message.topic,
+        String(message.partition),
+        String(message.offset),
+        String(message.timestamp),
+        message.key ?? "",
+        messageFullValueText(message),
+        exportHeadersText(message),
+      ]
+        .map(tsvEscape)
+        .join("\t"),
     );
   }
   return lines.join("\r\n");

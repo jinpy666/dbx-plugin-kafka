@@ -24,7 +24,8 @@ type fakeRegistry struct {
 	subjects      map[string]map[int64]SchemaMeta // subject -> version -> meta
 	compatGlobal  string
 	compatSubject map[string]string
-	byIDHits      int // /schemas/ids/<id> 命中计数（缓存测试）
+	byIDHits      int    // /schemas/ids/<id> 命中计数（缓存测试）
+	lastNormalize string // 最近一次 register POST 的 normalize 查询参数（"" = 未携带）
 }
 
 func newFakeRegistry() *fakeRegistry {
@@ -150,6 +151,7 @@ func (f *fakeRegistry) handler(w http.ResponseWriter, r *http.Request) {
 			writeJSON(versions)
 			return
 		case len(parts) == 3 && parts[2] == "versions" && r.Method == http.MethodPost:
+			f.lastNormalize = r.URL.Query().Get("normalize")
 			var body struct {
 				Schema     string `json:"schema"`
 				SchemaType string `json:"schemaType"`
@@ -384,6 +386,40 @@ func TestSchemaServiceRESTFlow(t *testing.T) {
 	}
 	if len(deleted.DeletedVersions) == 0 {
 		t.Errorf("deleted subject = %+v", deleted)
+	}
+}
+
+// register 的 normalize 可选参数：缺省/false 不携带查询参数；true 以
+// POST /subjects/{subject}/versions?normalize=true 注册（SR 侧归一化文本）。
+func TestSchemaRegisterNormalizeParam(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		normalize bool
+		wantQuery string
+	}{
+		{name: "omitted", normalize: false, wantQuery: ""},
+		{name: "explicit_false", normalize: false, wantQuery: ""},
+		{name: "true", normalize: true, wantQuery: "true"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			service, registry := newSchemaTestService(t)
+			registered, err := service.RegisterSchema(context.Background(), SchemaRegisterRequest{
+				ConnectionID: "sr-rw", Subject: "s-value", Format: "avro", Schema: testAvroSchema,
+				Normalize: tc.normalize,
+			})
+			if err != nil {
+				t.Fatalf("RegisterSchema() error = %v", err)
+			}
+			if registered.ID == 0 || registered.Version != 1 {
+				t.Errorf("RegisterSchema() = %+v", registered)
+			}
+			registry.mu.Lock()
+			got := registry.lastNormalize
+			registry.mu.Unlock()
+			if got != tc.wantQuery {
+				t.Errorf("normalize query = %q, want %q", got, tc.wantQuery)
+			}
+		})
 	}
 }
 
