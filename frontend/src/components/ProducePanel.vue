@@ -8,14 +8,19 @@
 // 发送结果渲染为醒目成功条。不写死 inline style，尺寸走 DBX 令牌与 class。
 // Phase 3 F4：Flow 测试数据生成组（mode manual|flow）——零后端改动，复用
 // produce + schema 挂载（version 缺省 = latest）；schema_random 按 subject
-// 前缀发现取 latest schema 生成（仅 AVRO；PROTOBUF/JSON Schema → 行内提示改用
-// template），template 走占位符展开；自动停止：read_only / 校验失败 / 连续失败
-// ≥3。生成器与占位符纯函数在 lib/kafkaModel（固定向量 spec）。
+// 前缀发现取 latest schema 生成（生成器仅 AVRO——PROTOBUF/JSON Schema subject
+// → 行内提示改用 template；手动挂载区 avro/json/protobuf 三格式均可用，后端
+// encodeForProduce 对 PROTOBUF 补 Confluent message index 段）；template 走
+// 占位符展开；自动停止：read_only / 校验失败 / 连续失败≥3 / 条数上限 / 时长
+// 上限（Lane 2）。生成器与占位符纯函数在 lib/kafkaModel（固定向量 spec）。
+// Lane 2 投递参数：acks（all 默认 | 1）+ 幂等生产开关（默认开）——与后端
+// franz-go 能力对齐（acks=0 不做：同步 ProduceSync 依赖 broker 响应）；
+// 仅在偏离默认时随请求携带（acks!=="all" / enableIdempotence=false）。
 // Phase 3 F6-4：头部显示所选 topic 分区数，partition 超界行内校验。
 import { computed, onBeforeUnmount, ref, watch } from "vue";
 import { CircleCheck, Play, Send, Square } from "@lucide/vue";
 import CodeEditor from "./CodeEditor.vue";
-import { kafkaApi, type Compression, type ProduceResult, type SchemaAttach, type SchemaFormat, type SchemaSubject } from "../lib/api";
+import { kafkaApi, type Compression, type ProduceAcks, type ProduceResult, type SchemaAttach, type SchemaFormat, type SchemaSubject } from "../lib/api";
 import {
   clampFlowCount,
   clampFlowIntervalMs,
@@ -49,6 +54,10 @@ const headersText = ref("");
 const partitionText = ref("");
 const count = ref("1");
 const compression = ref<Compression>("none");
+// Lane 2 投递参数：acks（all=默认）+ 幂等生产（默认开 = 后端 franz-go 默认，
+// 仅在关闭时显式传 enableIdempotence=false；后端校验 acks=1 必须关幂等）。
+const acks = ref<ProduceAcks>("all");
+const idempotence = ref(true);
 const sending = ref(false);
 const lastResult = ref<ProduceResult | null>(null);
 const localError = ref("");
@@ -187,6 +196,8 @@ async function send() {
       ...(partition !== undefined ? { partition } : {}),
       count: positiveInt(count.value, 1000, 1),
       ...(compression.value !== "none" ? { compression: compression.value } : {}),
+      ...(acks.value !== "all" ? { acks: acks.value } : {}),
+      ...(!idempotence.value ? { enableIdempotence: false } : {}),
       ...(schema ? { schema } : {}),
     });
     emit(
@@ -218,9 +229,23 @@ const flowSent = ref(0);
 const flowLastValue = ref("");
 const flowHint = ref("");
 const flowStopping = ref(false);
+// Lane 2 停止条件：总条数 / 总时长上限（0 = 不限），对标投递器 stop 条件；
+// 纯前端 flow 循环语义（flow 逐条 produce），不进 produce 请求。
+const flowMaxRecordsText = ref("0");
+const flowMaxDurationText = ref("0");
 
 const flowCount = computed(() => clampFlowCount(flowCountText.value));
 const flowIntervalMs = computed(() => clampFlowIntervalMs(flowIntervalText.value));
+const flowMaxRecords = computed(() => nonNegativeInt(flowMaxRecordsText.value, 100000));
+const flowMaxDurationMs = computed(() => nonNegativeInt(flowMaxDurationText.value, 86_400_000));
+let flowStartedAt = 0;
+
+/** 非负整数归一（非法/负数 → 0；超出上限截断）——flow 停止条件 0=不限。 */
+function nonNegativeInt(value_: unknown, max: number): number {
+  const parsed = Number.parseInt(String(value_ ?? "").trim(), 10);
+  if (!Number.isFinite(parsed) || parsed <= 0) return 0;
+  return Math.min(parsed, max);
+}
 // F6-4：partition 行内校验文本（空输入 = 自动分区合法）。
 const partitionIssueText = computed(() => {
   const issue = partitionInputIssue(String(partitionText.value ?? ""), props.partitionCount);
@@ -309,7 +334,7 @@ async function preflightFlow(): Promise<{ schemaText: string | null; attachSubje
   return { schemaText, attachSubject: subjectName };
 }
 
-function stopFlow(reason?: "manual" | "failures" | "readonly") {
+function stopFlow(reason?: "manual" | "failures" | "readonly" | "records" | "duration") {
   if (flowTimer) {
     window.clearInterval(flowTimer);
     flowTimer = 0;
@@ -318,6 +343,8 @@ function stopFlow(reason?: "manual" | "failures" | "readonly") {
   flowRunning.value = false;
   if (reason === "failures") flowHint.value = t("produce.flowAutoStoppedFailures");
   else if (reason === "readonly") flowHint.value = t("produce.readOnlyHint");
+  else if (reason === "records") flowHint.value = t("produceAdv.flowAutoStoppedRecords");
+  else if (reason === "duration") flowHint.value = t("produceAdv.flowAutoStoppedDuration");
 }
 
 /** 单 tick：生成 countPerSend 条并逐条 produce（count=1，逐条独立生成数据）。 */
@@ -331,6 +358,11 @@ async function runFlowTick(schemaText: string | null, schemaAttach?: SchemaAttac
   }
   for (let index = 0; index < flowCount.value; index += 1) {
     if (!flowRunning.value) return;
+    // 时长停止条件在每条发送前兜底检查（tick 间隔下保持精度）。
+    if (flowMaxDurationMs.value > 0 && Date.now() - flowStartedAt >= flowMaxDurationMs.value) {
+      stopFlow("duration");
+      return;
+    }
     let value: string;
     try {
       value = generateFlowValue(flowSource.value, schemaText);
@@ -347,11 +379,22 @@ async function runFlowTick(schemaText: string | null, schemaAttach?: SchemaAttac
         ...(Object.keys(headers.headers).length > 0 ? { headers: headers.headers } : {}),
         ...(partitionForFlow() !== undefined ? { partition: partitionForFlow() } : {}),
         ...(compression.value !== "none" ? { compression: compression.value } : {}),
+        ...(acks.value !== "all" ? { acks: acks.value } : {}),
+        ...(!idempotence.value ? { enableIdempotence: false } : {}),
         ...(schemaAttach ? { schema: schemaAttach } : {}),
       });
       flowSent.value += 1;
       flowFailures = 0;
       flowLastValue.value = value.length > 200 ? `${value.slice(0, 200)}…` : value;
+      // 停止条件：总条数 / 总时长（任一命中即停，条数优先）。
+      if (flowMaxRecords.value > 0 && flowSent.value >= flowMaxRecords.value) {
+        stopFlow("records");
+        return;
+      }
+      if (flowMaxDurationMs.value > 0 && Date.now() - flowStartedAt >= flowMaxDurationMs.value) {
+        stopFlow("duration");
+        return;
+      }
     } catch (cause) {
       flowFailures += 1;
       emit("error", cause instanceof Error ? cause.message : String(cause));
@@ -373,6 +416,7 @@ async function startFlow() {
   flowSent.value = 0;
   flowLastValue.value = "";
   flowFailures = 0;
+  flowStartedAt = Date.now();
   flowRunning.value = true;
   const schemaAttach: SchemaAttach | undefined =
     flowSource.value === "schema_random" && preflight.attachSubject
@@ -485,6 +529,20 @@ onBeforeUnmount(() => stopFlow());
             <option value="snappy">snappy</option>
           </select>
         </label>
+        <label class="field">
+          <span>{{ t("produceAdv.acks") }}</span>
+          <select v-model="acks" :disabled="disabled" data-testid="produce-acks">
+            <option value="all">all</option>
+            <option value="1">1 (leader)</option>
+          </select>
+        </label>
+        <div class="field produce-schema-field">
+          <label class="checkbox">
+            <input v-model="idempotence" type="checkbox" :disabled="disabled" data-testid="produce-idempotence" />
+            <span>{{ t("produceAdv.idempotence") }}</span>
+          </label>
+          <p class="hint">{{ t("produceAdv.idempotenceHint") }}</p>
+        </div>
         <div class="field produce-schema-field">
           <label class="checkbox">
             <input type="checkbox" :checked="schemaEnabled" :disabled="disabled || glueSchemaDisabled" @change="toggleSchema" />
@@ -553,6 +611,14 @@ onBeforeUnmount(() => stopFlow());
           <label class="field">
             <span>{{ t("produce.flowIntervalMs") }}</span>
             <input v-model="flowIntervalText" type="number" min="250" max="10000" step="50" :disabled="disabled || flowRunning" />
+          </label>
+          <label class="field">
+            <span>{{ t("produceAdv.flowMaxRecords") }}</span>
+            <input v-model="flowMaxRecordsText" type="number" min="0" max="100000" :disabled="disabled || flowRunning" data-testid="flow-max-records" />
+          </label>
+          <label class="field">
+            <span>{{ t("produceAdv.flowMaxDurationMs") }}</span>
+            <input v-model="flowMaxDurationText" type="number" min="0" step="1000" :disabled="disabled || flowRunning" data-testid="flow-max-duration" />
           </label>
         </div>
         <div v-if="flowOn && flowSource === 'template'" class="produce-editor-block">

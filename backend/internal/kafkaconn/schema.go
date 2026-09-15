@@ -1118,17 +1118,22 @@ func encodeProtobufPayload(text []byte, fdsetB64, subject string) ([]byte, error
 }
 
 // resolveProtobufMessage 从 base64(FileDescriptorSet) + subject 约定选出目标
-// message 描述符（消歧按序三分支，§12.2.2）：
-//  1. FDSet 恰含 1 个 message → 用之；
-//  2. subject 约定匹配：剥 "-key"/"-value" 后缀取尾段，PascalCase 后唯一
-//     命中 message 全名尾段 → 用之；
-//  3. 仍无法唯一 → 报错并列出候选全名（进 decodeError，不中断消费）。
+// message 描述符。
 func resolveProtobufMessage(fdsetB64, subject string) (protoreflect.MessageDescriptor, error) {
 	files, err := protobufFilesFromSchema(fdsetB64)
 	if err != nil {
 		return nil, err
 	}
-	messages := collectProtobufMessages(files)
+	return selectProtobufMessage(collectProtobufMessages(files), subject)
+}
+
+// selectProtobufMessage 从收集的 message 描述符按 subject 约定选出目标
+// message（消歧按序三分支，§12.2.2）：
+//  1. FDSet 恰含 1 个 message → 用之；
+//  2. subject 约定匹配：剥 "-key"/"-value" 后缀取尾段，PascalCase 后唯一
+//     命中 message 全名尾段 → 用之；
+//  3. 仍无法唯一 → 报错并列出候选全名（进 decodeError，不中断消费）。
+func selectProtobufMessage(messages []protoreflect.MessageDescriptor, subject string) (protoreflect.MessageDescriptor, error) {
 	if len(messages) == 0 {
 		return nil, errf("protobuf FileDescriptorSet contains no message")
 	}
@@ -1389,7 +1394,26 @@ func (d *schemaDecoder) decode(ctx context.Context, value []byte) ([]byte, schem
 	} else {
 		format = normalizeConfluentSchemaType(meta.SchemaType)
 	}
-	decoded, err := decodeSchemaPayload(payload, meta.Schema, format, meta.Subject)
+	// PROTOBUF：Confluent wire format 在 schemaID 与载荷之间还有 message
+	// index 数组段，按深度剥离后再解码（AVRO/JSON 原样传）。
+	wirePayload := payload
+	stripped := false
+	if format == "PROTOBUF" {
+		if indexes, indexErr := protobufMessageIndexesFromSchema(meta.Schema, meta.Subject); indexErr == nil {
+			if rest, ok := stripProtobufMessageIndexes(payload, len(indexes)); ok {
+				wirePayload = rest
+				stripped = true
+			}
+		}
+	}
+	decoded, err := decodeSchemaPayload(wirePayload, meta.Schema, format, meta.Subject)
+	if err != nil && stripped {
+		// 历史兼容：早期版本 produce 侧漏写 message index 段，剥段后解码
+		// 失败时按原始载荷重试一次（仍失败以剥段路径的错误为准）。
+		if fallback, fallbackErr := decodeSchemaPayload(payload, meta.Schema, format, meta.Subject); fallbackErr == nil {
+			decoded, err = fallback, nil
+		}
+	}
 	if err != nil {
 		return nil, schemaValueInfo{}, err
 	}
@@ -1398,6 +1422,8 @@ func (d *schemaDecoder) decode(ctx context.Context, value []byte) ([]byte, schem
 }
 
 // encodeForProduce 把未编码载荷按 schema 元数据编码并打包 wire format。
+// PROTOBUF：除 schemaID 帧外还补 Confluent message index 数组段（AVRO/JSON
+// 无此段）。
 func encodeForProduce(ctx context.Context, client *schemaRegistryClient, ref *SchemaRef, payload []byte) ([]byte, SchemaGetResult, error) {
 	subject := trimSpace(ref.Subject)
 	if subject == "" {
@@ -1412,12 +1438,109 @@ func encodeForProduce(ctx context.Context, client *schemaRegistryClient, ref *Sc
 	if err != nil {
 		return nil, SchemaGetResult{}, err
 	}
+	if format == "PROTOBUF" {
+		indexes, indexErr := protobufMessageIndexesFromSchema(meta.Schema, subject)
+		if indexErr != nil {
+			return nil, SchemaGetResult{}, indexErr
+		}
+		encoded = append(encodeProtobufMessageIndexes(indexes), encoded...)
+	}
 	return encodeWireFrame(meta.ID, encoded), SchemaGetResult{
 		Subject: meta.Subject,
 		Version: meta.Version,
 		ID:      meta.ID,
 		Format:  format,
 	}, nil
+}
+
+// --- PROTOBUF wire framing（Confluent message index 段）---
+//
+// Confluent PROTOBUF 的 wire format 在 4 字节 schemaID 之后、protobuf 载荷
+// 之前还有一段 message index 数组：目标 message 的声明序号路径（顶层序号 →
+// 逐级嵌套序号）各以一个 varint 紧密拼接，无长度前缀（单顶层 message =
+// 单字节 0x00）。AVRO/JSON 无此段。produce 侧按选中 message 补齐该段，
+// consume 侧按深度剥离；剥离失败/推导失败的载荷交给解码（历史版本 produce
+// 侧漏写该段，解码带一次按原始载荷的回退重试）。
+
+// protobufMessageIndexesFromSchema 解析 FDSet 并返回选中 message 的
+// message index 路径（顶层序号 → 逐级嵌套序号）。
+func protobufMessageIndexesFromSchema(fdsetB64, subject string) ([]int, error) {
+	files, err := protobufFilesFromSchema(fdsetB64)
+	if err != nil {
+		return nil, err
+	}
+	desc, err := selectProtobufMessage(collectProtobufMessages(files), subject)
+	if err != nil {
+		return nil, err
+	}
+	return protobufMessageIndexPath(desc), nil
+}
+
+// protobufMessageIndexPath 计算目标 message 的声明序号路径
+// （顶层 message 在文件中的序号起，逐级嵌套到目标为止）。
+func protobufMessageIndexPath(desc protoreflect.MessageDescriptor) []int {
+	var reversed []int
+	current := desc
+	for {
+		reversed = append(reversed, protobufSiblingIndex(current))
+		parent, ok := current.Parent().(protoreflect.MessageDescriptor)
+		if !ok {
+			// 非 message parent = 文件级（顶层），路径收集完毕。
+			path := make([]int, len(reversed))
+			for i, index := range reversed {
+				path[len(reversed)-1-i] = index
+			}
+			return path
+		}
+		current = parent
+	}
+}
+
+// protobufSiblingIndex 取 message 在其 parent（文件或外层 message）内的
+// 声明序号（按 FullName 比对；未命中返回 0，defensive）。
+func protobufSiblingIndex(desc protoreflect.MessageDescriptor) int {
+	switch parent := desc.Parent().(type) {
+	case protoreflect.MessageDescriptor:
+		for i := 0; i < parent.Messages().Len(); i++ {
+			if parent.Messages().Get(i).FullName() == desc.FullName() {
+				return i
+			}
+		}
+	case protoreflect.FileDescriptor:
+		for i := 0; i < parent.Messages().Len(); i++ {
+			if parent.Messages().Get(i).FullName() == desc.FullName() {
+				return i
+			}
+		}
+	}
+	return 0
+}
+
+// encodeProtobufMessageIndexes 把 index 路径编码为 Confluent message index
+// 数组（每个元素一个 varint，紧密拼接，无长度前缀）。
+func encodeProtobufMessageIndexes(indexes []int) []byte {
+	var out []byte
+	for _, index := range indexes {
+		out = binary.AppendUvarint(out, uint64(index))
+	}
+	return out
+}
+
+// stripProtobufMessageIndexes 从 wire 载荷头部剥掉 depth 个 varint index
+// （Confluent message index 数组）；varint 不完整/溢出返回 false。
+func stripProtobufMessageIndexes(payload []byte, depth int) ([]byte, bool) {
+	if depth <= 0 {
+		return payload, true
+	}
+	rest := payload
+	for i := 0; i < depth; i++ {
+		_, n := binary.Uvarint(rest)
+		if n <= 0 {
+			return nil, false
+		}
+		rest = rest[n:]
+	}
+	return rest, true
 }
 
 // --- LCS 逐行 diff（tinyrdm kafkaSchemaTextDiff 重写为语义 hunks） ---

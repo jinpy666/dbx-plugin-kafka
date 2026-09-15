@@ -213,6 +213,12 @@ msk_session_token、oauth_static_token）。
   （二进制 key 保真，与 `key` 二选一）、`headers?:map<string,string>`、
   `partition?:int`、`count?:int`（批量条数，≤1000，默认 1）、
   `compression?:"gzip"|"lz4"|"zstd"|"snappy"`、
+  `acks?:"all"|"1"`（投递确认级别，缺省 `all`；`1` = 仅 leader 确认。
+  **`0` 不支持**：生产为同步 ProduceSync 语义，客户端 promise 依赖 broker
+  响应，acks=0 会拖到请求超时才失败 → 传 `0`/`none` 返回 `-32602`）、
+  `enableIdempotence?:bool`（幂等生产 / Kafka 服务端去重，缺省 `true` =
+  客户端默认幂等开；`false` 显式关闭。`acks=1` 必须配合
+  `enableIdempotence=false`，否则 `-32602`）、
   `schema?:{subject, version?:int, format?:"avro"|"json"|"protobuf"}`（Phase 2
   avro/json；Phase 3 增 protobuf）。
 - **schema 挂载语义**（Phase 2）：提供 `schema` 时 `value`/`valueBase64`
@@ -222,9 +228,16 @@ msk_session_token、oauth_static_token）。
   （protojson → 动态消息），并打包 Confluent wire format
   （magic byte 0 + 4 字节大端 schemaID + 载荷）后生产。SR 未配置（sr_url
   空）或元数据不存在 → `-32000`。
+  **PROTOBUF wire framing**：schemaID 与 protobuf 载荷之间还有 Confluent
+  message index 数组段——目标 message 的声明序号路径（顶层序号 → 逐级嵌套
+  序号）各以一个 varint 紧密拼接，无长度前缀（单顶层 message = 单字节
+  `0x00`）；message 消歧沿用 subject 约定（剥 `-key`/`-value` 后缀取尾段
+  PascalCase 唯一命中，否则报错列出候选）。AVRO/JSON 无此段；消费侧对
+  早期版本漏写该段的历史记录自动回退按原始载荷解码。
 - 返回：`{partition:int, offset:int, timestamp:int}`（首条消息定位；
   count>1 时为末条 offset）。
-- 错误：read_only → `-32000`（blocked）；count 超限 → `-32602`；
+- 错误：read_only → `-32000`（blocked）；count 超限 / acks 取值非法 /
+  acks=1 与幂等冲突 → `-32602`；
   topic 不存在且未自动创建 → `-32000`；审计。
 
 **`kafka/messages/consume`**
@@ -234,7 +247,8 @@ msk_session_token、oauth_static_token）。
   解包（魔数字节 0 + schemaID），解析 SR 元数据（指定 `subject` 时按
   subject+version 取，否则按 schemaID 反查 `/schemas/ids/<id>`），把载荷
   解码为 JSON 文本（Avro 二进制 → JSON；JSON 透传校验；PROTOBUF →
-  动态消息 → protojson 渲染，Phase 3）。命中消息附加
+  剥 message index 段 → 动态消息 → protojson 渲染，Phase 3；对早期版本
+  漏写 index 段的历史记录自动回退按原始载荷解码）。命中消息附加
   `schemaId`、`schemaSubject`、`schemaVersion` 字段；解码失败**不中断
   消费**，置 `decodeError`。元数据按 schemaID / subject+version 在本次
   消费（或流式会话）内缓存，同 ID 只请求一次 SR。

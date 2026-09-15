@@ -15,6 +15,9 @@ export type DecodeMode = "none" | "base64";
 export type Decompression = "none" | "gzip" | "lz4" | "zstd" | "snappy";
 export type Compression = "none" | "gzip" | "lz4" | "zstd" | "snappy";
 
+/** 投递确认级别（Lane 2）：all（默认）| 1（仅 leader）；acks=0 后端不支持（同步 produce）。 */
+export type ProduceAcks = "all" | "1";
+
 export interface KafkaMessage {
   topic: string;
   partition: number;
@@ -454,6 +457,10 @@ export const kafkaApi = {
     count?: number;
     compression?: Compression;
     schema?: SchemaAttach;
+    /** 投递确认级别（缺省 all）。 */
+    acks?: ProduceAcks;
+    /** 幂等生产开关（缺省 true = franz-go 默认幂等开；false 关闭）。 */
+    enableIdempotence?: boolean;
   }) {
     return callKafka<ProduceResult>("kafka/messages/produce", params);
   },
