@@ -596,6 +596,10 @@ export const messages = {
       planApplied: "Plan applied",
       needGroup: "Select a consumer group first",
     },
+    connProps: {
+      summary: "{mapped} mapped · {ignored} ignored",
+      ignoredKeys: "Ignored keys: {keys}",
+    },
   },
   "zh-CN": {
     hostApiUnavailable: "DBX Host API 不可用",
@@ -1189,6 +1193,10 @@ export const messages = {
       planEmpty: "暂无保存的方案",
       planApplied: "方案已应用",
       needGroup: "请先选择消费组",
+    },
+    connProps: {
+      summary: "已映射 {mapped} 项 · 已忽略 {ignored} 项",
+      ignoredKeys: "忽略的键：{keys}",
     },
   },
   "zh-TW": {
@@ -1784,6 +1792,10 @@ export const messages = {
       planApplied: "方案已套用",
       needGroup: "請先選擇消費群組",
     },
+    connProps: {
+      summary: "已映射 {mapped} 項 · 已忽略 {ignored} 項",
+      ignoredKeys: "忽略的鍵：{keys}",
+    },
   },
   es: {
     hostApiUnavailable: "La API Host de DBX no está disponible",
@@ -2377,6 +2389,10 @@ export const messages = {
       planEmpty: "No hay planes guardados",
       planApplied: "Plan aplicado",
       needGroup: "Seleccione primero un grupo de consumo",
+    },
+    connProps: {
+      summary: "{mapped} mapeadas · {ignored} ignoradas",
+      ignoredKeys: "Claves ignoradas: {keys}",
     },
   },
   it: {
@@ -2972,6 +2988,10 @@ export const messages = {
       planApplied: "Piano applicato",
       needGroup: "Seleziona prima un gruppo di consumo",
     },
+    connProps: {
+      summary: "{mapped} mappate · {ignored} ignorate",
+      ignoredKeys: "Chiavi ignorate: {keys}",
+    },
   },
   ja: {
     hostApiUnavailable: "DBX Host API を利用できません",
@@ -3566,6 +3586,10 @@ export const messages = {
       planApplied: "プランを適用しました",
       needGroup: "先にコンシューマーグループを選択してください",
     },
+    connProps: {
+      summary: "マッピング {mapped} 件 · 無視 {ignored} 件",
+      ignoredKeys: "無視されたキー: {keys}",
+    },
   },
   "pt-BR": {
     hostApiUnavailable: "API Host do DBX indisponível",
@@ -4159,6 +4183,10 @@ export const messages = {
       planEmpty: "Nenhum plano salvo",
       planApplied: "Plano aplicado",
       needGroup: "Selecione primeiro um grupo de consumo",
+    },
+    connProps: {
+      summary: "{mapped} mapeadas · {ignored} ignoradas",
+      ignoredKeys: "Chaves ignoradas: {keys}",
     },
   },
 };

@@ -190,6 +190,10 @@ type Profile struct {
 	// MSKAccessKeyID：可选显式覆盖默认凭据链（照 §11.5 Glue auth_mode=default
 	// 范式；与 MSKSecretAccessKey 须成对出现）。
 	MSKAccessKeyID string `json:"mskAccessKeyID,omitempty"`
+
+	// --- Lane 3（conn-properties）：粘贴 properties 导入。合并结果直接落在
+	// 上方结构化字段；这里只存解析摘要（计数+键名，无任何值，见 props.go）。 ---
+	PropertiesImport *PropertiesImportSummary `json:"propertiesImport,omitempty"`
 }
 
 // kerberosEnabled 报告连接是否启用 GSSAPI。
@@ -434,6 +438,9 @@ type ConnectionStatus struct {
 	ConnectionSource string                `json:"connectionSource,omitempty"`
 	SchemaRegistry   *SchemaRegistryStatus `json:"schemaRegistry,omitempty"`
 	Kerberos         *KerberosStatus       `json:"kerberos,omitempty"`
+	// PropertiesImport 是「粘贴 properties 导入」摘要（Lane 3；仅键名/计数，
+	// 值不透出；未使用导入时省略）。
+	PropertiesImport *PropertiesImportSummary `json:"propertiesImport,omitempty"`
 }
 
 // --- brokers ---

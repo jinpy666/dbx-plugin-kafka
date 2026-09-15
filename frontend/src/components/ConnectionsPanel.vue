@@ -123,6 +123,21 @@ function showOauthDetail(status: KafkaConnectionStatus): boolean {
   return oauthSummary.value.tokenSource !== "" && status.connectionId === getKafkaConnectionId();
 }
 
+// -- 粘贴 properties 导入摘要（Lane 3 conn-properties）-----------------------------
+// 后端 properties_import（secret binding）解析合并后的键名级摘要
+// （mapped/ignored），经 statuses.propertiesImport 透出；仅当前连接行展示。
+
+/** 仅当前连接且确有导入结果时展示（空导入后端省略字段）。 */
+function showPropsImportDetail(status: KafkaConnectionStatus): boolean {
+  const summary = status.propertiesImport;
+  return Boolean(summary && (summary.mapped > 0 || summary.ignored > 0)) && status.connectionId === getKafkaConnectionId();
+}
+
+/** 忽略键列表（values 永不下发，仅键名）。 */
+function ignoredPropsKeys(status: KafkaConnectionStatus): string {
+  return (status.propertiesImport?.ignoredKeys ?? []).join(", ");
+}
+
 // 导入助手状态（仅内存，不持久化）
 const assistantOpen = ref(false);
 const propertiesText = ref("");
@@ -299,6 +314,15 @@ function clearAssistant() {
               </span>
               <span v-if="oauthSummary.tokenSource === 'static_token'" class="badge" :class="oauthSummary.staticTokenConfigured ? 'badge-ok' : 'badge-warn'">
                 {{ t("connections.oauthStaticTokenLabel") }}: {{ oauthSummary.staticTokenConfigured ? t("connections.glueConfigured") : t("connections.glueNotConfigured") }}
+              </span>
+            </span>
+            <!-- Lane 3：粘贴 properties 导入摘要（仅当前连接行；值不透出，仅键名） -->
+            <span v-if="showPropsImportDetail(status)" class="inline-actions" style="margin-top: 2px; flex-wrap: wrap; gap: 4px" data-testid="props-import-summary">
+              <span class="badge" :class="status.propertiesImport?.ignored ? 'badge-warn' : 'badge-ok'">
+                {{ t("connProps.summary", { mapped: status.propertiesImport?.mapped ?? 0, ignored: status.propertiesImport?.ignored ?? 0 }) }}
+              </span>
+              <span v-if="ignoredPropsKeys(status)" class="badge mono-s" :title="ignoredPropsKeys(status)">
+                {{ t("connProps.ignoredKeys", { keys: ignoredPropsKeys(status) }) }}
               </span>
             </span>
           </div>

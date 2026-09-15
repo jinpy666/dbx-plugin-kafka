@@ -395,6 +395,14 @@ func NewProfileFromLifecycle(params *lifecycle.Params) (Profile, connSecrets, er
 		MSKSessionToken:    params.SecretString("msk_session_token"),
 		OauthStaticToken:   params.SecretString("oauth_static_token"),
 	}
+	// Lane 3（conn-properties）：properties_import 只从 secret binding 读取
+	//（manifest textarea + binding:secret，粘贴文本中的密码经宿主加密存储，
+	// 绝不明文持久化）。非空时解析并合并进结构化字段（paste 非空值覆盖表单
+	// 值），合并发生在 Normalize/Validate 之前——粘贴驱动的 SASL_SSL + jaas
+	// 凭据组合会通过 required_when 兜底校验；解析摘要（仅键名）随 statuses 透出。
+	if paste := params.SecretString("properties_import"); paste != "" {
+		profile.PropertiesImport = applyPropertiesImport(&profile, &secrets, paste)
+	}
 	profile = NormalizeProfile(profile)
 	if err := profile.Validate(); err != nil {
 		return Profile{}, connSecrets{}, err

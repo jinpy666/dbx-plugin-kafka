@@ -155,10 +155,13 @@ func TestManifestBackendFieldContract(t *testing.T) {
 
 	// 凭据红线：sasl_password / tls_client_key / sr_password /
 	// glue_secret_access_key / glue_session_token / msk_secret_access_key /
-	// msk_session_token / oauth_static_token 必须 secret binding。
+	// msk_session_token / oauth_static_token 必须 secret binding；
+	// properties_import（Lane 3 粘贴导入）同样 secret binding —— 粘贴文本中
+	// 的密码绝不能以明文持久化。
 	for _, key := range []string{"sasl_password", "tls_client_key", "sr_password",
 		"glue_secret_access_key", "glue_session_token",
-		"msk_secret_access_key", "msk_session_token", "oauth_static_token"} {
+		"msk_secret_access_key", "msk_session_token", "oauth_static_token",
+		"properties_import"} {
 		field, ok := fields[key]
 		if !ok {
 			t.Fatalf("manifest field %q missing", key)
@@ -449,7 +452,8 @@ func TestManifestSevenLanguages(t *testing.T) {
 			}
 		}
 		// Phase 2/3 新字段逐字段七语 label/description（schema_registry 开关
-		// 同样七语；agent I 条件显隐改造；Phase 3 OAUTHBEARER 六字段）。
+		// 同样七语；agent I 条件显隐改造；Phase 3 OAUTHBEARER 六字段；
+		// Lane 3 properties_import 粘贴导入字段）。
 		for _, key := range []string{"connection_source", "zk_servers", "schema_registry",
 			"kerberos_service_name", "kerberos_realm", "kerberos_principal",
 			"kerberos_keytab_path", "kerberos_krb5_conf_path",
@@ -457,7 +461,8 @@ func TestManifestSevenLanguages(t *testing.T) {
 			"glue_region", "glue_registry_name", "glue_auth_mode",
 			"glue_access_key_id", "glue_secret_access_key", "glue_session_token",
 			"oauth_token_source", "msk_region", "msk_access_key_id",
-			"msk_secret_access_key", "msk_session_token", "oauth_static_token"} {
+			"msk_secret_access_key", "msk_session_token", "oauth_static_token",
+			"properties_import"} {
 			entry, ok := connFields[key]
 			if !ok || entry.Label == "" || entry.Description == "" {
 				t.Fatalf("localization %s/%s label/description missing", lang, key)

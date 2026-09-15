@@ -270,4 +270,41 @@ describe("ConnectionsPanel", () => {
     expect(document.querySelector("body > .modal-backdrop")).toBeNull();
     expect(wrapper.emitted("close")).toBeUndefined();
   });
+
+  // Lane 3（conn-properties）：粘贴 properties 导入摘要（后端解析结果的
+  // 键名级透出）：当前连接行展示 mapped/ignored 徽标 + 忽略键列表；
+  // 非当前连接不展示；未使用导入（字段缺省）不渲染。
+  it("shows the properties-import summary with ignored keys for the current connection", async () => {
+    installBridge(() => ({
+      statuses: [
+        {
+          ...baseStatus,
+          connectionId: "conn-test",
+          propertiesImport: {
+            mapped: 4,
+            mappedKeys: ["bootstrap.servers", "security.protocol", "sasl.mechanism", "sasl.jaas.config"],
+            ignored: 2,
+            ignoredKeys: ["ssl.truststore.location", "request.timeout.ms"],
+          },
+        },
+        { ...baseStatus, connectionId: "other-conn" },
+      ],
+    }));
+    const wrapper = mountPanel();
+    await flushPromises();
+    const items = wrapper.findAll(".settings-list li");
+    const summary = items[0].find('[data-testid="props-import-summary"]');
+    expect(summary.exists()).toBe(true);
+    expect(summary.text()).toContain(t("connProps.summary", { mapped: 4, ignored: 2 }));
+    expect(summary.text()).toContain(t("connProps.ignoredKeys", { keys: "ssl.truststore.location, request.timeout.ms" }));
+    // 非当前连接不展示（statuses 未携带摘要时同样不渲染）。
+    expect(items[1].find('[data-testid="props-import-summary"]').exists()).toBe(false);
+  });
+
+  it("hides the properties-import summary when the status has none", async () => {
+    installBridge(() => ({ statuses: [{ ...baseStatus, connectionId: "conn-test" }] }));
+    const wrapper = mountPanel();
+    await flushPromises();
+    expect(wrapper.find('[data-testid="props-import-summary"]').exists()).toBe(false);
+  });
 });

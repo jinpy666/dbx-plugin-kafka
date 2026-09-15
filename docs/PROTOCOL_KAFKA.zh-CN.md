@@ -658,6 +658,7 @@ sidecar 兜底校验）。SR 后端由新增决策字段 **`schema_registry`**�
 | msk_secret_access_key | password | **secret** | — | oauth_token_source ∈ [msk_iam] | 显式凭据 SK（与 AK 成对；凭据红线：secret binding） |
 | msk_session_token | password | **secret** | — | oauth_token_source ∈ [msk_iam] | 可选 STS 会话令牌 |
 | oauth_static_token | password | **secret** | — | oauth_token_source ∈ [static_token] | 静态 bearer token；required_when 见矩阵（凭据红线：secret binding） |
+| **properties_import** | textarea | **secret** | — | —（常显，恒可选） | **粘贴 properties 导入**（Lane 3）：Kafka 客户端 properties 片段直贴对话框；语义见 §9.3 |
 
 ### 9.1 required_when 矩阵（agent I，与 sidecar 兜底校验一一对应）
 
@@ -705,3 +706,43 @@ SR provider 解析以 `schema_registry` 开关为准（`resolveSchemaProvider`�
 - **降级注意**：宿主 <1.1 不识别两条件时按 optional 降级（全部字段平铺、
   无前端必填拦截），此时 sidecar 兜底校验仍保证必填组合不缺（规则 3
   "宿主 1.1 特性 optional 降级"的落地形态）。
+
+### 9.3 粘贴 properties 导入（Lane 3，properties_import）
+
+对标 Confluent 插件「粘贴即连」：用户把 Kafka 客户端 properties 片段直接
+粘进连接对话框的 `properties_import` 字段，保存/测试时 sidecar 解析并合并
+进结构化连接字段。
+
+- **凭据红线**：字段 binding 为 **secret**——粘贴文本（可能内嵌
+  jaas/basic.auth 密码）经宿主 secret binding 加密存储、仅在
+  connection/connect|test 时经 `connection_secrets.properties_import` 下发
+  明文到 sidecar，插件不持久化、不进日志/审计。**config 通道中的同名键
+  一律不消费**（防非对话框写路径明文持久化，`props_test.go` 有回归）。
+- **解析语法**（`backend/internal/kafkaconn/props.go`，java.util.Properties
+  语义子集）：`#`/`!` 注释行；第一个未转义 `=` / `:` / 空白为分隔符；
+  行尾奇数反斜杠续行（续行前导空白跳过）；`\t \n \r \f \\ \uXXXX` 转义
+  （非法 `\u` 保守保留原文）；重复键后者覆盖；空值键跳过不覆盖表单值。
+- **映射表**（paste-wins：粘贴非空值覆盖表单值；取值面外的值整键忽略）：
+  `bootstrap.servers`→bootstrap_servers；`security.protocol`→security_protocol；
+  `sasl.mechanism`→sasl_mechanism；`sasl.jaas.config`→按机制提取
+  （PLAIN/SCRAM→sasl_username + sasl_password(secret)；GSSAPI→principal/
+  keyTab；OAUTHBEARER 无映射目标，token 须走表单 oauth_token_source）；
+  `sasl.kerberos.service.name`→kerberos_service_name；
+  `ssl.endpoint.identification.algorithm`（none→tls_insecure_skip_verify）；
+  `ssl.truststore.certificates`→tls_ca_cert；`ssl.keystore.certificate.chain`→
+  tls_client_cert；`ssl.keystore.key`→tls_client_key(secret)；
+  `schema.registry.url`→sr_url + schema_registry=confluent；
+  `basic.auth.credentials.source`（仅 USER_INFO 支持）+
+  `basic.auth.user.info` / `schema.registry.basic.auth.user.info`→
+  sr_username + sr_password(secret)；`client.id`→client_id。
+  **Java keystore 路径类键**（`ssl.truststore.location/password`、
+  `ssl.keystore.location/password`、`ssl.key.password` 等）没有对应字段
+  （TLS 走 PEM 内联模型），进忽略清单。
+- **合并时机**：发生在 `NormalizeProfile`/`Validate`/
+  `validateRequiredCombination` 之前——粘贴驱动的 SASL_SSL + jaas 凭据
+  组合直接通过 required_when 兜底校验；半粘贴（缺凭据等）仍按矩阵报
+  `-32602`。
+- **解析摘要**：`kafka/connections/statuses` 每连接新增可选
+  `propertiesImport: {mapped, mappedKeys?, ignored, ignoredKeys?}`（仅计数
+  与键名，值一律不透出）；未使用导入时省略。工作台连接面板对当前连接
+  展示「已映射 N 项 / 已忽略 M 项」。

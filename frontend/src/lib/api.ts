@@ -244,6 +244,13 @@ export interface KafkaConnectionStatus {
   kerberos?: { enabled: boolean };
   /** 连接元数据来源（ZK 模式 = zookeeper）。 */
   connectionSource?: string;
+  /** 粘贴 properties 导入摘要（Lane 3；仅计数+键名，值不透出；旧 sidecar 缺省 = 未使用导入）。 */
+  propertiesImport?: {
+    mapped: number;
+    mappedKeys?: string[];
+    ignored: number;
+    ignoredKeys?: string[];
+  };
 }
 
 // -- Schema Registry（Phase 2 冻结契约，方法与形状见任务书） -------------------------
