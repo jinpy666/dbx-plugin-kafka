@@ -529,7 +529,7 @@ onMounted(async () => {
 </script>
 
 <template>
-  <section class="section-block">
+  <section class="section-block panel-fill">
     <div class="result-meta">
       <span>{{ t("schemas.title") }} · {{ subjects.length }}</span>
       <span class="inline-actions">
@@ -585,7 +585,7 @@ onMounted(async () => {
       </button>
     </div>
 
-    <div class="grid-box" style="height: 200px">
+    <div class="grid-box grid-box--fill">
       <p v-if="subjects.length === 0 && !loading" class="empty compact">{{ t("acls.empty") }}</p>
       <DbxAgGrid
         v-else

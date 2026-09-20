@@ -223,7 +223,7 @@ onMounted(() => {
 </script>
 
 <template>
-  <section class="section-block">
+  <section class="section-block panel-fill">
     <div class="result-meta">
       <span>{{ t("groups.title") }} · {{ groups.length }}</span>
       <span class="inline-actions">
@@ -237,7 +237,7 @@ onMounted(() => {
       </span>
     </div>
 
-    <div class="grid-box" style="height: 240px">
+    <div class="grid-box grid-box--fill">
       <p v-if="groups.length === 0 && !loading" class="empty compact">{{ t("groups.empty") }}</p>
       <DbxAgGrid
         v-else
