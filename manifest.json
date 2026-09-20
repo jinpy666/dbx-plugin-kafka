@@ -41,6 +41,7 @@
         "disconnect"
       ],
       "workbench": "io.dbx.kafka.workbench",
+      "proxy_route": true,
       "fields": [
         {
           "key": "display_name",
