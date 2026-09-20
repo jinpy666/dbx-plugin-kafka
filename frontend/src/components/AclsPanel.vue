@@ -125,7 +125,7 @@ onMounted(() => {
 </script>
 
 <template>
-  <section class="section-block">
+  <section class="section-block panel-fill">
     <p class="subpanel-title">{{ t("acls.filterTitle") }}</p>
     <div class="kafka-form">
       <label class="field">
@@ -177,7 +177,8 @@ onMounted(() => {
 
     <div class="grid-box grid-box--fill">
       <!-- P2-9：空态不再裸列一行灰字，附过滤引导（复用现有 key，不新增 i18n）。 -->
-      <div v-if="acls.length === 0 && !loading" class="acls-empty">
+      <!-- 过宽被拒（filterLocalError）时只留拒绝提示，不再叠加「没有匹配」空态。 -->
+      <div v-if="acls.length === 0 && !loading && !filterLocalError" class="acls-empty">
         <p class="empty compact">{{ t("acls.empty") }}</p>
         <p class="hint">{{ t("acls.resourceName") }} / {{ t("acls.principal") }} → {{ t("acls.filterRun") }}</p>
       </div>

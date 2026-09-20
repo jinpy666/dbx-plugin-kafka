@@ -185,14 +185,15 @@ describe("MessagesPanel", () => {
     expect((wrapper.emitted("error") ?? []).every(([message]) => message === "")).toBe(true);
   });
 
-  // P2-21：未选 topic 时引导先在左侧树选择；已选 topic 才是「调整条件重新消费」。
-  it("distinguishes the no-topic empty state from the no-match empty state (P2-21)", async () => {
+  // P2-21：未选 topic 时引导先在左侧树选择；已选 topic 尚未消费引导点消费
+  // （「调整条件重新消费」文案只属于 0 条命中，见 result 非空分支）。
+  it("distinguishes the no-topic empty state from the not-consumed empty state (P2-21)", async () => {
     installBridge({ "kafka/presets/list": { presets: [] } });
     const wrapper = mountPanel({ topic: "" });
     await flushPromises();
     expect(wrapper.find(".empty").text()).toBe(t("messages.uiNoTopicSelected"));
     await wrapper.setProps({ topic: "order-events" });
-    expect(wrapper.find(".empty").text()).toBe(t("messages.noMessages"));
+    expect(wrapper.find(".empty").text()).toBe(t("messages.pendingConsume"));
   });
 
   // round4 面 1：消费在途给出进行中反馈（不再整块空白）——deferred consume 挂起

@@ -422,6 +422,7 @@ watch(() => props.topic, () => void loadPresets(), { immediate: true });
         class="primary-button compact"
         type="button"
         :disabled="consuming || !topic || tsRangeReversed"
+        :title="!topic ? t('messages.topicRequired') : tsRangeReversed ? t('messages.uiTimeRangeInvalid') : undefined"
         data-testid="consume-run"
         @click="runConsume()"
       >
@@ -847,7 +848,9 @@ watch(() => props.topic, () => void loadPresets(), { immediate: true });
       <p class="empty compact">{{ t("messages.running") }}</p>
     </div>
     <div v-else class="grid-box grid-box--fill">
-      <p class="empty compact">{{ topic ? t("messages.noMessages") : t("messages.uiNoTopicSelected") }}</p>
+      <!-- 未消费（初始/切 topic 清空）与 0 条命中分开提示：0 条才是「调整条件」，
+           未消费引导点消费（否则切 topic 后看到的是误导性空态）。 -->
+      <p class="empty compact">{{ topic ? t("messages.pendingConsume") : t("messages.uiNoTopicSelected") }}</p>
     </div>
 
     <MessageDetailDrawer v-model="detail" @notify="emit('notify', $event)" @error="emit('error', $event)" />

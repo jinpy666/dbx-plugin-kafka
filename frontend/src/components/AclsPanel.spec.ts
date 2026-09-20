@@ -105,8 +105,8 @@ describe("AclsPanel", () => {
     await flushPromises();
     expect(wrapper.find(".form-error").text()).toBe(t("acls.filterTooBroad"));
     expect(invokeMock).not.toHaveBeenCalled();
-    // 空态引导（复用既有键：资源名 / 主体 → 列表）
-    expect(wrapper.find(".acls-empty .empty").text()).toBe(t("acls.empty"));
+    // 过宽被拒只留拒绝提示，不再叠加「没有匹配」空态（空态引导只属于未查询态）。
+    expect(wrapper.find(".acls-empty").exists()).toBe(false);
   });
 
   it("lists ACLs for a concrete filter and renders rows", async () => {

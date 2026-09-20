@@ -305,7 +305,7 @@ defineExpose({ pushEvent });
     <div class="kafka-form">
       <label class="field" style="flex: 1 1 160px">
         <span>{{ t("messages.topic") }}</span>
-        <input :value="topic" type="text" class="mono" readonly />
+        <input :value="topic" type="text" class="mono" readonly :placeholder="t('messages.topicUnselected')" :title="topic || t('messages.topicUnselected')" />
       </label>
       <label class="field" style="flex: 1 1 180px">
         <span>{{ t("messages.filter") }}</span>

@@ -144,7 +144,11 @@ button:disabled { filter: grayscale(.4); }
 
 .notice, .error-banner { position: absolute; z-index: 15; left: 50%; max-width: min(720px, calc(100% - 32px)); transform: translateX(-50%); gap: 10px; border-radius: var(--radius); box-shadow: 0 6px 24px rgb(0 0 0 / 24%); }
 .notice { position: fixed; bottom: 24px; z-index: 90; border: 0; border-radius: 8px; padding: 8px 16px; background: var(--foreground); color: var(--background); font-size: 14px; box-shadow: 0 10px 28px rgb(0 0 0 / 28%); }
-/* 顶部 70px = 工具栏 36+1 与 tab 栏 30+1 之下（P2-2：避免遮住页签）。 */
+/* 顶部 70px = 工具栏 36+1 与 tab 栏 30+1 之下（P2-2：避免遮住页签）。
+   横幅悬浮在消费条/表格上方会挡住下层操作（条件按钮/工具栏），改点击穿透：
+   容器不拦截指针，仅关闭按钮可点（review round5——遮挡但不阻塞）。 */
+.notice, .error-banner { pointer-events: none; }
+.notice > *, .error-banner > * { pointer-events: auto; }
 .error-banner { top: 70px; border: 1px solid var(--border); padding: 6px 10px; justify-content: space-between; border-color: color-mix(in srgb, var(--destructive) 60%, var(--border)); background: color-mix(in srgb, var(--destructive) 16%, var(--popover)); color: color-mix(in srgb, var(--destructive) 45%, var(--foreground)); }
 .error-banner button { display: grid; width: 20px; height: 20px; border: 0; padding: 0; place-items: center; background: transparent; color: inherit; cursor: pointer; }
 .error-banner svg { width: 13px; height: 13px; }
@@ -522,6 +526,11 @@ button:disabled { filter: grayscale(.4); }
 .inline-actions { display: inline-flex; align-items: center; gap: 4px; }
 .subpanel-title { margin: 0; padding: var(--space-3) var(--space-4) var(--space-1); font-size: 12px; font-weight: 600; }
 .section-block { display: flex; flex-direction: column; min-height: 0; }
+
+/* 管理面板填满主区域：与 .messages-panel/.stream-panel 同一 flex 语义，
+   主 grid-box--fill 真正伸展（否则 section 只包内容高，表格固定 180px
+   下方留大片空白）；详情子表为固定高度，内容超高时面板整体滚动。 */
+.panel-fill { flex: 1 1 0; min-height: 0; overflow-y: auto; }
 
 /* ag-grid 容器（Phase 2）：DbxAgGrid 需确定高度；fill 变体占满剩余空间 */
 .grid-box { position: relative; display: flex; flex: 0 0 auto; overflow: hidden; border: 1px solid var(--border); border-radius: 4px; margin: 0 8px; background: var(--background); }

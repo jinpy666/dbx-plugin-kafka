@@ -306,7 +306,7 @@ watch(
 </script>
 
 <template>
-  <section class="section-block">
+  <section class="section-block panel-fill">
     <div class="result-meta">
       <span>{{ t("topics.title") }} · {{ topics.length }}</span>
       <span class="inline-actions">
@@ -430,7 +430,7 @@ watch(
           </div>
           <footer>
             <button type="button" @click="createOpen = false">{{ t("cancel") }}</button>
-            <button class="primary-button" type="button" :disabled="busy" @click="submitCreate">{{ t("save") }}</button>
+            <button class="primary-button" type="button" :disabled="busy || !createName.trim()" :title="createName.trim() ? undefined : t('topics.namePlaceholder')" @click="submitCreate">{{ t("topics.create") }}</button>
           </footer>
         </div>
       </div>

@@ -221,7 +221,7 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <section class="section-block">
+  <section class="section-block panel-fill">
     <div class="kafka-form">
       <label class="field" style="flex: 1 1 180px">
         <span>{{ t("monitor.group") }}</span>

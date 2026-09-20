@@ -507,13 +507,13 @@ onBeforeUnmount(() => stopFlow());
 </script>
 
 <template>
-  <section class="section-block produce-panel">
+  <section class="section-block produce-panel panel-fill">
     <p v-if="!canWrite" class="form-error produce-readonly-hint">{{ t("produce.readOnlyHint") }}</p>
     <div class="kafka-form produce-form">
       <div class="field produce-field-full">
         <span>{{ t("messages.topic") }}</span>
         <div class="produce-topic-row">
-          <input :value="topic" type="text" class="mono" readonly />
+          <input :value="topic" type="text" class="mono" readonly :placeholder="t('messages.topicUnselected')" :title="topic || t('messages.topicUnselected')" />
           <span v-if="partitionCount !== undefined && partitionCount > 0" class="badge" :title="t('produce.partitionCountTitle')">
             {{ t("produce.partitionCount", { count: partitionCount }) }}
           </span>

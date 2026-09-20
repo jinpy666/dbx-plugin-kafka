@@ -53,7 +53,7 @@ onMounted(() => {
 </script>
 
 <template>
-  <section class="section-block">
+  <section class="section-block panel-fill">
     <div class="result-meta">
       <span>{{ t("brokers.title") }} · {{ brokers.length }}</span>
       <span class="inline-actions">

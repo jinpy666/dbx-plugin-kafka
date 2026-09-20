@@ -30,6 +30,26 @@ export function timestampIso(ms: number | undefined): string {
 }
 
 /**
+ * unix ms → 相对时间文本（连接列表「最近使用」等场景）：一分钟内「刚刚/just now」，
+ * 之后按分钟/小时/天聚合，超过 30 天回落绝对日期。locale 跟随工作台语言，
+ * 由 Intl.RelativeTimeFormat 负责翻译，无需 i18n key。
+ */
+export function formatRelativeTime(ms: number | string | undefined, locale = "zh-CN", nowMs = Date.now()): string {
+  if (ms === undefined || ms === null || ms === "") return "";
+  const parsed = typeof ms === "number" ? ms : Date.parse(ms);
+  if (!Number.isFinite(parsed)) return String(ms);
+  const formatter = new Intl.RelativeTimeFormat(locale, { numeric: "auto" });
+  const diffMinutes = Math.round((parsed - nowMs) / 60_000);
+  if (Math.abs(diffMinutes) < 1) return formatter.format(0, "minute");
+  if (Math.abs(diffMinutes) < 60) return formatter.format(diffMinutes, "minute");
+  if (Math.abs(diffMinutes) < 60 * 24) return formatter.format(Math.round(diffMinutes / 60), "hour");
+  if (Math.abs(diffMinutes) < 60 * 24 * 30) return formatter.format(Math.round(diffMinutes / (60 * 24)), "day");
+  const date = new Date(parsed);
+  const pad = (value: number) => String(value).padStart(2, "0");
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`;
+}
+
+/**
  * 时间戳列 date filter 比较器（F6-6）：把单元格文本「YYYY-MM-DD HH:mm:ss」
  * 按其生成时区解析回时间后按天比较（ag-grid 传入本地零点的过滤日期）。
  * 返回 -1/0/1；无法解析的单元格值排到过滤日期之后（不算命中）。

@@ -228,15 +228,15 @@ describe("TopicsPanel describe + offsets", () => {
 });
 
 describe("TopicsPanel create", () => {
-  it("rejects an empty name before any request", async () => {
+  it("keeps the create button disabled on an empty name before any request", async () => {
     installBridge({});
     const wrapper = mountPanel();
     await wrapper.find(".result-meta .toolbar-button").trigger("click");
     await flushPromises();
     expect(wrapper.find(".modal-backdrop .modal").exists()).toBe(true);
-    await wrapper.find(".modal-backdrop .primary-button").trigger("click");
-    await flushPromises();
-    expect(wrapper.emitted("error")?.at(-1)).toEqual([t("topics.createInvalid")]);
+    // 空名直接禁用提交按钮（title 给出占位提示），不发请求、不弹错误条。
+    expect(wrapper.find(".modal-backdrop .primary-button").attributes("disabled")).toBeDefined();
+    expect(wrapper.find(".modal-backdrop .primary-button").attributes("title")).toBe(t("topics.namePlaceholder"));
     expect(invokeMock).not.toHaveBeenCalled();
   });
 

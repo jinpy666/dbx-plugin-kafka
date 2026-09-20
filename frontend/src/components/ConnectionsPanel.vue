@@ -12,7 +12,8 @@ import { getKafkaConnectionId, kafkaApi, type KafkaConnectionStatus } from "../l
 import { buildPropertyMappings, parsePropertiesText, type PropertyMappingRow } from "../lib/properties";
 import { decideModalKeydown, focusableElements } from "../lib/modalBehavior";
 import { friendlyKafkaError } from "../lib/kafkaErrors";
-import { t } from "../lib/i18n";
+import { t, workbenchLocale } from "../lib/i18n";
+import { formatRelativeTime } from "../lib/timestamps";
 
 const props = defineProps<{
   open: boolean;
@@ -170,14 +171,30 @@ function stateDotClass(state: string): string {
   return "idle";
 }
 
-// Intl.DateTimeFormat 构造昂贵：缓存实例（此前每行每次渲染都新建一个）。
-const dateTimeFormatter = new Intl.DateTimeFormat(undefined, { dateStyle: "short", timeStyle: "medium" });
+// Intl.DateTimeFormat 构造昂贵：按工作台 locale 缓存实例（此前每行每次渲染都
+// 新建一个，且 locale 用运行环境缺省——中文工作台会显示美式 12 小时制时间戳）。
+const formatterCache = new Map<string, Intl.DateTimeFormat>();
 
+function formatterFor(locale: string): Intl.DateTimeFormat {
+  let formatter = formatterCache.get(locale);
+  if (!formatter) {
+    formatter = new Intl.DateTimeFormat(locale, { dateStyle: "short", timeStyle: "medium" });
+    formatterCache.set(locale, formatter);
+  }
+  return formatter;
+}
+
+/** 绝对时间：跟随工作台 locale（悬停 title 用）。 */
 function formatTime(value?: number | string): string {
   if (value === undefined || value === null || value === "") return "";
   const parsed = typeof value === "number" ? value : Date.parse(value);
   if (!Number.isFinite(parsed)) return String(value);
-  return dateTimeFormatter.format(new Date(parsed));
+  return formatterFor(workbenchLocale.value).format(new Date(parsed));
+}
+
+/** 相对时间（列表行内展示）：「x 分钟前」比裸时间戳更易扫读。 */
+function relativeTime(value?: number | string): string {
+  return formatRelativeTime(value, workbenchLocale.value);
 }
 
 function openAssistant() {
@@ -282,7 +299,7 @@ function clearAssistant() {
           <span class="state-dot" :class="stateDotClass(status.status)" :title="stateLabel(status.status)" />
           <div class="settings-list-main">
             <strong class="mono">{{ status.connectionId }}</strong>
-            <span v-if="status.lastUsedAt">{{ t("connections.lastUsed") }}: {{ formatTime(status.lastUsedAt) }}</span>
+            <span v-if="status.lastUsedAt" :title="formatTime(status.lastUsedAt)">{{ t("connections.lastUsed") }}: {{ relativeTime(status.lastUsedAt) }}</span>
             <span v-if="status.lastError" class="form-error">{{ t("connections.lastError") }}: {{ friendlyKafkaError(status.lastError) }}</span>
             <span class="inline-actions" style="margin-top: 2px; flex-wrap: wrap">
               <span class="badge" :class="status.schemaRegistry?.enabled ? 'badge-ok' : ''">
