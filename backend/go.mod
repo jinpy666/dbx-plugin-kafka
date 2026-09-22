@@ -14,7 +14,7 @@ require (
 	github.com/jcmturner/gokrb5/v8 v8.4.4
 	github.com/klauspost/compress v1.20.0
 	github.com/linkedin/goavro/v2 v2.15.0
-	github.com/pierrec/lz4/v4 v4.1.26
+	github.com/pierrec/lz4/v4 v4.1.30
 	github.com/t8y2/dbx/plugins/sdk/go/dbx-plugin-sdk v0.0.0-00010101000000-000000000000
 	github.com/twmb/franz-go v1.21.6
 	github.com/twmb/franz-go/pkg/kadm v1.18.0
