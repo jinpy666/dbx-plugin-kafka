@@ -1,6 +1,6 @@
 module io.dbx.kafka.plugin
 
-go 1.25.0
+go 1.26.0
 
 require (
 	github.com/aws/aws-msk-iam-sasl-signer-go v1.0.4
@@ -20,7 +20,7 @@ require (
 	github.com/twmb/franz-go/pkg/kadm v1.18.0
 	github.com/twmb/franz-go/pkg/kmsg v1.13.1
 	github.com/twmb/franz-go/pkg/sasl/kerberos v1.1.0
-	golang.org/x/net v0.52.0
+	golang.org/x/net v0.59.0
 	google.golang.org/protobuf v1.36.12
 )
 
@@ -42,7 +42,7 @@ require (
 	github.com/jcmturner/dnsutils/v2 v2.0.0 // indirect
 	github.com/jcmturner/gofork v1.7.6 // indirect
 	github.com/jcmturner/rpc/v2 v2.0.3 // indirect
-	golang.org/x/crypto v0.50.0 // indirect
+	golang.org/x/crypto v0.57.0 // indirect
 )
 
 // SDK vendored 以便独立 checkout 构建（shared/sdk/go/dbx-plugin-sdk，拆分基线
