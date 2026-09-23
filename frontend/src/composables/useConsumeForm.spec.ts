@@ -6,6 +6,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { flushPromises } from "@vue/test-utils";
 import { nextTick, ref } from "vue";
 import { useConsumeForm, optionalNumber, positiveInt, type UseConsumeFormOptions } from "./useConsumeForm";
+import { MSG_FILTERS_KEY, MSG_FORM_OPEN_KEY, pluginStore } from "../lib/pluginStore";
 import { setKafkaConnectionId } from "../lib/api";
 import { t } from "../lib/i18n";
 
@@ -39,7 +40,10 @@ function makeForm(overrides: FormOptions = {}) {
 }
 
 beforeEach(() => {
-  localStorage.clear();
+  // 持久化后端是 pluginStore（宿主 storage 适配），清理须走同一实例
+  //（happy-dom 下 store 在模块导入时已水合，之后改 localStorage 读不到）。
+  pluginStore.removeItem(MSG_FORM_OPEN_KEY);
+  pluginStore.removeItem(MSG_FILTERS_KEY);
   setKafkaConnectionId("conn-test");
 });
 
@@ -177,17 +181,17 @@ describe("buildParams", () => {
 
 describe("摘要条与 chips", () => {
   it("formOpen 记忆：读旧值、toggle 回写", async () => {
-    localStorage.setItem("dbx.kafka.ui.msgFormOpen", "1");
+    pluginStore.setItem(MSG_FORM_OPEN_KEY, "1");
     const form = makeForm();
     expect(form.formOpen.value).toBe(true);
     form.toggleFormOpen();
     await nextTick();
     expect(form.formOpen.value).toBe(false);
-    expect(localStorage.getItem("dbx.kafka.ui.msgFormOpen")).toBe("0");
+    expect(pluginStore.getItem(MSG_FORM_OPEN_KEY)).toBe("0");
   });
 
   it("开合组记忆：损坏 JSON 回默认；可折叠组落盘；已存值恢复", async () => {
-    localStorage.setItem("dbx.kafka.ui.msgFilters", "{bad");
+    pluginStore.setItem(MSG_FILTERS_KEY, "{bad");
     const fallback = makeForm();
     expect(fallback.openGroups.value.filter).toBe(true);
     expect(fallback.openGroups.value.decode).toBe(false);
@@ -195,13 +199,13 @@ describe("摘要条与 chips", () => {
     fallback.toggleGroup("filter");
     fallback.toggleGroup("timeRange");
     await nextTick();
-    expect(JSON.parse(localStorage.getItem("dbx.kafka.ui.msgFilters") ?? "{}")).toEqual({
+    expect(JSON.parse(pluginStore.getItem(MSG_FILTERS_KEY) ?? "{}")).toEqual({
       timeRange: false,
       filter: false,
       decode: false,
     });
 
-    localStorage.setItem("dbx.kafka.ui.msgFilters", JSON.stringify({ filter: false }));
+    pluginStore.setItem(MSG_FILTERS_KEY, JSON.stringify({ filter: false }));
     const restored = makeForm();
     expect(restored.openGroups.value.filter).toBe(false);
   });

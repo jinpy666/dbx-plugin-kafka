@@ -2,8 +2,8 @@
 // DbxAgGrid 组件测试（连线行为锁定）：真实 ag-grid 在 happy-dom 下无法可靠
 // 布局，故 mock ag-grid-community 的 createGrid 捕获 GridOptions + 假 GridApi：
 // - quickFilter prop 初始与变更均下发 quickFilterText
-// - 分页页大小变更按 tableKey 持久化 localStorage + emit pageSizeChanged；
-//   未变化/非法值不写（现有行为锁定）；tableKey 切换重载持久化页大小
+// - 分页页大小变更按 tableKey 持久化 pluginStore（宿主 storage 适配）+ emit
+//   pageSizeChanged；未变化/非法值不写（现有行为锁定）；tableKey 切换重载持久化页大小
 // - 窄容器（< GRID_COMPACT_WIDTH）降级 minimal 列集、宽容器恢复
 // - rowClick 仅在 emitRowClick 时转发；selectionChanged 有选中发行、无选发 null
 // - goToLatest：切末页 + 末行滚入视口
@@ -12,6 +12,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { mount, type VueWrapper } from "@vue/test-utils";
 import DbxAgGrid from "./DbxAgGrid.vue";
 import type { GridContextMenuItem } from "./DbxAgGrid.vue";
+import { GRID_PAGE_SIZES_KEY, pluginStore } from "../lib/pluginStore";
 import { messageCellCopyText, toMessageRows, GRID_COMPACT_WIDTH } from "../lib/kafkaColumns";
 import type { ColDef, GridOptions } from "ag-grid-community";
 
@@ -73,7 +74,9 @@ function lastApi(wrapper: VueWrapper<InstanceType<typeof DbxAgGrid>>) {
 }
 
 beforeEach(() => {
-  localStorage.clear();
+  // 持久化后端是 pluginStore（宿主 storage 适配），清理须走同一实例
+  //（happy-dom 下 store 在模块导入时已水合，之后改 localStorage 读不到）。
+  pluginStore.removeItem(GRID_PAGE_SIZES_KEY);
   gridMock.created.length = 0;
   gridMock.apis.length = 0;
   resizeCallbacks.length = 0;
@@ -97,7 +100,8 @@ describe("DbxAgGrid", () => {
     expect(gridMock.created[0].options.paginationPageSize).toBe(50);
     gridMock.pendingSize = 123;
     gridMock.created[0].options.onPaginationChanged?.({ api: lastApi(wrapper) } as never);
-    expect(localStorage.getItem("dbx-kafka-grid-pagesize-spec-table")).toBe("123");
+    // 页大小收敛为单键 JSON map（tableKey → size）
+    expect(JSON.parse(pluginStore.getItem(GRID_PAGE_SIZES_KEY)!)).toEqual({ "spec-table": 123 });
     expect(wrapper.emitted("pageSizeChanged")).toEqual([[123]]);
   });
 
@@ -110,12 +114,12 @@ describe("DbxAgGrid", () => {
     gridMock.created[0].options.onPaginationChanged?.({ api: lastApi(wrapper) } as never);
     gridMock.pendingSize = 0;
     gridMock.created[0].options.onPaginationChanged?.({ api: lastApi(wrapper) } as never);
-    expect(localStorage.getItem("dbx-kafka-grid-pagesize-spec-table")).toBeNull();
+    expect(pluginStore.getItem(GRID_PAGE_SIZES_KEY)).toBeNull();
     expect(wrapper.emitted("pageSizeChanged")).toBeUndefined();
   });
 
   it("reloads the persisted page size when the table key changes", async () => {
-    localStorage.setItem("dbx-kafka-grid-pagesize-other-table", "25");
+    pluginStore.setItem(GRID_PAGE_SIZES_KEY, JSON.stringify({ "other-table": 25 }));
     const wrapper = mountGrid();
     lastApi(wrapper).setGridOption.mockClear();
     await wrapper.setProps({ tableKey: "other-table" });

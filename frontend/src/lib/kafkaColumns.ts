@@ -7,9 +7,9 @@
  * headers). Row data is passed through small `to*Rows()` view-model mappers so
  * display text (previews, timestamps) is formatted once, not per-cell.
  *
- * Pagination page size persists per table key in localStorage (commercial
- * parity with tinyrdm KafkaGrid). `minimalColumns()` powers the narrow
- * container degradation to the minimal column set.
+ * Pagination page size persists per table key via pluginStore (host.storage-
+ * backed; commercial parity with tinyrdm KafkaGrid). `minimalColumns()` powers
+ * the narrow container degradation to the minimal column set.
  */
 import type { ColDef, ValueFormatterParams } from "ag-grid-community";
 import { ref } from "vue";
@@ -26,19 +26,20 @@ import type {
   TopicPartitionInfo,
 } from "./api";
 import { formatTimestamp, timestampFilterTextComparator, timestampIso, type TimestampTz } from "./timestamps";
+import { GRID_PAGE_SIZES_KEY, TIMESTAMP_TZ_STORAGE_KEY, pluginStore } from "./pluginStore";
 import { messageFullValueText } from "./messageCodec";
 import { headersPreview, previewText } from "./uiHelpers";
 import { t, workbenchLocale } from "./i18n";
 
-// -- timestamp timezone（F6-3：本地/UTC 切换，localStorage `kafka.ts.tz` 记忆）-----
+// -- timestamp timezone（F6-3：本地/UTC 切换，pluginStore `kafka.ts.tz` 记忆）------
 // 行映射（to*Rows）与列 valueFormatter 共同消费该 ref：MessagesPanel 切换后
-// computed 重建列与行，时间戳单元格即时换区；宿主 webview 禁存储时静默降级。
+// computed 重建列与行，时间戳单元格即时换区；无桥且存储禁用时静默降级。
 
-export const TIMESTAMP_TZ_STORAGE_KEY = "kafka.ts.tz";
+export { TIMESTAMP_TZ_STORAGE_KEY };
 
 function loadStoredTimestampTz(): TimestampTz {
   try {
-    return localStorage.getItem(TIMESTAMP_TZ_STORAGE_KEY) === "utc" ? "utc" : "local";
+    return pluginStore.getItem(TIMESTAMP_TZ_STORAGE_KEY) === "utc" ? "utc" : "local";
   } catch {
     return "local";
   }
@@ -49,7 +50,7 @@ export const workbenchTimestampTz = ref<TimestampTz>(loadStoredTimestampTz());
 export function setWorkbenchTimestampTz(tz: TimestampTz): void {
   workbenchTimestampTz.value = tz === "utc" ? "utc" : "local";
   try {
-    localStorage.setItem(TIMESTAMP_TZ_STORAGE_KEY, workbenchTimestampTz.value);
+    pluginStore.setItem(TIMESTAMP_TZ_STORAGE_KEY, workbenchTimestampTz.value);
   } catch {
     /* 存储不可用：仅内存态 */
   }
@@ -596,32 +597,43 @@ export const MINIMAL_VERSION_FIELDS = ["version", "id"];
 export const MINIMAL_LAG_FIELDS = ["topic", "partition", "lag"];
 
 // -- page size persistence -----------------------------------------------------------
+// 旧实现为 dbx-kafka-grid-pagesize-<tableKey> 动态拼键；宿主 storage 无列键
+// 方法，收敛为单一 gridPageSizes 固定键 + JSON map（tableKey → size），导出
+// 函数签名不变、内部布局换掉。旧动态键不做迁移：工作台 opaque origin 下
+// localStorage 从未写成功，无存量可搬。
 
-const PAGE_SIZE_STORAGE_PREFIX = "dbx-kafka-grid-pagesize-";
 export const PAGE_SIZE_OPTIONS = [20, 50, 100, 200];
 export const DEFAULT_PAGE_SIZE = 50;
 
-function storage(): Storage | null {
+/** 读取页大小 map；损坏/非法条目忽略（一张表一个正数条目）。 */
+function loadGridPageSizes(): Record<string, number> {
   try {
-    return typeof localStorage === "undefined" ? null : localStorage;
+    const parsed = JSON.parse(pluginStore.getItem(GRID_PAGE_SIZES_KEY) ?? "") as Record<string, unknown> | null;
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
+    const sizes: Record<string, number> = {};
+    for (const [key, value] of Object.entries(parsed)) {
+      const size = Number(value);
+      if (key && Number.isFinite(size) && size > 0) sizes[key] = size;
+    }
+    return sizes;
   } catch {
-    return null; // 宿主 webview 禁用 localStorage 时的静默兜底
+    return {};
   }
 }
 
 export function loadPreferredPageSize(tableKey: string): number {
-  const raw = storage()?.getItem(PAGE_SIZE_STORAGE_PREFIX + tableKey) ?? "";
-  const parsed = Number.parseInt(raw, 10);
-  return Number.isFinite(parsed) && parsed > 0 ? parsed : DEFAULT_PAGE_SIZE;
+  return loadGridPageSizes()[tableKey] ?? DEFAULT_PAGE_SIZE;
 }
 
 export function savePreferredPageSize(tableKey: string, size: number): void {
-  const store = storage();
-  if (!store) return;
+  if (!tableKey) return;
+  const sizes = loadGridPageSizes();
+  if (Number.isFinite(size) && size > 0) sizes[tableKey] = size;
+  else delete sizes[tableKey];
   try {
-    store.setItem(PAGE_SIZE_STORAGE_PREFIX + tableKey, String(size));
+    pluginStore.setItem(GRID_PAGE_SIZES_KEY, JSON.stringify(sizes));
   } catch {
-    // quota/private mode → 分页偏好放弃持久化即可
+    // quota/存储不可用 → 分页偏好放弃持久化即可（pluginStore 不抛，保留无害兜底）
   }
 }
 

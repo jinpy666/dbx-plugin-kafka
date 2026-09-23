@@ -1715,3 +1715,60 @@ MCP 专项收口轮：第七轮代码之后对在跑 dev 集群（127.0.0.1:9092
 - **验证**：`vue-tsc --noEmit` 0 错；38 文件 337 用例全绿（基线 36 文件
   300 用例）；`vite build` 通过（chunk warning 为既有现象）。纯测试改动，
   零组件/协议变更。
+
+## 前端持久化迁移 host.storage（2026-09-24）
+
+- **背景**：工作台 iframe 是 sandbox opaque origin，直接读 `localStorage` 抛
+  SecurityError，此前各调用点的 best-effort localStorage 持久化（表单开合、
+  树宽/折叠、收藏、时区、页大小）在真机上全部静默失效。宿主 Host API 1.2
+  提供 `window.dbxPlugin.storage`（get/set/delete + 能力位
+  `capabilities.storage`，manifest 须声明 `host.storage` 权限），桌面端落
+  `plugin-data/<id>/ui-storage.json`，web 宿主落顶层文档 localStorage。
+  迁移统一走 `shared/frontend/pluginStorage.ts` 适配器（files 插件同款），
+  新增 `src/lib/pluginStore.ts` 单点接线，调用点保持
+  `getItem/setItem/removeItem` 同名语义，零 async 改造。
+- **键清单（键名一律不变，共 8 键）**：`dbx.kafka.ui.msgFormOpen`、
+  `dbx.kafka.ui.msgFilters`（useConsumeForm）；`dbx.kafka.ui.treeWidth`、
+  `dbx.kafka.ui.treeCollapsed`、`dbx.kafka.ui.showInternal`（TopicTree）；
+  `dbx.kafka.ui.topicFavorites`（topicFavorites）；`kafka.ts.tz`
+  （kafkaColumns，历史键名沿用）；`dbx.kafka.ui.gridPageSizes`（新收敛键，
+  见下）。键集合在 `pluginStore.ts` 显式声明（宿主 storage 无列键方法），
+  `main.ts` 挂载前 `await pluginStore.ready` 完成启动水合（含 localStorage
+  旧键一次性惰性搬家）。
+- **动态键收敛决策**：分页页大小原为 `dbx-kafka-grid-pagesize-<tableKey>`
+  动态拼键（12 张表），收敛为单一 `dbx.kafka.ui.gridPageSizes` 固定键 +
+  JSON map（tableKey → size）；`loadPreferredPageSize/savePreferredPageSize`
+  导出签名不变，内部布局换掉。旧动态键不做迁移：工作台 opaque origin 下
+  localStorage 从未写成功过，无存量可搬。
+- **降级链**：宿主桥 storage → guarded localStorage（web 直连/dev mock 场景）
+  → 内存（仅当前会话）；store 不抛错，调用点原有 try/catch 兜底结构保留
+  （无害）。mock（`mockDbxHost.ts`）补齐 storage mock + 
+  `capabilities.storage=true`（内存 Map，get 未命中 null、set(undefined)→null），
+  组装注释从「Host API 1.0 面一致」更新为 1.2；`env.d.ts` 的 DbxPluginApi
+  内联补 `capabilities`/`storage` 声明；`manifest.json` permissions 增加
+  `host.storage`（版本号不动）。
+- **spec 适配**：播种/断言全部改走 pluginStore 实例（happy-dom 下 store 在
+  模块导入时已水合，之后改 localStorage 读不到）——useConsumeForm/
+  TopicTree/DbxAgGrid/MessagesPanel/topicFavorites 五个 spec；DbxAgGrid 页
+  大小断言改查 gridPageSizes JSON map。新增薄 spec
+  `lib/pluginStorage.spec.ts`（键集合完整 + 键名常量锁定 + node 环境通道为
+  memory + 内存档 Web Storage 语义）。mockDbxHost 内部的
+  `kafka-mock-presets` localStorage 属 mock 走查壳自身存储，不在工作台
+  UI 键清单内，未迁移。
+- **web/docker 注意点**：web 宿主把 host.storage 落到顶层文档 localStorage
+  （非插件 iframe），插件侧代码不变；桌面端 opaque origin 下 localStorage
+  搬家自然跳过。配额由宿主端强制（单值 256 KiB / 总量 1 MiB / 1024 键），
+  超限仅 console.warn 不阻断 UI；凭据仍走连接表单 binding:"secret"，本迁移
+  只涉及非敏感 UI 状态。
+- **验证**：`vue-tsc --noEmit` 0 错；`vitest run` 40 文件 345 用例全绿
+  （基线 39 文件 343 用例）。零新依赖、零用户可见文案（无七语改动）、
+  不动 backend/、不动键名。
+
+- **mock 兜底语义修正（收尾统一改动）**：storage mock 初版为纯内存 Map，
+  页面刷新即丢，背离真实宿主（web 宿主由顶层 localStorage 兜底、桌面端落
+  `plugin-data/<id>/ui-storage.json`）——ldap ui_test walkthrough 的
+  「expanding the compact bar … persists」用例即因此失败（用例 109 行裸
+  localStorage 断言，且 walkthrough 共用 page 导致后续 builder 用例连坐，
+  一度 30/35）。统一改为 localStorage 兜底（键名不变；字符串值原样、对象
+  JSON 编码；opaque origin 不可用时退化内存），dev/`?mock=1` 恢复刷新持久化，
+  walkthrough 断言无需改动；修正后 本插件 vitest 40 文件 345 用例复验全绿。

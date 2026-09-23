@@ -9,7 +9,8 @@ import { defineComponent, h, type PropType } from "vue";
 import MessagesPanel from "./MessagesPanel.vue";
 import { setKafkaConnectionId, type ConsumeResult, type KafkaMessage } from "../lib/api";
 import { formatTimestamp } from "../lib/timestamps";
-import { setWorkbenchTimestampTz } from "../lib/kafkaColumns";
+import { setWorkbenchTimestampTz, TIMESTAMP_TZ_STORAGE_KEY } from "../lib/kafkaColumns";
+import { pluginStore } from "../lib/pluginStore";
 import { t } from "../lib/i18n";
 
 // -- DbxAgGrid 轻量 stub（镜像真实桥形状，见 GroupsPanel.spec 同款） -----------------
@@ -247,7 +248,7 @@ describe("MessagesPanel", () => {
     }
   });
 
-  // F6-3：本地/UTC toggle → localStorage `kafka.ts.tz` 持久化 + 行时间戳按 UTC 渲染。
+  // F6-3：本地/UTC toggle → pluginStore `kafka.ts.tz` 持久化 + 行时间戳按 UTC 渲染。
   it("persists the timestamp timezone toggle and renders UTC cells (F6-3)", async () => {
     installBridge({
       "kafka/presets/list": { presets: [] },
@@ -264,7 +265,7 @@ describe("MessagesPanel", () => {
     expect(rowBefore).toContain(`ts:${formatTimestamp(1_700_000_000_000, "local")}`);
     await toggle.trigger("click");
     await flushPromises();
-    expect(localStorage.getItem("kafka.ts.tz")).toBe("utc");
+    expect(pluginStore.getItem(TIMESTAMP_TZ_STORAGE_KEY)).toBe("utc");
     expect(wrapper.find('[data-testid="tz-toggle"]').text()).toBe("UTC");
     expect(wrapper.find(".grid-stub-row").text()).toContain("ts:2023-11-14 22:13:20");
     // 重挂载读取持久化偏好。

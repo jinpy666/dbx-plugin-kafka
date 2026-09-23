@@ -5,16 +5,18 @@
  * kafka/presets/*（消费/过滤预设专用，MessagesPanel/MonitorPanel 共享同一
  * presets.json 下拉列表，混入收藏会污染预设语义）与 kafka/connections/statuses
  * （连接态只读摘要）——都不适合低成本复用；按任务约定不新增后端协议方法。
- * 因此收藏仅走前端 best-effort localStorage（与侧栏宽度/时区开关同款模式，
- * 宿主 webview 禁存储时静默降级为会话内存态，重启丢失）；服务端不持久化。
+ * 因此收藏仅走前端 best-effort 持久化（pluginStore：宿主 storage → localStorage
+ * 降级，与侧栏宽度/时区开关同款模式，无桥且存储禁用时静默降级为会话内存态，
+ * 重启丢失）；服务端不持久化。
  */
 import { ref } from "vue";
+import { TOPIC_FAVORITES_STORAGE_KEY, pluginStore } from "./pluginStore";
 
-export const TOPIC_FAVORITES_STORAGE_KEY = "dbx.kafka.ui.topicFavorites";
+export { TOPIC_FAVORITES_STORAGE_KEY };
 
 function loadNames(): string[] {
   try {
-    const raw = JSON.parse(localStorage.getItem(TOPIC_FAVORITES_STORAGE_KEY) ?? "");
+    const raw = JSON.parse(pluginStore.getItem(TOPIC_FAVORITES_STORAGE_KEY) ?? "");
     if (Array.isArray(raw)) return raw.filter((row): row is string => typeof row === "string");
   } catch {
     /* 无记忆/损坏 → 空集 */
@@ -35,7 +37,7 @@ export function isFavoriteTopic(name: string): boolean {
 
 function persist(names: ReadonlySet<string>) {
   try {
-    localStorage.setItem(TOPIC_FAVORITES_STORAGE_KEY, JSON.stringify([...names]));
+    pluginStore.setItem(TOPIC_FAVORITES_STORAGE_KEY, JSON.stringify([...names]));
   } catch {
     /* 存储不可用（隐私模式等）：仅内存态 */
   }

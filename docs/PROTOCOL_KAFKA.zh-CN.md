@@ -776,7 +776,8 @@ SR provider 解析以 `schema_registry` 开关为准（`resolveSchemaProvider`�
 进结构化连接字段。
 
 - **凭据红线**：字段 binding 为 **secret**——粘贴文本（可能内嵌
-  jaas/basic.auth 密码）经宿主 secret binding 加密存储、仅在
+  jaas/basic.auth 密码）交宿主 secret binding 托管（宿主本地库明文落盘、
+  靠数据目录权限防护）、仅在
   connection/connect|test 时经 `connection_secrets.properties_import` 下发
   明文到 sidecar，插件不持久化、不进日志/审计。**config 通道中的同名键
   一律不消费**（防非对话框写路径明文持久化，`props_test.go` 有回归）。

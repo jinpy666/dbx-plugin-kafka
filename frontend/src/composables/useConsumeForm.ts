@@ -4,10 +4,11 @@
  * ConsumeParams 构建与消费预设（save/apply/remove）。组件保留消费执行、
  * MCP intent、导出等编排逻辑。
  *
- * 纯状态 + 纯函数拼装；副作用只有 localStorage 开合记忆与 kafkaApi 预设调用。
+ * 纯状态 + 纯函数拼装；副作用只有 pluginStore 开合记忆与 kafkaApi 预设调用。
  */
 import { computed, ref, watch } from "vue";
 import { t } from "../lib/i18n";
+import { MSG_FILTERS_KEY, MSG_FORM_OPEN_KEY, pluginStore } from "../lib/pluginStore";
 import { kafkaApi, type ConsumeParams, type DecodeMode, type Decompression, type FieldFilter, type IsolationLevel, type MatchMode, type OffsetStrategy, type SchemaAttach, type SchemaFormat, type SchemaSubject } from "../lib/api";
 import {
   fieldFilterIssue,
@@ -80,12 +81,11 @@ export function useConsumeForm(options: UseConsumeFormOptions) {
 
   // -- 摘要条（收起态）：开合记忆 dbx.kafka.ui.msgFormOpen；无记忆时
   // 「未选 topic 或尚无结果」默认展开、消费成功后自动收起为摘要条。-------------
-
-  const MSG_FORM_OPEN_KEY = "dbx.kafka.ui.msgFormOpen";
+  // （键常量与持久化通道统一在 lib/pluginStore：宿主 storage → localStorage 降级。）
 
   function loadStoredFormOpen(): boolean | null {
     try {
-      const raw = localStorage.getItem(MSG_FORM_OPEN_KEY);
+      const raw = pluginStore.getItem(MSG_FORM_OPEN_KEY);
       if (raw === "1") return true;
       if (raw === "0") return false;
     } catch {
@@ -100,7 +100,7 @@ export function useConsumeForm(options: UseConsumeFormOptions) {
 
   watch(formOpen, (open) => {
     try {
-      localStorage.setItem(MSG_FORM_OPEN_KEY, open ? "1" : "0");
+      pluginStore.setItem(MSG_FORM_OPEN_KEY, open ? "1" : "0");
     } catch {
       /* 内存态即可 */
     }
@@ -138,7 +138,6 @@ export function useConsumeForm(options: UseConsumeFormOptions) {
   // 后三组可折叠，开态记忆在 dbx.kafka.ui.msgFilters（JSON 对象，高级项折叠）。
 
   type ConsumeGroupKey = "basic" | "locate" | "timeRange" | "filter" | "decode";
-  const MSG_FILTERS_KEY = "dbx.kafka.ui.msgFilters";
   const GROUP_DEFAULTS: Record<ConsumeGroupKey, boolean> = { basic: true, locate: true, timeRange: true, filter: true, decode: false };
   // 可折叠记忆的组 = 除「基础」「定位」外的三组（前两组常驻展开，不落盘）。
   const COLLAPSIBLE_GROUPS = ["timeRange", "filter", "decode"] as const;
@@ -146,7 +145,7 @@ export function useConsumeForm(options: UseConsumeFormOptions) {
   function loadOpenGroups(): Record<ConsumeGroupKey, boolean> {
     const open = { ...GROUP_DEFAULTS };
     try {
-      const raw = JSON.parse(localStorage.getItem(MSG_FILTERS_KEY) ?? "") as Partial<Record<ConsumeGroupKey, unknown>> | null;
+      const raw = JSON.parse(pluginStore.getItem(MSG_FILTERS_KEY) ?? "") as Partial<Record<ConsumeGroupKey, unknown>> | null;
       if (raw && typeof raw === "object") {
         for (const key of COLLAPSIBLE_GROUPS) {
           if (typeof raw[key] === "boolean") open[key] = raw[key] as boolean;
@@ -164,7 +163,7 @@ export function useConsumeForm(options: UseConsumeFormOptions) {
     openGroups,
     (value) => {
       try {
-        localStorage.setItem(
+        pluginStore.setItem(
           MSG_FILTERS_KEY,
           JSON.stringify(Object.fromEntries(COLLAPSIBLE_GROUPS.map((key) => [key, value[key]]))),
         );

@@ -2,7 +2,7 @@
 // ag-grid-community 封装（Phase 2）：vanilla `createGrid` + 定向 API 更新，
 // 避免再引 ag-grid-vue3 依赖。DBX 视觉经 style.css 的 `.dbx-grid` 用
 // --ag-* CSS 变量对齐主题令牌（light/dark 随宿主 data-theme 切换，两套都成立）。
-// 内建：排序/列内过滤/分页 + 页大小 localStorage 持久化（kafkaColumns 存取）、
+// 内建：排序/列内过滤/分页 + 页大小 pluginStore 持久化（kafkaColumns 存取）、
 // 窄容器（< GRID_COMPACT_WIDTH）降级 minimal 列集、单行选择与行点击事件。
 import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import {
@@ -41,7 +41,7 @@ const props = withDefaults(
   defineProps<{
     rowData: unknown[];
     columnDefs: ColDef[];
-    /** localStorage 持久化键（每表唯一，如 "messages"）。 */
+    /** 页大小持久化键（每表唯一，如 "messages"；落 pluginStore 单键 JSON map）。 */
     tableKey: string;
     /** 窄容器降级保留的列（field 名）。缺省 = 不降级。 */
     compactFields?: string[];

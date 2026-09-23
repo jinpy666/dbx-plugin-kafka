@@ -1,16 +1,19 @@
 // @vitest-environment happy-dom
 // lib/topicFavorites 单测（Lane4 前端打磨）：模块级收藏集的切换/替换与
-// best-effort localStorage 持久化；存储抛错时静默降级为内存态（不落盘不炸）。
+// best-effort 持久化（pluginStore：宿主 storage → localStorage 降级）；
+// 存储抛错时静默降级为内存态（不落盘不炸）。
 import { beforeEach, describe, expect, it } from "vitest";
 import { isFavoriteTopic, setTopicFavorites, toggleTopicFavorite, topicFavorites, TOPIC_FAVORITES_STORAGE_KEY } from "./topicFavorites";
+import { pluginStore } from "./pluginStore";
 
 beforeEach(() => {
-  localStorage.clear();
+  // 持久化后端是 pluginStore（宿主 storage 适配），清理须走同一实例。
+  pluginStore.removeItem(TOPIC_FAVORITES_STORAGE_KEY);
   setTopicFavorites([]);
 });
 
 describe("topicFavorites (Lane4)", () => {
-  it("toggles favorites and round-trips through localStorage", () => {
+  it("toggles favorites and round-trips through pluginStore", () => {
     expect(isFavoriteTopic("users")).toBe(false);
     expect(toggleTopicFavorite("users")).toBe(true);
     expect(isFavoriteTopic("users")).toBe(true);
@@ -18,7 +21,7 @@ describe("topicFavorites (Lane4)", () => {
     expect(isFavoriteTopic("users")).toBe(false);
     // 持久化形状：字符串数组的 JSON
     toggleTopicFavorite("orders");
-    expect(JSON.parse(localStorage.getItem(TOPIC_FAVORITES_STORAGE_KEY) ?? "")).toEqual(["orders"]);
+    expect(JSON.parse(pluginStore.getItem(TOPIC_FAVORITES_STORAGE_KEY) ?? "")).toEqual(["orders"]);
     expect(topicFavorites().has("orders")).toBe(true);
   });
 
@@ -26,7 +29,7 @@ describe("topicFavorites (Lane4)", () => {
     setTopicFavorites(["a", "b"]);
     expect([...topicFavorites()]).toEqual(["a", "b"]);
     // 损坏 JSON → 下次冷启动视为空集（此处直接写坏数据验证 loadNames 兜底语义）
-    localStorage.setItem(TOPIC_FAVORITES_STORAGE_KEY, "{not json");
+    pluginStore.setItem(TOPIC_FAVORITES_STORAGE_KEY, "{not json");
     expect(() => setTopicFavorites([])).not.toThrow();
     expect(topicFavorites().size).toBe(0);
   });

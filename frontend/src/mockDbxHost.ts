@@ -1159,7 +1159,8 @@ function quoteCsv(value: string): string {
   return value;
 }
 
-// window.dbxPlugin 组装（与宿主 Host API 1.0 面一致；invoke ?? request 双方法）。
+// window.dbxPlugin 组装（与宿主 Host API 1.2 面一致；invoke ?? request 双方法，
+// capabilities/storage 为 1.2 新增，mock 镜像真实桥 storage 命名空间同形）。
 window.dbxPlugin = {
   ready: Promise.resolve(context),
   context,
@@ -1195,6 +1196,49 @@ window.dbxPlugin = {
   },
   workbenchState: { set: async () => undefined },
   clipboard: { readText: async () => "", writeText: async () => undefined },
+  // 宿主 host.storage mock（Host API 1.2，pluginHostBridge storage 命名空间同形）：
+  // 与真实 web 宿主同形由 localStorage 兜底（键名不变；字符串值原样、对象 JSON
+  // 编码），刷新/重开不丢；opaque origin 等不可用场景退化为内存 Map。
+  // get 未命中返回 null，set(undefined) 归一化为 null。
+  capabilities: { storage: true },
+  storage: (() => {
+    let ls: Storage | null = null;
+    try {
+      window.localStorage.setItem("__dbx_mock_storage_probe__", "1");
+      window.localStorage.removeItem("__dbx_mock_storage_probe__");
+      ls = window.localStorage;
+    } catch {
+      ls = null;
+    }
+    const mem = new Map<string, string>();
+    const write = (key: string, value: unknown) => {
+      const raw = typeof value === "string" ? value : JSON.stringify(value);
+      if (ls) ls.setItem(key, raw);
+      else mem.set(key, raw);
+    };
+    const read = (key: string): unknown => {
+      const raw = ls ? ls.getItem(key) : (mem.get(key) ?? null);
+      if (raw === null) return null;
+      try {
+        const parsed = JSON.parse(raw);
+        return parsed !== null && typeof parsed === "object" ? parsed : raw;
+      } catch {
+        return raw;
+      }
+    };
+    return {
+      get: async (key: string) => read(key),
+      set: async (key: string, value: unknown) => {
+        write(key, value === undefined ? null : value);
+        return null;
+      },
+      delete: async (key: string) => {
+        if (ls) ls.removeItem(key);
+        else mem.delete(key);
+        return null;
+      },
+    };
+  })(),
   // 宿主另存为桥（桌面端 v0.6.14+）：mock 镜像宿主 Web 模式行为——宿主页
   // 发起 anchor 下载并回 { path }；?nosave=1 时不挂该成员模拟旧宿主（导出
   // 落到 lib/download 的 Blob 网页下载兜底）。

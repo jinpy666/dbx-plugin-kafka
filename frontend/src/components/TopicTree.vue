@@ -2,15 +2,16 @@
 // 左栏 topic 树：业务 topic 按评分排序、internal（_ 前缀 / 后端标记）沉底，
 // 过滤框本地过滤，选中态由父级持有（selectedTopic 单一来源）。
 // Lane4 打磨：internal 显隐开关（默认显示；隐藏仅过滤展示，不动数据请求）+
-// topic 收藏星标（置顶排序，收藏态见 lib/topicFavorites：仅前端 localStorage
+// topic 收藏星标（置顶排序，收藏态见 lib/topicFavorites：仅前端 pluginStore
 // best-effort，不落插件 store）。侧栏收空间：右缘 resizer 拖拽调宽
-// （180–480px，localStorage 记忆，双击重置）、折叠成 40px 竖条（折叠时不渲染
+// （180–480px，pluginStore 记忆，双击重置）、折叠成 40px 竖条（折叠时不渲染
 // 树内容），过滤框 / 快捷键聚焦 + 匹配/总数徽章。
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { ChevronsLeft, ChevronsRight, Eye, EyeOff, HardDrive, Play, RefreshCw, Search, Send, Star, X } from "@lucide/vue";
 import type { KafkaTopic } from "../lib/api";
 import { filterTopics, sortTopicsPinned } from "../lib/topics";
 import { isFavoriteTopic, toggleTopicFavorite, topicFavorites } from "../lib/topicFavorites";
+import { SHOW_INTERNAL_KEY, TREE_COLLAPSED_KEY, TREE_WIDTH_KEY, pluginStore } from "../lib/pluginStore";
 import { friendlyKafkaError } from "../lib/kafkaErrors";
 import { t } from "../lib/i18n";
 
@@ -30,17 +31,15 @@ const emit = defineEmits<{
   (e: "openConsume", topic: string): void;
 }>();
 
-// -- 侧栏宽度 / 折叠（localStorage 记忆，宿主 webview 禁存储时静默降级）---------
+// -- 侧栏宽度 / 折叠（pluginStore 记忆：宿主 storage → localStorage 降级）--------
 
-const TREE_WIDTH_KEY = "dbx.kafka.ui.treeWidth";
-const TREE_COLLAPSED_KEY = "dbx.kafka.ui.treeCollapsed";
 const TREE_WIDTH_DEFAULT = 240;
 const TREE_WIDTH_MIN = 180;
 const TREE_WIDTH_MAX = 480;
 
 function readStoredWidth(): number {
   try {
-    const parsed = Number.parseInt(localStorage.getItem(TREE_WIDTH_KEY) ?? "", 10);
+    const parsed = Number.parseInt(pluginStore.getItem(TREE_WIDTH_KEY) ?? "", 10);
     return Number.isFinite(parsed) ? Math.min(TREE_WIDTH_MAX, Math.max(TREE_WIDTH_MIN, parsed)) : TREE_WIDTH_DEFAULT;
   } catch {
     return TREE_WIDTH_DEFAULT;
@@ -49,7 +48,7 @@ function readStoredWidth(): number {
 
 function persist(key: string, value: string) {
   try {
-    localStorage.setItem(key, value);
+    pluginStore.setItem(key, value);
   } catch {
     /* 存储不可用（隐私模式等）：仅内存态 */
   }
@@ -58,7 +57,7 @@ function persist(key: string, value: string) {
 const width = ref(readStoredWidth());
 const collapsed = ref((() => {
   try {
-    return localStorage.getItem(TREE_COLLAPSED_KEY) === "1";
+    return pluginStore.getItem(TREE_COLLAPSED_KEY) === "1";
   } catch {
     return false;
   }
@@ -108,13 +107,12 @@ function onResizeReset() {
 const keyword = ref("");
 const filterInput = ref<HTMLInputElement | null>(null);
 
-// Lane4：internal 显隐开关（默认显示，localStorage 记忆与侧栏宽度同款降级）。
+// Lane4：internal 显隐开关（默认显示，pluginStore 记忆与侧栏宽度同款降级）。
 // 隐藏只过滤展示层（visible computed），不动 topics 数据请求与总数徽章。
-const SHOW_INTERNAL_KEY = "dbx.kafka.ui.showInternal";
 
 function readStoredShowInternal(): boolean {
   try {
-    return localStorage.getItem(SHOW_INTERNAL_KEY) !== "0";
+    return pluginStore.getItem(SHOW_INTERNAL_KEY) !== "0";
   } catch {
     return true;
   }

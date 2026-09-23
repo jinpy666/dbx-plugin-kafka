@@ -7,6 +7,7 @@ import { mount } from "@vue/test-utils";
 import TopicTree from "./TopicTree.vue";
 import type { KafkaTopic } from "../lib/api";
 import { setTopicFavorites } from "../lib/topicFavorites";
+import { SHOW_INTERNAL_KEY, pluginStore } from "../lib/pluginStore";
 import { t } from "../lib/i18n";
 
 const topics: KafkaTopic[] = [
@@ -195,7 +196,8 @@ describe("TopicTree keyboard navigation (roving tabindex)", () => {
 // Lane4 前端打磨：internal 显隐开关 + 收藏星标置顶。
 describe("TopicTree internal toggle + favorites (Lane4)", () => {
   beforeEach(() => {
-    localStorage.clear();
+    // 持久化后端是 pluginStore（宿主 storage 适配），清理须走同一实例。
+    pluginStore.removeItem(SHOW_INTERNAL_KEY);
     setTopicFavorites([]);
   });
 
@@ -211,12 +213,12 @@ describe("TopicTree internal toggle + favorites (Lane4)", () => {
     expect(toggle().attributes("aria-pressed")).toBe("true");
     // 隐藏只过滤展示：总数徽章仍按 props.topics 计
     expect(wrapper.find(".tree-count").text()).toBe(t("messages.uiTreeFilterCount", { matched: 2, total: 3 }));
-    // 隐藏态记忆落 localStorage（与侧栏宽度同款模式）
-    expect(localStorage.getItem("dbx.kafka.ui.showInternal")).toBe("0");
+    // 隐藏态记忆落 pluginStore（与侧栏宽度同款模式）
+    expect(pluginStore.getItem(SHOW_INTERNAL_KEY)).toBe("0");
     // 再点恢复显示，记忆回到「显示」
     await toggle().trigger("click");
     expect(names()).toEqual(["order-events", "users", "_schemas"]);
-    expect(localStorage.getItem("dbx.kafka.ui.showInternal")).toBe("1");
+    expect(pluginStore.getItem(SHOW_INTERNAL_KEY)).toBe("1");
   });
 
   it("pins a starred topic to the top and toggles the star state without selecting the row", async () => {

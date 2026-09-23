@@ -15,7 +15,8 @@
   },
   "permissions": [
     "host.events",
-    "host.workbench"
+    "host.workbench",
+    "host.storage"
   ],
   "entrypoints": {
     "backend": {

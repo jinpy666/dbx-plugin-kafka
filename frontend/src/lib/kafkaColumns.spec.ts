@@ -1,5 +1,5 @@
 // lib/kafkaColumns 单测：列定义形状（字段/过滤类型/排序）、VM 映射、
-// minimalColumns 窄容器降级、页大小 localStorage 持久化、ag 内置文案七语键齐。
+// minimalColumns 窄容器降级、页大小持久化（pluginStore/宿主 storage）、ag 内置文案七语键齐。
 // @vitest-environment happy-dom
 import { describe, expect, it } from "vitest";
 import {
