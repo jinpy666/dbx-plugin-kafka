@@ -51,9 +51,10 @@ import re
 import sys
 
 current = sys.argv[1]
-# Plain SemVer core only: an unparseable or prerelease filename is kept rather
-# than risk deleting a current-version artifact on a bad guess.
-version_in_name = re.compile(r"-(\d+\.\d+\.\d+)-")
+# Match SemVer including optional prereleases: -<semver>-(darwin|linux|windows)-
+# An unparseable filename is kept rather than risk deleting a current-version
+# artifact on a bad guess.
+version_in_name = re.compile(r"-(\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+?)?)-(?:darwin|linux|windows)-")
 removed = []
 dist = pathlib.Path("dist")
 if dist.is_dir():
