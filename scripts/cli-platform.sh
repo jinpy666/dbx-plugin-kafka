@@ -6,7 +6,7 @@
 # dependencies named @dbx-app/plugin-cli-<suffix>. Both scripts call the
 # native binary directly: the wrapper re-injects DBX_PLUGIN_SDK_ROOT whenever
 # it is unset, and the bundled SDK builds the Go backend through a go.work
-# pinned to go 1.22, which conflicts with backend go.mod requiring >= 1.25.
+# pinned to go 1.22, which conflicts with backend go.mod requiring >= 1.26.
 #
 # The suffix is NOT plain "<os>-<arch>": linux packages carry a -gnu suffix
 # (linux-x64-gnu / linux-arm64-gnu), so the mapping lives in one place here

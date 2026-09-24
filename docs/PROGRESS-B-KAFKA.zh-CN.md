@@ -39,7 +39,7 @@ python3 -c "import json;d=json.load(open('../manifest.json'));ks={f['key'] for f
 
 ```
 kafka/backend/
-├── go.mod / go.sum              # module io.dbx.kafka.plugin，go 1.25.0；SDK replace 照 ldap
+├── go.mod / go.sum              # module io.dbx.kafka.plugin，go 1.26.0；SDK replace 照 ldap
 ├── main.go                      # SDK server + 34 方法 switch + 审计/流式事件 emitter 注入
 └── internal/
     ├── lifecycle/               # 照 ldap 抄改（bootstrap textarea 换行+逗号双拆）

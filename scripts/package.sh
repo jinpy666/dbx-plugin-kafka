@@ -24,7 +24,7 @@ PLUGIN_VERSION="${PLUGIN_VERSION:-0.0.0-dev}"
 
 # The npm CLI wrapper re-injects DBX_PLUGIN_SDK_ROOT whenever it is unset, and
 # its bundled SDK builds the Go sidecar through a go.work pinned to go 1.22,
-# which conflicts with backend go.mod requiring >= 1.25 — so the native binary
+# which conflicts with backend go.mod requiring >= 1.26 — so the native binary
 # is always preferred. The platform package suffix is resolved per-machine
 # (linux uses a -gnu suffix), so cross-platform CI never falls back silently.
 . scripts/cli-platform.sh

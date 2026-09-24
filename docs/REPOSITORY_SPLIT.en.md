@@ -38,7 +38,7 @@ state) do not travel with a subtree split.
   (linux packages carry a `-gnu` suffix). `scripts/build.sh` and
   `scripts/test.sh` call the native CLI through `resolve_native_plugin_cli`,
   avoiding the npm wrapper's injected SDK go.work (pinned to go 1.22)
-  conflicting with backend go.mod (go 1.25); no platform falls back to the
+  conflicting with backend go.mod (go 1.26); no platform falls back to the
   wrapper.
 
 ## CI and release
@@ -46,7 +46,7 @@ state) do not travel with a subtree split.
 - `.github/workflows/ci.yml`: a validate job checks the manifest,
   dbx-plugin.toml, Go identity, and connection forms; the frontend job runs
   typecheck/test/build plus a freshness check on the committed `ui/` output;
-  the backend job runs `go vet ./... && go test ./...` (go 1.25.x, module
+  the backend job runs `go vet ./... && go test ./...` (go 1.26.x, module
   versions pinned by go.sum); the candidate job packages `.dbxp` on five
   targets (linux-x64/linux-arm64/darwin-arm64/darwin-x64/windows-x64) via
   `DBX_PLUGIN_TARGET=<t> bash scripts/build.sh`, runs the offline MCP stdio

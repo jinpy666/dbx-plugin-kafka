@@ -30,7 +30,7 @@ monorepo 忽略项（截图、运行时产物等）不随 subtree split 带入�
 - `scripts/cli-platform.sh` 解决 plugin-cli 平台包后缀解析（linux 带 `-gnu`
   后缀）；`scripts/build.sh` 与 `scripts/test.sh` 改用
   `resolve_native_plugin_cli` 调用原生 CLI，避免 npm wrapper 注入的 SDK
-  go.work（钉在 go 1.22）与 backend go.mod（go 1.25）冲突，任何平台都不再
+  go.work（钉在 go 1.22）与 backend go.mod（go 1.26）冲突，任何平台都不再
   退化到 wrapper。
 
 ## CI 与发布
@@ -38,7 +38,7 @@ monorepo 忽略项（截图、运行时产物等）不随 subtree split 带入�
 - `.github/workflows/ci.yml`：validate job 校验 manifest/dbx-plugin.toml/Go
   身份/连接表单；frontend job 跑 typecheck/test/build 并对提交进仓库的 `ui/`
   构建产物做 freshness 检查；backend job 跑 `go vet ./... && go test ./...`
-  （go 1.25.x，经 go.sum 锁定拉取模块）；candidate job 在 5 个目标
+  （go 1.26.x，经 go.sum 锁定拉取模块）；candidate job 在 5 个目标
   （linux-x64/linux-arm64/darwin-arm64/darwin-x64/windows-x64）上经
   `DBX_PLUGIN_TARGET=<t> bash scripts/build.sh` 打包 `.dbxp`，对本地构建的
   sidecar 跑离线 MCP stdio smoke，最后 `scripts/check_candidates.py` 做跨
