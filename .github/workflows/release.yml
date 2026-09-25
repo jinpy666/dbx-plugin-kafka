@@ -52,16 +52,13 @@ jobs:
           if sys.argv[1] != expected:
               raise SystemExit(f"release tag {sys.argv[1]!r} does not match {expected!r}")
           PY
+      # ui/index.html 已脱库：build job 打包前从源码现构建，
+      # 校验 job 不再用「重建后 git diff 必须为空」的 freshness 门。
       - name: Frontend checks
         run: |
           pnpm --dir frontend install --frozen-lockfile
           pnpm --dir frontend typecheck
           pnpm --dir frontend test
-          if ! git diff --quiet -- ui/; then
-            git diff --stat -- ui/
-            echo "ui/ is stale: run 'pnpm --dir frontend build' and commit the output" >&2
-            exit 1
-          fi
       - name: Go sidecar checks
         run: |
           unformatted="$(cd backend && gofmt -l main.go internal)"

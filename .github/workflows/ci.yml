@@ -58,19 +58,8 @@ jobs:
       - run: pnpm --dir frontend typecheck
       - run: pnpm --dir frontend test
       - run: pnpm --dir frontend build
-      # ui/ is integrator-owned (agent-flow.yml ownership.integrator), so
-      # implementation PRs must not be forced to carry the generated bundle.
-      # Enforce freshness only outside PRs: after a frontend PR lands without
-      # ui/, this goes red on main and the integrator regenerates and commits
-      # the bundle. Never hand-merge ui/ conflicts — re-run the build.
-      - name: Committed ui/ output is fresh
-        if: github.event_name != 'pull_request'
-        run: |
-          if ! git diff --quiet -- ui/; then
-            git diff --stat -- ui/
-            echo "ui/ is stale: run 'pnpm --dir frontend build' and commit the output" >&2
-            exit 1
-          fi
+      # ui/index.html 已脱库：发布与候选打包各自现构建前端，PR 不再被
+      # 「integrator 忘了重新生成 ui/」卡红（原 freshness 门已移除）。
       # Headless Chrome walkthrough against the mock host (mounts the app,
       # zero page errors, MCP ui-intent roundtrip). SKIPs by design when no
       # Chrome is available; ubuntu-24.04 runners ship google-chrome.
