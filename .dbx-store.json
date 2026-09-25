@@ -10,12 +10,13 @@
   ],
   "permissions": [
     "host.events",
-    "host.workbench"
+    "host.workbench",
+    "host.storage"
   ],
   "source": "https://github.com/jinpy666/dbx-plugin-kafka",
   "homepage": "https://github.com/jinpy666/dbx-plugin-kafka",
   "license": "MIT",
-  "releaseNotes": "修复深色主题下 Topic 侧栏不可读的问题：图标色随 color-scheme 自动翻转，核心颜色令牌改为实时跟随宿主主题（不再被内联快照冻结），并提升树行/星标对比度。消息查询新增「最近 N 条」Offset 策略并设为默认：原「最新」策略从日志末端只等待新消息，对没有持续流量的 topic 总是「已扫描 0 · 命中 0」，现在默认即可读到每个分区最新的历史记录。Fixed topics sidebar legibility in dark theme: icon hues follow color-scheme, core color tokens now track the host theme live instead of being frozen by an inline snapshot, and tree row/star contrast was raised. Messages query adds a recent-N offset strategy and defaults to it: the previous latest default only waited for new records and always scanned zero on idle topics; the new default surfaces the newest existing records per partition.",
+  "releaseNotes": "修复工作台状态在真机上不持久化的问题：DBX 沙箱 iframe 的 opaque origin 下 localStorage 直接抛错，原持久化静默失效；现在统一经 pluginStorage 适配器接入宿主 window.dbxPlugin.storage（Host API 1.2，capabilities.storage 探测，降级链：宿主桥 → 受控 localStorage → 内存，旧键一次性搬家），消息查询表单、树宽/折叠、内部 topic 显示、收藏 topic 与时区设置刷新后均保留。同步完成依赖升级：后端 twmb/franz-go 1.22.0、golang.org/x/net 0.59.0 等，前端 vue 3.5.43、ag-grid-community 36.2.0 等，工具链基线提升至 Go 1.26。Fixed workbench state not persisting on the desktop host: localStorage throws under the sandbox iframe's opaque origin, so the previous persistence silently failed; state now goes through a pluginStorage adapter backed by the host window.dbxPlugin.storage bridge (Host API 1.2, capabilities.storage detection, with guarded localStorage and in-memory fallbacks and one-shot legacy-key migration), keeping the messages form, tree width/collapse, internal-topic visibility, favorite topics and timezone across reloads. Dependencies were upgraded in lockstep: twmb/franz-go 1.22.0 and golang.org/x/net 0.59.0 on the backend, vue 3.5.43 and ag-grid-community 36.2.0 on the frontend, with the toolchain floor raised to Go 1.26.",
   "localizations": {
     "zh-CN": {
       "name": "Kafka Studio",
