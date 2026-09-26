@@ -396,3 +396,50 @@ GroupsPanel 行级失败横幅被 reload 起手清错误 emit 立即冲掉（sub
 > 条维持不计级。
 
 验证：`pnpm typecheck` 0 错；`pnpm test` 14 文件 132 用例全绿（基线 118 + MessagesPanel.spec ×4、TopicsPanel.spec ×3、App.spec ×2、TopicTree.spec ×3、kafkaColumns.spec ×2 新增防回归）；playwright（playwright-core 1.63.0 + 系统 Chrome headless `--disable-gpu`，独立实例 `/tmp/uiscan-kafka-r4`，vite :5294）8 项 PASS、0 console error / 0 pageerror；复验截图即删、dev server 已 kill、/tmp 夹具目录工具产物不入库。
+
+## 八、第 5 轮（mock 夹具走查 + 修复，2026-09-27）
+
+> 走查角色：基于 `frontend/mock.html` 夹具的 UI 美化 / 体验走查 + 即时修复（本轮扫描与实施同轮完成）。前 4 轮已收口项全部复核通过（P1-1～P1-7、P2-1～P2-9/P2-11～P2-13/P2-16～P2-20/P2-23/P2-24 实测在位），本轮只记新发现。
+
+### 8.1 走查环境
+
+| 项 | 值 |
+| --- | --- |
+| Dev server | `vite --port 5317 --strictPort`（kafka/frontend，IPv4 127.0.0.1，走查后已 kill，端口释放） |
+| 自动化 | ZCode 内置浏览器（IAB）+ Playwright 表面，1280×900 与 720×900 双视口 |
+| 夹具矩阵 | 默认 / `?theme=light&err=1` / `?audit=denied` / 开合记忆恢复路径 |
+| 走查面 | 9 页签 + 树 + 连接弹窗 + 消息抽屉 + 条件抽屉 + 消费组详情；消费/流式/生产语义抽测 |
+
+### 8.2 新发现与修复回填
+
+统计：**P0 × 0，P1 × 0，P2 × 3，夹具失真 × 1（本轮全部关闭）**。
+
+| 项 | 级别 | 现象与根因 | 修复方式与复验结论 |
+| --- | --- | --- | --- |
+| F5-1 | 夹具失真 | `mock.html` 自行 `createApp(App).mount`，绕过真实入口 `main.ts`——`installHostThemeBridge()` 从未执行，`--overlay` 未定义，`.modal-backdrop`/`.drawer-backdrop` 计算背景 `rgba(0,0,0,0)`，弹窗/抽屉遮罩在夹具中完全透明（真机不可复现，夹具失真误导走查） | `mock.html` 改为 `import mockDbxHost → import main.ts`（与 index.html 同一启动路径：主题桥 + pluginStore.ready + 挂载）。复验：桥样式节点在位、`--overlay` 解析为 `color-mix(background 70%)`，连接弹窗遮罩实测变暗 |
+| F5-2 | P2 | `topicRequired` 键只存在于 `stream:` 命名空间，MessagesPanel 查 `messages.topicRequired` → 消费钮禁用悬停与 intent 拒绝原因透出原始键名（P2-12/P2-17 同类） | 按键位对齐范式改查 `stream.topicRequired`（七语齐备，零新增键）。复验：zh-CN 实测「请先选择 topic」；spec 守卫键存在性 + title 非原始键 |
+| F5-3 | P2 | 消费条件抽屉（consume-drawer）无 Esc 处理（模板注释声称「遮罩/Esc 收起」但从未实现）——P1-5 弹层统一收口的漏网层 | 接入统一 `useModalBehavior`（容器补 `tabindex="-1"` + `role="dialog"` + `aria-modal`）：Esc 关闭、Tab 陷阱、打开聚焦首控件、关闭归还触发钮；`registerIfOpenOnMount` 覆盖开合记忆恢复态（初始即开时只补层栈不抢焦点，Esc 同样可关）。复验：真实浏览器实测开→焦点入抽屉→Esc 关→焦点归还四步全过；恢复态 Esc 亦过 |
+
+新增防回归：`MessagesPanel.spec` ×2（Esc 关闭 + 焦点归还；title 非原始键）、`modalBehavior.spec` ×1（mount 即开层注册不抢焦点 + Esc 可关）。`useModalBehavior` 新增可选 `registerIfOpenOnMount`（向后兼容，缺省行为不变）。
+
+走查确认无新增问题的维度：消费→结果→导出链路、流式启停、生产面板（分区数徽标/校验）、Topic/消费组（状态本地化、位点/成员子表、千分位）/Broker/ACL（空态引导）/Schema（级别前缀）/监控、`?err=1` 树错误本地化 + 横幅让位 70px、`?audit=denied` 审计链、浅色主题、720px 窄视口（侧栏内容自适应、页签横向滚动）。
+
+另记（不计级，维持前轮观察）：页签切换瞬间截图曾见「旧页签高亮 + 新面板内容」组合，经 DOM 断言复核为懒加载 chunk 阻塞下的截图时序伪影（DOM is-active 恒正确），非产品缺陷。
+
+### 8.3 补充走查（同日续轮，修复后回归 + 长尾夹具全覆盖）
+
+上一轮修复落地后的补充走查，覆盖第 1–5 轮未深入的夹具模式；**新发现 P0/P1/P2 × 0**，全部通过：
+
+| 模式 / 路径 | 实测内容 | 结论 |
+| --- | --- | --- |
+| `?theme=light&err=1` | 浅色全面板首屏 + 树错误本地化（红字可读、无拼色） | ✓ |
+| `?ro=1` | 工具栏「只读」「禁删」双徽标；生产面板红色提示 + topic 输入禁用 + 发送禁用降饱和 | ✓ |
+| `?glue=1` | Schema 面板「注册表: AWS Glue」徽标 + Glue subjects（BACKWARD_ALL/FULL_ALL） | ✓ |
+| `?noconn=1` | 初始化错误态本地化文案「Kafka 连接上下文未就绪…」 | ✓ |
+| `?nodelete=1` | 工具栏「禁删」徽标 | ✓ |
+| `?big=1` | 508 topic 树渲染；过滤 1/508 即时；Enter 选首匹配（payment-gateway 入页签徽标）；Esc 清过滤且焦点留在输入框；big-throughput 消费「已扫描 400 · 命中 100 已达条数上限」+ 本地化分页「1 至 50 / 共 100」 | ✓ |
+| 生产→消费端到端 | 生产 `{"round":6,...}` → 通知「分区 0，offset 2」→ 消费「已扫描 4 · 命中 4」新消息可见 | ✓ |
+| `?msk=1` | 连接摘要 OAUTHBEARER / Token 来源 msk_iam / 区域 / Secret 已配置徽标链；弹窗遮罩按 F5-1 修复后正常变暗 | ✓ |
+| `?nosave=1` | 无 saveFile 桥时导出走 Blob 兜底，反馈「已导出 JSON」 | ✓ |
+
+环境备注：本节走查复用 :5317 dev server（用户浏览器标签正打开该页，**保留运行**；停止命令 `kill` 对应 `vite --port 5317` 进程即可）。走查中两次中间异常（树过滤「0 命中」、Esc「未清空」）均为自动化派发层级/猜测 topic 名所致的测试手法问题，复核后排除产品嫌疑。

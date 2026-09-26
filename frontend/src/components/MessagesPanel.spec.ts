@@ -2,7 +2,9 @@
 // MessagesPanel 组件测试（UI 扫描第 4 轮防回归）：
 // P1-6 offset 范围输入（number v-model → optionalNumber String 归一）真正发请求；
 // P1-7 慢响应竞态——在途切换 topic 后旧响应丢弃、新 topic 可立即重发且结果落地；
-// P2-21 空态两态——未选 topic 与已选 topic 的文案区分。
+// P2-21 空态两态——未选 topic 与已选 topic 的文案区分；
+// 第 5 轮走查——条件抽屉 Esc 关闭 + 焦点归还（useModalBehavior 接线）、
+// 消费钮禁用原因悬停不透原始键名（topicRequired 键位对齐 stream.*）。
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { flushPromises, mount } from "@vue/test-utils";
 import { defineComponent, h, type PropType } from "vue";
@@ -10,7 +12,7 @@ import MessagesPanel from "./MessagesPanel.vue";
 import { setKafkaConnectionId, type ConsumeResult, type KafkaMessage } from "../lib/api";
 import { formatTimestamp } from "../lib/timestamps";
 import { setWorkbenchTimestampTz, TIMESTAMP_TZ_STORAGE_KEY } from "../lib/kafkaColumns";
-import { pluginStore } from "../lib/pluginStore";
+import { pluginStore, MSG_FORM_OPEN_KEY } from "../lib/pluginStore";
 import { t } from "../lib/i18n";
 
 // -- DbxAgGrid 轻量 stub（镜像真实桥形状，见 GroupsPanel.spec 同款） -----------------
@@ -72,9 +74,10 @@ function installBridge(routes: Record<string, unknown>) {
   (window as unknown as { dbxPlugin: unknown }).dbxPlugin = { invoke: invokeMock };
 }
 
-function mountPanel(props: Record<string, unknown> = {}) {
+function mountPanel(props: Record<string, unknown> = {}, attachToDocument = false) {
   return mount(MessagesPanel, {
     props: { topic: "order-events", canWrite: true, ...props },
+    ...(attachToDocument ? { attachTo: document.body } : {}),
     global: {
       stubs: {
         DbxAgGrid: DbxAgGridStub,
@@ -195,6 +198,45 @@ describe("MessagesPanel", () => {
     expect(wrapper.find(".empty").text()).toBe(t("messages.uiNoTopicSelected"));
     await wrapper.setProps({ topic: "order-events" });
     expect(wrapper.find(".empty").text()).toBe(t("messages.pendingConsume"));
+  });
+
+  // 第 5 轮走查：条件抽屉接入 useModalBehavior——Esc 关闭、焦点归还「条件」触发钮。
+  it("closes the conditions drawer on Escape and restores focus to the toggle (round5)", async () => {
+    // 开合记忆是模块级缓存（跨用例存活）：先清键保证初始收起。
+    pluginStore.removeItem(MSG_FORM_OPEN_KEY);
+    installBridge({ "kafka/presets/list": { presets: [] } });
+    // 焦点断言需要真实 document 挂载（modalBehavior.spec 同款 attachTo）。
+    const wrapper = mountPanel({}, true);
+    await flushPromises();
+    // happy-dom 下 VTU isVisible() 对 v-show 误报，直接断言 v-show 写入的内联 display。
+    const drawerStyle = () => wrapper.find(".consume-drawer").attributes("style") ?? "";
+    expect(drawerStyle()).toContain("display: none");
+    const toggle = wrapper.find('[data-testid="filters-toggle"]').element as HTMLElement;
+    toggle.focus();
+    await toggle.click();
+    await flushPromises();
+    expect(drawerStyle()).not.toContain("display: none");
+    // 打开：焦点进抽屉首个可交互控件（弹层行为统一语义）。
+    expect(wrapper.find(".consume-drawer__panel").element.contains(document.activeElement)).toBe(true);
+    window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }));
+    await flushPromises();
+    expect(drawerStyle()).toContain("display: none");
+    // 关闭：焦点归还「条件」触发钮。
+    expect(document.activeElement).toBe(toggle);
+    wrapper.unmount();
+  });
+
+  // 第 5 轮走查：topicRequired 键只存在于 stream 命名空间——消费钮禁用原因悬停
+  // 不得透出原始键名（此前 title 显示「messages.topicRequired」）。
+  it("renders the disabled consume reason as localized text, not a raw i18n key (round5)", async () => {
+    installBridge({ "kafka/presets/list": { presets: [] } });
+    const wrapper = mountPanel({ topic: "" });
+    await flushPromises();
+    // 键位存在性守卫：七语任一缺键时 t() 回退原始键名，此断言先红。
+    expect(t("stream.topicRequired")).not.toBe("stream.topicRequired");
+    const run = wrapper.find('[data-testid="consume-run"]');
+    expect((run.attributes("title") ?? "").startsWith("messages.")).toBe(false);
+    expect(run.attributes("title")).toBe(t("stream.topicRequired"));
   });
 
   // round4 面 1：消费在途给出进行中反馈（不再整块空白）——deferred consume 挂起

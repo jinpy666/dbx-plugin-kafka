@@ -9,10 +9,12 @@
   <body>
     <div id="app"></div>
     <script type="module">
+      // 照真实入口（index.html → main.ts）启动：宿主主题桥 installHostThemeBridge
+      // + pluginStore.ready 水合 + 挂载都由 main.ts 承担；mockDbxHost 先行安装
+      // window.dbxPlugin。此前这里直接 mount App 会绕过 main.ts，桥缺失导致
+      // --overlay 未定义，弹窗/抽屉遮罩全透明（夹具失真，真机不可复现）。
       import "./src/mockDbxHost.ts";
-      import { createApp } from "vue";
-      import App from "./src/App.vue";
-      createApp(App).mount("#app");
+      import "./src/main.ts";
     </script>
   </body>
 </html>

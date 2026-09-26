@@ -142,6 +142,34 @@ describe("useModalBehavior", () => {
     expect(document.activeElement).not.toBe(wrapper.find(".a1").element);
     wrapper.unmount();
   });
+
+  // 第 5 轮走查：恢复态初始即开（开合记忆）也要响应 Esc——补层栈但不抢焦点。
+  it("registers an already-open layer on mount without stealing focus (round5)", async () => {
+    const wrapper = mount(
+      defineComponent({
+        setup(): HarnessExposed & { _unused: true } {
+          const openA = ref(true);
+          const elA = ref<HTMLElement | null>(null);
+          useModalBehavior({ open: openA, container: elA, close: () => (openA.value = false), registerIfOpenOnMount: true });
+          return { openA, elA, _unused: true } as HarnessExposed & { _unused: true };
+        },
+        render() {
+          return h("div", [
+            h("button", { class: "outside" }, "outside"),
+            this.openA ? h("div", { class: "modal-a", tabindex: "-1", ref: "elA" }, [h("button", { class: "a1" }, "a1")]) : null,
+          ]);
+        },
+      }),
+      { attachTo: document.body },
+    );
+    await settle();
+    // 焦点保持原地（body），未被弹层抢走。
+    expect(document.activeElement).not.toBe(wrapper.find(".a1").element);
+    press("Escape");
+    await settle();
+    expect(wrapper.vm.openA).toBe(false);
+    wrapper.unmount();
+  });
 });
 
 // 纯决策函数单测（自 kafkaModel.spec 迁入）。

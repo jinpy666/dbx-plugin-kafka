@@ -27,6 +27,11 @@ export interface ModalBehaviorOptions {
   container: Ref<HTMLElement | null>;
   /** 关闭回调（如 `() => (createOpen.value = false)`）。 */
   close: () => void;
+  /**
+   * 挂载时弹层已处于打开态（如消费条件抽屉的开合记忆恢复）：只入层栈挂
+   * keydown 监听、不抢焦点——打开焦点迁移仍交给 open 的 false→true watch。
+   */
+  registerIfOpenOnMount?: boolean;
 }
 
 /**
@@ -90,6 +95,12 @@ export function useModalBehavior(options: ModalBehaviorOptions): void {
       trigger = null;
     }
   });
+
+  if (options.registerIfOpenOnMount && options.open.value) {
+    // 恢复态初始即开：补层栈与监听（Esc/Tab 生效），焦点保持原地不抢。
+    layerStack.push(layer);
+    window.addEventListener("keydown", onKeydown);
+  }
 
   onBeforeUnmount(() => {
     stopWatch();
