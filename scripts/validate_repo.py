@@ -76,6 +76,7 @@ def main() -> int:
         "scripts/connection-forms/verify.mjs",
         "shared/frontend/binaryEvent.ts",
         "shared/frontend/editorTheme.ts",
+        "shared/frontend/pluginStorage.ts",
         "shared/frontend/themeSync.ts",
         "shared/frontend/uiIntent.ts",
         "shared/sdk/go/dbx-plugin-sdk/go.mod",
@@ -84,6 +85,13 @@ def main() -> int:
     for relative in required:
         if not (ROOT / relative).exists():
             fail(f"missing required path: {relative}")
+
+    # vendored shared/frontend 副本身份（评审 WATCH：拆分后每个插件仓库一份
+    # 手抄副本，无来源戳就无法判断两个仓库的副本谁新谁旧——标记行即检查点）。
+    for name in ("binaryEvent.ts", "editorTheme.ts", "pluginStorage.ts", "themeSync.ts", "uiIntent.ts"):
+        vendored = (ROOT / "shared/frontend" / name).read_text(encoding="utf-8")
+        if not vendored.lstrip().startswith("// vendored:") or "vendored-sync:" not in vendored[:800]:
+            fail(f"shared/frontend/{name} is missing the vendored provenance header")
 
     store = json.loads((ROOT / ".dbx-store.json").read_text(encoding="utf-8"))
     if store.get("permissions") != manifest.get("permissions"):

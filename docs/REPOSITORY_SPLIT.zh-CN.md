@@ -59,6 +59,12 @@ SDK 需要变更，应另开 DBX host/SDK 变更并在 issue/PR 中记录对应�
 演进后，把变更同步回本仓库的 vendored 副本并在拆分基线上重新验证。需要跨
 插件复用时应发布公共包或同步回各独立仓库的明确版本。
 
+**vendored 来源戳（评审 2026-09-26 约定）**：`shared/frontend/` 下每个
+vendored 文件的第一行必须是 `// vendored:` 来源声明，第二段 `// vendored-sync: <日期>`
+记录本次同步时间；上游演进同步回来时**必须更新日期行**并在拆分基线上重新
+验证。`scripts/validate_repo.py` 检查标记行存在——两个插件仓库的副本谁新
+谁旧，比较 `vendored-sync` 日期即可，不再靠考古。
+
 真实 Kafka 集群（`docker-compose.kafka-test.yml` 测试容器、
 `scripts/dev-cluster.sh` dev 集群、Schema Registry）和 DBX.app host 安装管线
 不是离线 CI 的通过条件；没有这些环境时相关 live/e2e/smoke 用例必须输出

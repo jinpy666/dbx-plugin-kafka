@@ -22,6 +22,15 @@ v2，ssh `mcp.rs` 骨架 → ldap Go 版 → kafka 同构移植）。实现在 s
 2. **写：入 MCP 面 + 两阶段确认**——`kafka_messages_produce`（单条小消息）
    单阶段直执行；`kafka_topics_delete`、`kafka_groups_offsets_reset`、
    `kafka_topics_records_clear` 强制 preview → confirmToken。
+
+   > **安全边界须知（评审 2026-09-26）**：两阶段确认（preview → confirmToken）
+   > 与只读门是**防误操作的机制**，不是授权边界。stdio 独立模式下 preview、
+   > token、confirm 在同一个 agent 对话流内完成——签发者与消费者是同一个
+   > LLM，`readOnly`/`allowDelete` 也只是连接参数本身；真正的授权边界是
+   > **用户选择把哪些凭据/连接交给这个 agent**（只读连接 + `allow_delete=false`
+   > 是推荐的默认姿态）。桥模式（工作台）则由应用侧持有凭据与策略，宿主可
+   > 在工作台加带外审批（appbridge 的 bridgeReadMargin 为此设计）。把生产
+   > 集群的可写凭据配进完全自主的 agent 循环，任何插件侧机制都拦不住。
 3. **token 经济**——默认 `format:"digest"`（计数 + 分布 + 样本），显式要
    `rows` 才出行且 clamp ≤20 行；单响应上限 16 KiB；大 value 原文不出
    MCP（占位符 + partition/offset 定位指引）。
@@ -97,7 +106,10 @@ ZooKeeper 源（`connection_source=zk` + `zk_servers`）、Kerberos/GSSAPI
 - digest/cursor/写族语义与方式一完全同构（同一 `mcp/call` 分派路径，只是
   新入口）：`maxScanRecords` 扫描语义 + 本地聚合、cursor 翻页、produce
   单阶段、三写两阶段 confirmToken（一次性/60s/hash 绑定）、写审计
-  `source:"mcp"` 照常落 audit.jsonl。
+  `source:"mcp"` 照常落 audit.jsonl。同上节：stdio 的两阶段确认是思考
+  停顿而非授权边界——凭据经内联参数进入本进程，客户端侧的会话日志/追踪
+  通常会记录完整 arguments（含 saslPassword 等），共享凭据前先评估这条
+  泄漏面。
 - 工具执行错误按 MCP 规约以 `isError:true` content 返回（非协议级错误）。
 - 数据目录沿用 `DBX_PLUGIN_DATA_DIR`，`mcp-settings.json` 与 `audit.jsonl`
   都在其中生效。

@@ -1,3 +1,7 @@
+// vendored: DBX 插件族 monorepo `shared/frontend` 的副本（只保留本插件引用的模块）。
+// vendored-sync: 2026-09-27；上游公共层演进后同步回来时更新本行日期，
+// 并按 docs/REPOSITORY_SPLIT.zh-CN.md 的同步约定在拆分基线上重新验证。
+// scripts/validate_repo.py 检查本标记行的存在（副本身份，防「无从判断谁新谁旧」）。
 /**
  * Plugin-host bridge binary event normalization (shared by all plugins).
  *
