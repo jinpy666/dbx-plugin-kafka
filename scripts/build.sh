@@ -11,13 +11,24 @@ if ! command -v pnpm >/dev/null; then
   export PATH="$HOME/Library/pnpm:$HOME/.nvm/versions/node/v22.21.0/bin:$PATH"
 fi
 
-echo "==> frontend: install + typecheck + test + build"
-if [ ! -d frontend/node_modules ]; then
-  pnpm --dir frontend install
+# Release CI builds the target-independent UI once per plugin and stages ui/
+# here as an artifact; DBX_PREBUILT_UI=1 packages it as-is instead of rerunning
+# the frontend three-step on every platform job.
+if [ "${DBX_PREBUILT_UI:-0}" = "1" ]; then
+  if [ ! -f ui/index.html ]; then
+    echo "DBX_PREBUILT_UI=1 but ui/index.html is missing; stage the CI frontend artifact first" >&2
+    exit 1
+  fi
+  echo "==> frontend: skipped (prebuilt ui/ staged by CI)"
+else
+  echo "==> frontend: install + typecheck + test + build"
+  if [ ! -d frontend/node_modules ]; then
+    pnpm --dir frontend install
+  fi
+  pnpm --dir frontend typecheck
+  pnpm --dir frontend test
+  pnpm --dir frontend build
 fi
-pnpm --dir frontend typecheck
-pnpm --dir frontend test
-pnpm --dir frontend build
 
 if [ ! -f manifest.json ]; then
   echo "SKIP: manifest.json not present yet (backend path owns it); frontend artifacts are in ui/"
