@@ -9,6 +9,7 @@
 import { nextTick, ref, watch } from "vue";
 import { ChevronDown, ChevronsDown, Download, Play, Plus, Save, SlidersHorizontal, Trash2, X } from "@lucide/vue";
 import { messageFullValueText } from "../lib/messageCodec";
+import { useModalBehavior } from "../lib/modalBehavior";
 import DbxAgGrid from "./DbxAgGrid.vue";
 import MessageDetailDrawer from "./MessageDetailDrawer.vue";
 import { kafkaApi, type ConsumeResult, type KafkaMessage, type KafkaTopic, type MatchMode, type OffsetStrategy } from "../lib/api";
@@ -116,6 +117,14 @@ const {
 const consuming = ref(false);
 // 消费表单校验问题（i18n 文案；runConsume / applyIntentConsume 两处写入）。
 const formIssues = ref<string[]>([]);
+
+// 条件抽屉弹层行为（P1-5 家族收口补漏）：Esc 关闭 + Tab 焦点陷阱 + 打开聚焦
+// 首控件 + 关闭归还「条件」触发钮——与其余 13 处弹层同一 useModalBehavior；
+// close 与遮罩点击同路径（formOpen=false），开合记忆仍由 useConsumeForm 的
+// watch(formOpen) 落盘。恢复态初始即开（registerIfOpenOnMount）只补层栈，
+// 不抢焦点，Esc 同样可关。
+const consumeDrawerEl = ref<HTMLElement | null>(null);
+useModalBehavior({ open: formOpen, container: consumeDrawerEl, close: () => (formOpen.value = false), registerIfOpenOnMount: true });
 
 // 摘要 chips：策略文案映射（无新增 i18n key，复用既有 strategy*/formatRaw）。
 // 生效过滤条件数 / 分组开合 / 时间双模式：见 useConsumeForm（composable）。
@@ -248,7 +257,8 @@ async function applyIntentConsume(params: Record<string, unknown>): Promise<UiIn
   }
   const topic = String(params.topic ?? "").trim();
   if (!topic && !props.topic) {
-    return { status: "rejected", reason: t("messages.topicRequired") };
+    // 键挂 stream 命名空间（messages.* 无此键，七语齐备；P2-12 同款对齐范式）。
+    return { status: "rejected", reason: t("stream.topicRequired") };
   }
   const strategy = INTENT_STRATEGIES.find((candidate) => candidate === params.offsetStrategy);
   if (strategy) offsetStrategy.value = strategy;
@@ -418,11 +428,12 @@ watch(() => props.topic, () => void loadPresets(), { immediate: true });
         <span class="msg-chip" :title="t('messages.decode')">{{ decodeLabel }}</span>
       </span>
       <span class="consume-bar__spacer" />
+      <!-- 消费主按钮；禁用原因悬停（键挂 stream 命名空间，messages.* 无此键）。 -->
       <button
         class="primary-button compact"
         type="button"
         :disabled="consuming || !topic || tsRangeReversed"
-        :title="!topic ? t('messages.topicRequired') : tsRangeReversed ? t('messages.uiTimeRangeInvalid') : undefined"
+        :title="!topic ? t('stream.topicRequired') : tsRangeReversed ? t('messages.uiTimeRangeInvalid') : undefined"
         data-testid="consume-run"
         @click="runConsume()"
       >
@@ -430,10 +441,11 @@ watch(() => props.topic, () => void loadPresets(), { immediate: true });
       </button>
     </div>
 
-    <!-- 条件抽屉：浮层盖在结果区上方，不挤压表格高度；点外部遮罩/Esc 收起。 -->
+    <!-- 条件抽屉：浮层盖在结果区上方，不挤压表格高度；点外部遮罩/Esc 收起
+         （Esc/焦点行为经 useModalBehavior，容器 ref=consumeDrawerEl）。 -->
     <div v-show="formOpen" class="consume-drawer">
       <div class="consume-drawer__backdrop" @click="formOpen = false" />
-      <div class="consume-drawer__panel">
+      <div ref="consumeDrawerEl" class="consume-drawer__panel" tabindex="-1" role="dialog" aria-modal="true" :aria-label="t('messages.filtersToggle')">
     <div class="consume-groups">
       <!-- 基础：常用项前置 -->
       <div class="filter-group">
