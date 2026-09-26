@@ -71,6 +71,12 @@ const inlineRequiredKey = "brokers"
 // 进程继续服务后续请求（可靠性纵深轮，ldap 同构）。
 const maxRequestLineBytes = 16 << 20
 
+// maxConcurrentRequests 在途请求并发上限（评审 M：每请求一 goroutine 原本
+// 无界——被控客户端可并发灌入大量慢请求放大内存；主循环在槽满时暂停读入
+// 形成背压，超限行/空行不受影响仍即时处置）。量级对齐桌面单会话 AI 场景
+// 的合法并发（digest/ping/tools-list 交错远低于此）。
+const maxConcurrentRequests = 32
+
 // StdioServer 独立 stdio 模式的 MCP 服务器：包装工具面 Server + 内联凭据
 // 连接池 + DBX 桥转发兜底。并发安全（每请求一个 goroutine）。
 type StdioServer struct {
@@ -83,9 +89,9 @@ type StdioServer struct {
 	bridgeEnsureWait time.Duration
 
 	mu    sync.Mutex
-	ids   map[string]string // 池化 connectionId → 参数 hash（poolHas/淘汰双向索引）
-	hash  map[string]string // 参数 hash → 池化 connectionId
-	order []string          // 参数 hash 淘汰序（FIFO）
+	ids   map[string]struct{} // 已池化 connectionId 存在性集合（poolHas/淘汰用；评审 L：原值从未被读取）
+	hash  map[string]string   // 参数 hash → 池化 connectionId
+	order []string            // 参数 hash 淘汰序（FIFO）
 }
 
 // NewStdioServer 构造 stdio MCP 服务器（自带底层连接 service 与工具面
@@ -99,7 +105,7 @@ func NewStdioServer(version string, st *store.Store, audit func(kafkaconn.AuditR
 		svc:              svc,
 		version:          version,
 		bridgeEnsureWait: DefaultBridgeEnsureWait,
-		ids:              map[string]string{},
+		ids:              map[string]struct{}{},
 		hash:             map[string]string{},
 	}
 }
@@ -114,37 +120,40 @@ func (s *StdioServer) Close() {
 // 以 id 关联），EOF 后 drain 在途请求至多 300s（照 ssh run_mcp_stdio）。
 // 单行超 maxRequestLineBytes 时直接 -32700 拒绝该行并继续（进程存活）。
 func (s *StdioServer) Serve(in io.Reader, out io.Writer) error {
-	reader := bufio.NewReader(in)
+	reader := bufio.NewReaderSize(in, 64*1024)
 	var writeMu sync.Mutex
 	var wg sync.WaitGroup
+	slots := make(chan struct{}, maxConcurrentRequests)
 	for {
-		line, err := reader.ReadString('\n')
-		if trimmed := strings.TrimSpace(line); trimmed != "" {
-			if len(trimmed) > maxRequestLineBytes {
-				payload, _ := json.Marshal(rpcFailure(json.RawMessage("null"), -32700,
-					fmt.Sprintf("Parse error: request line exceeds %d bytes", maxRequestLineBytes)))
-				writeMu.Lock()
-				_, _ = out.Write(append(payload, '\n'))
-				writeMu.Unlock()
-			} else {
-				request := trimmed
-				wg.Add(1)
-				go func() {
-					defer wg.Done()
-					if response := s.handleLine([]byte(request)); response != nil {
-						payload, marshalErr := json.Marshal(response)
-						if marshalErr != nil {
-							payload, _ = json.Marshal(map[string]any{
-								"jsonrpc": "2.0", "id": nil,
-								"error": map[string]any{"code": -32603, "message": marshalErr.Error()},
-							})
-						}
-						writeMu.Lock()
-						_, _ = out.Write(append(payload, '\n'))
-						writeMu.Unlock()
+		line, tooLong, err := readLineBounded(reader)
+		if tooLong {
+			payload, _ := json.Marshal(rpcFailure(json.RawMessage("null"), -32700,
+				fmt.Sprintf("Parse error: request line exceeds %d bytes", maxRequestLineBytes)))
+			writeMu.Lock()
+			_, _ = out.Write(append(payload, '\n'))
+			writeMu.Unlock()
+		} else if trimmed := strings.TrimSpace(string(line)); trimmed != "" {
+			request := trimmed
+			wg.Add(1)
+			// 并发背压（评审 M）：槽满时主循环暂停读入，在途请求收敛在
+			// maxConcurrentRequests 内；超限行处置不经过槽（拒绝必须即时）。
+			slots <- struct{}{}
+			go func() {
+				defer wg.Done()
+				defer func() { <-slots }()
+				if response := s.handleLine([]byte(request)); response != nil {
+					payload, marshalErr := json.Marshal(response)
+					if marshalErr != nil {
+						payload, _ = json.Marshal(map[string]any{
+							"jsonrpc": "2.0", "id": nil,
+							"error": map[string]any{"code": -32603, "message": marshalErr.Error()},
+						})
 					}
-				}()
-			}
+					writeMu.Lock()
+					_, _ = out.Write(append(payload, '\n'))
+					writeMu.Unlock()
+				}
+			}()
 		}
 		if err != nil {
 			if err != io.EOF {
@@ -163,6 +172,57 @@ func (s *StdioServer) Serve(in io.Reader, out io.Writer) error {
 	case <-time.After(300 * time.Second):
 	}
 	return nil
+}
+
+// readLineBounded 有界读一行（评审 M：原 ReadString 先整行缓冲再判超限——
+// 超限行在拒绝前已全额进内存，防的是「无界处理」不是「无界缓冲」）。增量
+// 累积到 maxRequestLineBytes+1 即判超限（内容立即丢弃），继续读至换行/EOF
+// 后返回 tooLong——拒绝报文与后续行的服务都不受影响。
+func readLineBounded(reader *bufio.Reader) (line []byte, tooLong bool, err error) {
+	var buf []byte
+	for {
+		chunk, ferr := reader.ReadSlice('\n')
+		switch {
+		case tooLong:
+			// 已判超限：仅消费到行尾，内容不再保留。
+			switch ferr {
+			case nil, io.EOF:
+				return nil, true, nil
+			case bufio.ErrBufferFull:
+				continue
+			default:
+				return nil, true, ferr
+			}
+		case len(buf)+len(chunk) > maxRequestLineBytes+1:
+			// 触发超限：换行/EOF 已随本 chunk 消费则到此为止（不得继续读，
+			// 否则会把下一行合法请求当超限尾部吞掉）；chunk 未含换行才继续
+			// 丢弃余下部分。
+			switch ferr {
+			case nil, io.EOF:
+				return nil, true, nil
+			case bufio.ErrBufferFull:
+				tooLong = true
+				buf = nil
+				continue
+			default:
+				return nil, true, ferr
+			}
+		default:
+			buf = append(buf, chunk...)
+			switch ferr {
+			case nil:
+				return bytes.TrimRight(buf, "\r\n"), false, nil
+			case io.EOF:
+				// EOF 结尾的最后一行：行内容照常返回，err 保留 io.EOF 交给
+				// Serve 结束读循环（吞掉 EOF 会让 Serve 在输入耗尽后无限自旋）。
+				return bytes.TrimRight(buf, "\r\n"), false, io.EOF
+			case bufio.ErrBufferFull:
+				continue
+			default:
+				return nil, false, ferr
+			}
+		}
+	}
 }
 
 // handleLine 处理一行 JSON-RPC：返回要写回的响应；通知类（notifications/*，
@@ -354,6 +414,7 @@ func stdioConnectionProperties() map[string]any {
 		"clientId":               map[string]any{"type": "string", "description": "Kafka client.id (default dbx-kafka-plugin)"},
 		"readOnly":               map[string]any{"type": "boolean", "description": "Open read-only (default true, matching the connection form; write tools refused). Accepts boolean or the strings \"true\"/\"false\"/\"1\"/\"0\"/\"yes\"/\"no\"/\"on\"/\"off\""},
 		"allowDelete":            map[string]any{"type": "boolean", "description": "Allow delete-class operations (default false; delete tools refused without it). Accepts boolean or the strings \"true\"/\"false\"/\"1\"/\"0\"/\"yes\"/\"no\"/\"on\"/\"off\""},
+		"timeoutSecs":            map[string]any{"type": "number", "description": "Bridge-forward timeout in seconds (5-300, default 300); applies when connectionId is forwarded to the running DBX app's local bridge"},
 	}
 }
 
@@ -516,7 +577,7 @@ func (s *StdioServer) pooledConnectionID(inline inlineConn) (string, error) {
 		}
 	}
 	s.hash[id] = id
-	s.ids[id] = strings.TrimPrefix(id, "mcp-")
+	s.ids[id] = struct{}{}
 	s.order = append(s.order, id)
 	s.mu.Unlock()
 	for _, stale := range evicted {

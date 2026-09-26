@@ -611,7 +611,9 @@ func (r *StreamRegistry) runLoop(session *streamSession) {
 			session.mu.Unlock()
 
 			ensureValueDecoded()
-			batch = append(batch, messageFromRecordWithSchema(record, value, decoded, decodeErr, false, recordSchemaInfo))
+			// 流式会话是工作台路径：保持 valueText/valueBase64 双通道（评审
+			// H-1 的 skipValueBase64 仅用于 digest 一次性消费）。
+			batch = append(batch, messageFromRecordWithSchema(record, value, decoded, decodeErr, false, recordSchemaInfo, false))
 			if len(batch) >= StreamBatchSize {
 				r.flush(session, &batch)
 			}

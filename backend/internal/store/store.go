@@ -180,7 +180,8 @@ type AuditRecord struct {
 }
 
 // AppendAudit 追加一条审计记录；rec.Time 为空时取当前时间（RFC3339）。
-// append-only，无锁文件写入依赖调用方串行化（sidecar 单进程内由审计回调串行）。
+// append-only：每次独立 open + 单次 O_APPEND write + close，内核保证单条
+// write 不与其他写者撕裂（并发写者间行序不定；进程内不额外加锁）。
 func (s *Store) AppendAudit(rec AuditRecord) error {
 	if strings.TrimSpace(rec.Time) == "" {
 		rec.Time = time.Now().Format(time.RFC3339)

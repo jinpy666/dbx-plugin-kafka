@@ -23,7 +23,7 @@ func TestConfirmHashStableAndDistinct(t *testing.T) {
 func TestConfirmOneTimeConsumption(t *testing.T) {
 	store := NewConfirmStore()
 	now := intentBase
-	token, expiresAt := store.Issue(HashParams([]byte(`{"a":1}`)), now)
+	token, expiresAt, _ := store.Issue(HashParams([]byte(`{"a":1}`)), now)
 	if !expiresAt.After(now) || expiresAt.Sub(now) != ConfirmTTL {
 		t.Fatalf("unexpected TTL: %v", expiresAt.Sub(now))
 	}
@@ -39,11 +39,11 @@ func TestConfirmOneTimeConsumption(t *testing.T) {
 func TestConfirmExpiryAndHashMismatch(t *testing.T) {
 	store := NewConfirmStore()
 	now := intentBase
-	expired, _ := store.Issue(HashParams([]byte(`{"a":1}`)), now)
+	expired, _, _ := store.Issue(HashParams([]byte(`{"a":1}`)), now)
 	if got := store.Consume(expired, HashParams([]byte(`{"a":1}`)), now.Add(61*time.Second)); got != ConfirmExpired {
 		t.Fatalf("past 60s TTL must be expired: %v", got)
 	}
-	token, _ := store.Issue(HashParams([]byte(`{"a":1}`)), now)
+	token, _, _ := store.Issue(HashParams([]byte(`{"a":1}`)), now)
 	if got := store.Consume(token, HashParams([]byte(`{"a":2}`)), now.Add(time.Second)); got != ConfirmHashMismatch {
 		t.Fatalf("changed params must invalidate: %v", got)
 	}

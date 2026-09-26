@@ -74,3 +74,54 @@ func TestWriteToolsMissingParamsEnumerated(t *testing.T) {
 		t.Fatalf("empty topics array must hit the precise per-param check: %v", err)
 	}
 }
+
+// S-INT-STRICT 整数参数不接受小数（评审 M：1.9 个 offset 静默截成 1 违反
+// 「绝不静默折算」准确性红线——partition/timestampMs/offset 系全家一致）。
+func TestCoerceIntRejectsFractionalFloats(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		raw    any
+		want   int
+		wantOK bool
+	}{
+		{"integral float accepted", float64(2), 2, true},
+		{"fractional float rejected", float64(1.9), 0, false},
+		{"negative fractional rejected", float64(-0.5), 0, false},
+		{"integer string accepted", "3", 3, true},
+		{"non numeric string rejected", "abc", 0, false},
+		{"bool rejected", true, 0, false},
+	} {
+		got, ok := coerceInt(tc.raw)
+		if ok != tc.wantOK || (ok && got != tc.want) {
+			t.Fatalf("%s: coerceInt(%v) = (%d,%v), want (%d,%v)", tc.name, tc.raw, got, ok, tc.want, tc.wantOK)
+		}
+		if _, int64OK := coerceInt64(tc.raw); int64OK != tc.wantOK {
+			t.Fatalf("%s: coerceInt64(%v) ok=%v, want %v", tc.name, tc.raw, int64OK, tc.wantOK)
+		}
+	}
+	// 超出 int64 的浮点必须拒绝而非回绕。
+	if _, ok := coerceInt64(float64(1) * 1e30); ok {
+		t.Fatal("out-of-range float must be rejected")
+	}
+}
+
+// S-INT-STRICT parsePartitionOffsets 对小数 offset 显式报错（此前
+// ParseFloat+int64 截断把 1.9 静默折成 1——reset 打错目标分区位点）。
+func TestParsePartitionOffsetsRejectsFractional(t *testing.T) {
+	if _, err := parsePartitionOffsets(map[string]any{
+		"t": map[string]any{"0": 1.9},
+	}); err == nil {
+		t.Fatal("fractional offset must be rejected")
+	} else if !strings.Contains(err.Error(), "non-negative integer") {
+		t.Fatalf("error must name the expected shape: %v", err)
+	}
+	offsets, err := parsePartitionOffsets(map[string]any{
+		"t": map[string]any{"0": float64(5), "1": "7"},
+	})
+	if err != nil {
+		t.Fatalf("integral offsets must parse: %v", err)
+	}
+	if offsets["t"][0] != 5 || offsets["t"][1] != 7 {
+		t.Fatalf("integral offsets must round-trip: %v", offsets)
+	}
+}

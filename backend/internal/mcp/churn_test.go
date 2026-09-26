@@ -28,7 +28,7 @@ func TestConfirmChurnBounded(t *testing.T) {
 	const rounds = 600
 	for index := 0; index < rounds; index++ {
 		now = now.Add(time.Second)
-		token, _ := store.Issue(hash, now)
+		token, _, _ := store.Issue(hash, now)
 		switch index % 3 {
 		case 0:
 			if got := store.Consume(token, hash, now); got != ConfirmOK {
@@ -45,7 +45,7 @@ func TestConfirmChurnBounded(t *testing.T) {
 		}
 		// 每 5 轮弃一张单（签发后从不消费）：只能靠 Issue 的 prune 收敛。
 		if index%5 == 0 {
-			store.Issue(hash, now)
+			_, _, _ = store.Issue(hash, now)
 		}
 	}
 	if len(store.items) > 61 {
@@ -68,14 +68,14 @@ func TestConfirmChurnTTLLifecycleAndWiring(t *testing.T) {
 	}
 	now := intentBase
 	hash := HashParams([]byte(`{"a":1}`))
-	legacy, _ := store.Issue(hash, now)
+	legacy, _, _ := store.Issue(hash, now)
 	store.SetTTL(10 * time.Second)
 	// 旧令牌在原 60s 窗口内仍可用（若追溯为 10s 就会 expired）。
 	if got := store.Consume(legacy, hash, now.Add(50*time.Second)); got != ConfirmOK {
 		t.Fatalf("legacy token keeps its original 60s expiry (no retroactive TTL): %v", got)
 	}
 	// 新令牌按 10s 过期；≤0 的 SetTTL 被忽略。
-	fresh, _ := store.Issue(hash, now)
+	fresh, _, _ := store.Issue(hash, now)
 	if got := store.Consume(fresh, hash, now.Add(11*time.Second)); got != ConfirmExpired {
 		t.Fatalf("new token must expire on the configured TTL: %v", got)
 	}

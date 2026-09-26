@@ -352,7 +352,7 @@ describe("预设", () => {
   });
 
   it("savePreset：空名不发请求；成功修剪名、带表单参数并通知刷新", async () => {
-    const routes: Record<string, unknown> = { "kafka/presets/list": { presets: [] }, "kafka/presets/save": { presets: [] } };
+    const routes: Record<string, unknown> = { "kafka/presets/list": { presets: [] }, "kafka/presets/save": { success: true } };
     installBridge(routes);
     const notify = vi.fn();
     const form = makeForm({ notify });

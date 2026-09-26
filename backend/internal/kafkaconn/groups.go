@@ -195,8 +195,11 @@ func (s *Service) ResetGroupOffsets(ctx context.Context, req GroupOffsetResetReq
 	if mode != OffsetResetPartitionOffsets && len(topics) == 0 {
 		return nil, errf("topics is required for %s reset", mode)
 	}
-	if mode == OffsetResetTimestamp && req.TimestampMs < 0 {
-		return nil, errf("timestampMs must be greater than or equal to 0")
+	// timestampMs=0 一并拒绝（评审 L：0 经 ListOffsetsAfterMilli 等价重置到
+	// 纪元——与 MCP 层 server.go「0 几乎必是参数缺失」同一红线；真要重置到
+	// 最早用 resetTo=earliest）。
+	if mode == OffsetResetTimestamp && req.TimestampMs <= 0 {
+		return nil, errf("timestampMs must be greater than 0 for timestamp reset (0 would reset to the epoch; use resetTo=earliest instead)")
 	}
 
 	var result OffsetResetResult

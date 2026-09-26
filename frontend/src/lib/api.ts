@@ -503,11 +503,13 @@ export const kafkaApi = {
   presetsList() {
     return callKafka<{ presets: KafkaPreset[] }>("kafka/presets/list");
   },
+  // save/remove 返回操作结果（照后端 main.go presetsSave/presetsRemove）；
+  // 此前误标为 { presets }——契约漂移靠「调用点丢弃返回值后重拉列表」掩盖。
   presetsSave(preset: KafkaPreset) {
-    return callKafka<{ presets: KafkaPreset[] }>("kafka/presets/save", { preset });
+    return callKafka<{ success: boolean; preset: KafkaPreset }>("kafka/presets/save", { preset });
   },
   presetsRemove(id: string) {
-    return callKafka<{ presets: KafkaPreset[] }>("kafka/presets/remove", { id });
+    return callKafka<{ success: boolean }>("kafka/presets/remove", { id });
   },
   connectionStatuses() {
     return callKafka<{ statuses: KafkaConnectionStatus[] }>("kafka/connections/statuses");

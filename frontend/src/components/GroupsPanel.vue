@@ -151,7 +151,8 @@ async function submitReset() {
   if (resetTo.value === "timestamp") {
     // String 归一（同 ProducePanel P1-4 范式）：number 输入在部分环境 value 非 string。
     const parsed = Number.parseInt(String(resetTimestampMs.value).trim(), 10);
-    if (!Number.isFinite(parsed)) {
+    // 0 会被后端折算成「重置到纪元」：与缺失同样按未填写拒绝。
+    if (!Number.isFinite(parsed) || parsed <= 0) {
       emit("error", t("messages.timestampRequired"));
       return;
     }

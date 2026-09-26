@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"math"
 	"strconv"
 	"strings"
 )
@@ -44,26 +45,25 @@ func missingRequired(args map[string]any, keys ...string) error {
 
 // coerceInt 整数参数宽容解析：JSON number、整数字符串（LLM 常见把整数写成
 // 字符串的变体，如 partition:"0"）都接受；无法解析返回 (0,false)，由调用方
-// 决定报错还是走缺省——绝不静默按 0 执行。
+// 决定报错还是走缺省——绝不静默按 0 执行。小数 float 显式拒绝（评审 M：
+// partition:1.9 静默截成 1 违反「绝不静默折算」红线；与文件内 timestampMs/
+// schema.version 的拒绝语义对齐）。
 func coerceInt(raw any) (int, bool) {
-	switch value := raw.(type) {
-	case float64:
-		return int(value), true
-	case string:
-		parsed, err := strconv.Atoi(strings.TrimSpace(value))
-		if err != nil {
-			return 0, false
-		}
-		return parsed, true
-	default:
+	value, ok := coerceInt64(raw)
+	if !ok || value < math.MinInt || value > math.MaxInt {
 		return 0, false
 	}
+	return int(value), true
 }
 
 // coerceInt64 coerceInt 的 int64 版（timestampMs / 时间窗等大整数）。
+// 小数 float64 与超出 int64 表示范围的值都拒绝（回绕/截断都会静默改变语义）。
 func coerceInt64(raw any) (int64, bool) {
 	switch value := raw.(type) {
 	case float64:
+		if value != math.Trunc(value) || value < -9.223372036854776e18 || value >= 9.223372036854776e18 {
+			return 0, false
+		}
 		return int64(value), true
 	case string:
 		parsed, err := strconv.ParseInt(strings.TrimSpace(value), 10, 64)

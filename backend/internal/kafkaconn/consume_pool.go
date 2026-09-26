@@ -179,10 +179,16 @@ func (s *Service) evictConsumePoolLocked(preserveKey string) {
 
 // consumePoolRelease 释放占用条目：吸收本轮观察到的分区；不健康（reset
 // 失败等）标记不再复用；顺手回收空闲超 TTL 条目。
+//
+// 字段写入全部在池锁内完成（评审 H-2：inUse/lastUsedAt 此前在锁外写，与
+// Acquire/Put/evict 的锁内读写构成 data race；seenParts 虽按不变式仅持有期
+// 访问，一并收拢在锁内使「释放」成为单一线性化点）。
 func (s *Service) consumePoolRelease(entry *consumePoolEntry, observed map[int32]struct{}, healthy bool) {
 	if entry == nil {
 		return
 	}
+	s.consumePoolMu.Lock()
+	defer s.consumePoolMu.Unlock()
 	for partition := range observed {
 		entry.seenParts[partition] = struct{}{}
 	}
@@ -191,10 +197,7 @@ func (s *Service) consumePoolRelease(entry *consumePoolEntry, observed map[int32
 	}
 	entry.inUse = false
 	entry.lastUsedAt = time.Now().UnixMilli()
-
-	s.consumePoolMu.Lock()
-	defer s.consumePoolMu.Unlock()
-	now := time.Now().UnixMilli()
+	now := entry.lastUsedAt
 	for key, candidate := range s.consumePool {
 		if candidate.inUse || now-candidate.lastUsedAt <= consumePoolIdleTTL.Milliseconds() {
 			continue

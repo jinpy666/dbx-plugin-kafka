@@ -1007,12 +1007,13 @@ const invoke: DbxPluginApi["invoke"] = async <T = unknown>(method: string, rawPa
     if (index >= 0) presets[index] = incoming;
     else presets.push(incoming);
     writeMockPresets(presets);
-    result = { presets };
+    // 照真实 sidecar main.go presetsSave 返回操作结果（而非全量列表）。
+    result = { success: true, preset: incoming };
   } else if (method === "kafka/presets/remove") {
     const id = String(input.id ?? "");
     const presets = readMockPresets().filter((preset) => preset.id !== id);
     writeMockPresets(presets);
-    result = { presets };
+    result = { success: true };
   } else if (method === "kafka/connections/statuses") {
     result = {
       statuses: [
@@ -1148,9 +1149,9 @@ const invoke: DbxPluginApi["invoke"] = async <T = unknown>(method: string, rawPa
     const intentId = String(input.intentId ?? "").trim();
     if (intentId && status !== "applied" && status !== "rejected") throw new Error("status must be applied or rejected");
     result = { success: true };
-  } else if (method === "kafka/audit") {
-    // never emitted by the mock host itself (audit goes through events)
   }
+  // kafka/audit 不在路由里：它是 sidecar→宿主的事件通道（emitter.Event），
+  // mock 侧同样经 emitEvent 注入，方法契约（methodContract.json）只管方法面。
   return result as T;
 };
 
