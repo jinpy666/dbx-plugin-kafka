@@ -712,10 +712,13 @@ type GroupOffsetsListResult struct {
 	HasCommitted bool             `json:"hasCommitted"`
 }
 
-// GroupDeleteRequest 对应 kafka/groups/delete（critical 门禁）。
+// GroupDeleteRequest 对应 kafka/groups/delete（critical 门禁：confirmGroup
+// 必须与待删组同名，防误删——与 topics/delete 的 confirmTopic 同级）。
 type GroupDeleteRequest struct {
 	ConnectionID string `json:"connectionId"`
 	Group        string `json:"group"`
+	// ConfirmGroup 确认字段（§6：与 group 同名才放行；不匹配为参数错 -32602）。
+	ConfirmGroup string `json:"confirmGroup,omitempty"`
 }
 
 // OffsetResetMode 是 kafka/groups/offsets/reset 的 resetTo 取值。

@@ -75,6 +75,15 @@ func (s *Service) Connect(params *lifecycle.Params) error {
 		return err
 	}
 
+	// 审查 L5（2026-09-26）：tls_insecure_skip_verify=true 的连接必留痕。
+	// 生命周期配置应用是单次 emit 点（TCP 重连不重走 Connect，不刷屏）；
+	// Result 走三值契约的 success（store 折算 ok），警示语义放 Detail，
+	// 不引入第四种 result 值。
+	if profile.TLSInsecureSkipVerify {
+		s.emitAudit(profile.ID, "connection-configure", profile.Name, "success",
+			"TLS certificate verification is disabled (tlsInsecureSkipVerify=true)")
+	}
+
 	entry := &connEntry{
 		profile: profile,
 		secrets: secrets,

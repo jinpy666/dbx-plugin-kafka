@@ -801,3 +801,24 @@ client 接口抽象（超出本轮"不重构"约束，登记不实施）。
   设计讨论。
 - **验证**：`go vet` / `go test ./... -count=1` 全绿（kafkaconn 217 用例、
   根包 11 用例）；打包链路 `scripts/build.sh` 复跑通过。
+
+## 18. 2026-09-26 审查修复（族 REVIEW-FAMILY-2026-09-26 的 kafka 部分）
+
+> 依据 `shared/REVIEW-FAMILY-2026-09-26.zh-CN.md`，本插件 HIGH 1 + MEDIUM 4 +
+> LOW 5 共 10 项全部修复（L4 含前端/i18n/协议文档同步；MCP 未暴露组删除工具，
+> 无 MCP 两阶段改动）。main 分支工作区直改，无 commit/push。
+
+| 编号 | 修复 | 位置 |
+|---|---|---|
+| KAFKA-H1 | `maxDecodedBytes`（16MiB）解压上限：gzip/lz4/snappy-framed 走 `readBounded`（LimitReader max+1），zstd `DecodeAll` 显式长度校验 + `WithDecoderMaxMemory` 兜底，snappy block `DecodedLen` 预检；超限报错按既有 DecodeError 语义进消息不中断消费。`valueText` 与 `valueBase64` 同用 `maxMessageBytes` 截断并共用 `truncated` 标志（digest 双字段 GB 级驻留收口） | `kafkaconn/messages.go`（decompressPayload/readBounded/messageFromRecordWithSchema） |
+| KAFKA-M1 | `consumePoolPut` 旧条目 `inUse` 时不替换不入池、返回 nil；调用方对 nil 保留真实 `closeClient`（临时 client 语义），与驱逐函数跳过 inUse 对齐 | `kafkaconn/consume_pool.go` + `messages.go` 调用点 |
+| KAFKA-M2 | `LoadSettings` 补 `cursorTtlSecs`/`maxCursorSessions` 恢复分支（既有 >0 模式）；往返用例覆盖 | `mcp/settings.go` |
+| KAFKA-M3 | `textMatcher.match` regex 分支先查 `patterns` 预编译缓存，miss 再编译（对齐同文件 `fieldValueMatches`） | `kafkaconn/messages.go` |
+| KAFKA-M4 | `StartStream` 建 client 前预校验 decode/decompression，非法值返回业务错误，不再产生占名额僵尸会话 | `kafkaconn/stream.go` |
+| KAFKA-L3 | SR REST 客户端按连接 TLS 配置复用 `buildTLSConfig` 构建 transport（CA/skip-verify/mTLS 生效于 SR 通道；纯 http 且无 TLS 项保持默认 transport，代理语义对齐 DefaultTransport） | `kafkaconn/schema.go` |
+| KAFKA-L5 | skip-verify 必留痕：`Connect`（lifecycle 配置应用单次 emit 点）对 `tls_insecure_skip_verify=true` 发 `Result:"success"`（store 折算 ok）+ Detail 注明 TLS 验证已关闭；`audit.go` 注释修订为三值契约（success/blocked/error），删除 "warning 保留" 语义 | `kafkaconn/service.go`、`audit.go` |
+| KAFKA-L4 | `DeleteGroup` 补 `confirmGroup` 同名门禁（`ensureGroupDeleteConfirm`，-32602 + blocked 审计，与 confirmTopic 同级）；前端 GroupsPanel 删除弹窗补输入组名确认；`groups.deleteConfirmLabel` 七语 key；协议文档 `PROTOCOL_KAFKA`/`IMPL_PLAN` 参数表同步 | `kafkaconn/types.go`、`policy.go`、`groups.go`；`frontend` GroupsPanel/api/i18n |
+
+**测试**：新增 `TestDecompressBombGuard`（全解压分支超限）、`TestMessageTruncationAtLimit` 扩展（valueText 截断）、`TestConsumePoolPutSkipsInUseReplacement` + `TestConsumePoolPutConcurrentInUseGuard`（-race）、`TestTextMatcherRegexUsesPrecompiledCache`、`TestSettingsPersistRoundtrip` 扩展、`TestStartStreamValidationOffline` 扩展（无僵尸会话断言）、`TestSchemaRegistryClientTLSTransport`、`TestConnectAuditsInsecureSkipVerify`、`TestDeleteGroupGateMatrix` 扩展（confirmGroup 矩阵）；GroupsPanel spec 补输入确认门禁/参数上送断言。
+
+**验证终值**：`go build/vet/gofmt` 0 告警、`go test ./...` 全绿（kafkaconn/mcp/lifecycle/store；池并发用例 `-race -count=2` 通过）；前端 `vue-tsc` 通过、vitest 346/346（含 i18n 七语对齐 spec）；smoke `total=18 PASS=13 FAIL=0 SKIP=5`（SKIP 均环境性：Glue/PROTOBUF/OAUTH/SASL/TLS matrix）；smoke_mcp `19/19`（K18 消费池 churn 50 轮压 M1 路径）。S17 TLS matrix SKIP 的 TLS 生效性由 L3/L5 单测覆盖。

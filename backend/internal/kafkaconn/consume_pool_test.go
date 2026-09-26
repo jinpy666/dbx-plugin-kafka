@@ -192,6 +192,71 @@ func TestConsumePoolCloseForConnection(t *testing.T) {
 	}
 }
 
+// KAFKA-M1 回归：旧条目 inUse 时 put 不得替换/关闭（返回 nil，所有权留给
+// 调用方按临时 client 关闭）——否则并发同形状消费会关掉正在 poll 的 client。
+func TestConsumePoolPutSkipsInUseReplacement(t *testing.T) {
+	s := newPoolService()
+	sig := consumeClientSignature("t", "earliest", nil, "")
+	holder := s.consumePoolPut("c", sig, nil)
+
+	// inUse 期间：put 返回 nil，池内仍是原条目且未被关闭。
+	if pooled := s.consumePoolPut("c", sig, nil); pooled != nil {
+		t.Fatal("put must not replace an in-use entry")
+	}
+	s.consumePoolMu.Lock()
+	current := s.consumePool[consumePoolKey("c", sig)]
+	untouched := current == holder && current.client == holder.client
+	s.consumePoolMu.Unlock()
+	if !untouched {
+		t.Fatal("in-use entry must stay in the pool untouched")
+	}
+
+	// release 后：put 正常替换并关闭旧条目。
+	s.consumePoolRelease(holder, nil, true)
+	if pooled := s.consumePoolPut("c", sig, nil); pooled == nil || pooled == holder {
+		t.Fatal("put must replace a released entry with a fresh one")
+	}
+	s.consumePoolMu.Lock()
+	closed := holder.client == nil
+	s.consumePoolMu.Unlock()
+	if !closed {
+		t.Fatal("replaced idle entry must be closed")
+	}
+}
+
+// 并发场景：持有者占用期间，另一个 goroutine 反复同形状 put/acquire，
+// 占用条目不得被替换或关闭（-race 下验证）。
+func TestConsumePoolPutConcurrentInUseGuard(t *testing.T) {
+	s := newPoolService()
+	sig := consumeClientSignature("t", "earliest", nil, "")
+	holder := s.consumePoolPut("c", sig, nil)
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for i := 0; i < 200; i++ {
+			if _, reusable := s.consumePoolAcquire("c", sig, true); reusable {
+				t.Error("in-use entry must not be re-acquired concurrently")
+				return
+			}
+			if pooled := s.consumePoolPut("c", sig, nil); pooled != nil {
+				t.Error("concurrent put must not replace an in-use entry")
+				return
+			}
+		}
+	}()
+	for i := 0; i < 200; i++ {
+		s.consumePoolMu.Lock()
+		current := s.consumePool[consumePoolKey("c", sig)]
+		s.consumePoolMu.Unlock()
+		if current != holder {
+			t.Fatal("in-use entry replaced by concurrent put")
+		}
+	}
+	<-done
+	s.consumePoolRelease(holder, nil, true)
+}
+
 // reset 的哨兵值映射（纯逻辑部分）：错误路径依赖真实 client,不在此覆盖。
 func TestConsumeStartupBudget(t *testing.T) {
 	if got := consumeStartupBudget(5 * time.Second); got != 12*time.Second {

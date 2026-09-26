@@ -4,6 +4,7 @@ package kafkaconn
 // JSON path / 数值比较），纯内存不连网。
 
 import (
+	"regexp"
 	"testing"
 	"time"
 
@@ -46,6 +47,33 @@ func TestTextMatcherMatchModes(t *testing.T) {
 	// 空 query 恒真（通道未启用语义）。
 	if !matcher.match("anything", "") {
 		t.Error("empty query should always match")
+	}
+}
+
+// 预编译缓存命中优先（KAFKA-M3 回归）：match 必须查 m.patterns，不能每个
+// 记录/通道重复 regexp.Compile。用"缓存条目与 query 文本不同义"证明命中的
+// 是缓存（若重新编译 `x`，`y` 不会命中）。
+func TestTextMatcherRegexUsesPrecompiledCache(t *testing.T) {
+	matcher := textMatcher{mode: "regex", patterns: map[string]*regexp.Regexp{}}
+	matcher.patterns["x"] = regexp.MustCompile("y")
+	if !matcher.match("y", "x") {
+		t.Error("match must consult the pre-compiled pattern cache")
+	}
+	// newConsumeTextMatcher 预编译的 query 走 match 同样命中缓存。
+	compiled, err := newConsumeTextMatcher(ConsumeParams{MatchMode: "regex", Filter: "a+"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if compiled.patterns["a+"] == nil {
+		t.Fatal("matcher should pre-compile the filter pattern")
+	}
+	if !compiled.match("aaa", "a+") {
+		t.Error("pre-compiled filter should match")
+	}
+	// 缓存 miss 且非法 regex → false（不 panic、不中断）。
+	bare := textMatcher{mode: "regex"}
+	if bare.match("anything", "(bad[") {
+		t.Error("invalid uncached regex should not match")
 	}
 }
 

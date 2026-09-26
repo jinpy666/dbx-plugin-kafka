@@ -6,8 +6,9 @@ package kafkaconn
 // 解码解压 :2986-3069、导出序列化 :2356-2507。
 //
 // 关键改造（tinyrdm 已知 bug 补齐）：value 不做 string() 直转——
-// valueText 恒为 UTF-8 安全预览（非法字节替换 U+FFFD）、valueBase64 恒完整
-// （512KB 上限截断并标记 truncated）；key 非法 UTF-8 时以 keyBase64 透出。
+// valueText 恒为 UTF-8 安全预览（非法字节替换 U+FFFD，512KB 上限截断）、
+// valueBase64 同用 512KB 上限截断，双双标记 truncated；key 非法 UTF-8 时以
+// keyBase64 透出。解压路径带 maxDecodedBytes 上限（解压炸弹防护）。
 
 import (
 	"bytes"
@@ -39,6 +40,10 @@ const (
 	maxProduceCount = 1000
 	// maxExportRecords 导出上限。
 	maxExportRecords = 10000
+	// maxDecodedBytes 解压输出上限（KAFKA-H1 解压炸弹防护）：单条恶意消息
+	// 经 gzip/lz4/zstd/snappy 可膨胀上万倍，无上限 ReadAll 可把 sidecar 打到
+	// OOM。超出即报错，按现有 DecodeError 语义进消息不中断消费。
+	maxDecodedBytes = 16 * 1024 * 1024
 )
 
 // ConsumeParams 是一次性与流式消费共用参数（契约 §5.3 全字段）。
@@ -107,8 +112,8 @@ type ConsumedMessage struct {
 	// Key 为合法 UTF-8 时输出；否则 keyBase64。
 	Key       string `json:"key,omitempty"`
 	KeyBase64 string `json:"keyBase64,omitempty"`
-	// ValueText 恒为 UTF-8 安全预览（非法字节替换）；ValueBase64 恒完整
-	// （超 512KB 截断并置 truncated）。
+	// ValueText 恒为 UTF-8 安全预览（非法字节替换；超 512KB 截断）；
+	// ValueBase64 同用 512KB 上限截断。双通道与 Truncated 标志一致。
 	ValueText   string            `json:"valueText"`
 	ValueBase64 string            `json:"valueBase64"`
 	Headers     map[string]string `json:"headers,omitempty"`
@@ -496,9 +501,12 @@ func (s *Service) consumeMessages(ctx context.Context, params ConsumeParams) (co
 			return result, err
 		}
 		if reuseOK {
-			pooled = s.consumePoolPut(params.ConnectionID, signature, client)
-			observed = map[int32]struct{}{}
-			closeClient = func() {}
+			// put 返回 nil = 同键旧条目占用中（并发同形状消费）：本次 client
+			// 不入池，按临时 client 语义保留真实 closeClient（defer 关闭）。
+			if pooled = s.consumePoolPut(params.ConnectionID, signature, client); pooled != nil {
+				observed = map[int32]struct{}{}
+				closeClient = func() {}
+			}
 		}
 	}
 	healthy := true
@@ -956,6 +964,12 @@ func (m textMatcher) match(value, query string) bool {
 	case "exact":
 		return strings.EqualFold(value, query)
 	case "regex":
+		// 先查 newConsumeTextMatcher 的预编译缓存（KAFKA-M3：热路径每记录
+		// 每通道重复 Compile 比匹配贵；对齐 fieldValueMatches 的查表写法），
+		// miss 再现编译（调用链已保证合法，非法一律 false）。
+		if compiled := m.patterns[query]; compiled != nil {
+			return compiled.MatchString(value)
+		}
 		compiled, err := regexp.Compile(query)
 		if err != nil {
 			return false
@@ -1424,17 +1438,26 @@ func decompressPayload(value []byte, method string) ([]byte, error) {
 			return nil, err
 		}
 		defer reader.Close()
-		return io.ReadAll(reader)
+		return readBounded(reader)
 	case "lz4":
 		reader := lz4.NewReader(bytes.NewReader(value))
-		return io.ReadAll(reader)
+		return readBounded(reader)
 	case "zstd":
-		decoder, err := zstd.NewReader(nil)
+		// WithDecoderMaxMemory 兜底 DecodeAll 内部分配；输出长度再显式校验
+		//（KAFKA-H1：恶意帧可声明超大内容尺寸）。
+		decoder, err := zstd.NewReader(nil, zstd.WithDecoderMaxMemory(maxDecodedBytes))
 		if err != nil {
 			return nil, err
 		}
 		defer decoder.Close()
-		return decoder.DecodeAll(value, nil)
+		decoded, decodeAllErr := decoder.DecodeAll(value, nil)
+		if decodeAllErr != nil {
+			return nil, decodeAllErr
+		}
+		if len(decoded) > maxDecodedBytes {
+			return nil, errDecodedTooLarge()
+		}
+		return decoded, nil
 	case "snappy":
 		return decompressSnappy(value)
 	default:
@@ -1442,16 +1465,37 @@ func decompressPayload(value []byte, method string) ([]byte, error) {
 	}
 }
 
-// decompressSnappy block 优先、framed 兜底（tinyrdm :3057 同款）。
+// readBounded 读取解压流并在超过 maxDecodedBytes 时报错（LimitReader 读
+// max+1 字节即可判定超限，不物化超出部分）。
+func readBounded(reader io.Reader) ([]byte, error) {
+	data, err := io.ReadAll(io.LimitReader(reader, maxDecodedBytes+1))
+	if err != nil {
+		return nil, err
+	}
+	if len(data) > maxDecodedBytes {
+		return nil, errDecodedTooLarge()
+	}
+	return data, nil
+}
+
+// errDecodedTooLarge 解压超限统一错误（进消息 decodeError，不中断消费）。
+func errDecodedTooLarge() error {
+	return errf("decompressed payload exceeds %d bytes (decompression bomb guard)", maxDecodedBytes)
+}
+
+// decompressSnappy block 优先、framed 兜底（tinyrdm :3057 同款）。block 路径
+// 先经 DecodedLen 预检声明长度（恶意 block 头可声明超大解码尺寸）。
 func decompressSnappy(value []byte) ([]byte, error) {
+	if declared, err := snappy.DecodedLen(value); err == nil && declared > maxDecodedBytes {
+		return nil, errDecodedTooLarge()
+	}
 	decoded, blockErr := snappy.Decode(nil, value)
 	if blockErr == nil {
 		return decoded, nil
 	}
-	reader := snappy.NewReader(bytes.NewReader(value))
-	decoded, streamErr := io.ReadAll(reader)
+	bounded, streamErr := readBounded(snappy.NewReader(bytes.NewReader(value)))
 	if streamErr == nil {
-		return decoded, nil
+		return bounded, nil
 	}
 	return nil, fmt.Errorf("snappy decompression failed: block: %v; framed: %v", blockErr, streamErr)
 }
@@ -1467,7 +1511,9 @@ func messageFromRecord(record *kgo.Record, value []byte, decoded bool, decodeErr
 // messageFromRecordWithSchema 是 messageFromRecord 的 schema 感知变体
 // （Phase 2：schema 解码命中时附 schemaId/schemaSubject/schemaVersion）。
 func messageFromRecordWithSchema(record *kgo.Record, value []byte, decoded bool, decodeErr string, committed bool, schemaInfo *schemaValueInfo) ConsumedMessage {
-	valueText := safeUTF8Preview(value)
+	// 双通道同用 maxMessageBytes 截断并共用 Truncated 标志（KAFKA-H1：
+	// valueText 此前不截断，digest 高扫描量 × 双字段留存可达 GB 级驻留）。
+	valueText := safeUTF8Preview(boundedValue(value))
 	valueBase64, truncated := encodeBase64WithLimit(value, maxMessageBytes)
 	message := ConsumedMessage{
 		Topic:       record.Topic,
@@ -1510,6 +1556,15 @@ func safeUTF8Preview(data []byte) string {
 		return string(data)
 	}
 	return strings.ToValidUTF8(string(data), "\uFFFD")
+}
+
+// boundedValue 截断到 maxMessageBytes（截断边界落在多字节字符中间时由
+// safeUTF8Preview 以 U+FFFD 收尾，预览语义可接受）。
+func boundedValue(data []byte) []byte {
+	if len(data) > maxMessageBytes {
+		return data[:maxMessageBytes]
+	}
+	return data
 }
 
 // encodeBase64WithLimit base64 编码并在 limit 字节处截断（truncated 标记）。

@@ -206,9 +206,11 @@ Host API 1.0 的 `plugin_connection_params` 只发送 `runtime.host:port`，且
 
 **`kafka/groups/delete`**（critical 门禁）
 
-- 请求：`group:string`。
+- 请求：`group:string`、`confirmGroup:string`（确认字段，与 group 同名才放行；
+  缺失/不匹配 → `-32602`——与 topics/delete 的 confirmTopic 同级）。
 - 返回：空 `data`。
-- 错误：read_only 或 `allow_delete=false` → `-32000`（blocked）；审计。
+- 错误：read_only 或 `allow_delete=false` → `-32000`（blocked）；
+  `confirmGroup` 缺失/不匹配 → `-32602`；审计。
 
 **`kafka/groups/offsets/reset`**
 

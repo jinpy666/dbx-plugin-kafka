@@ -424,8 +424,9 @@ export const kafkaApi = {
       topics?.length ? { group, topics } : { group },
     );
   },
-  groupsDelete(group: string) {
-    return callKafka<{ success: boolean }>("kafka/groups/delete", { group });
+  // confirmGroup 与后端 confirmTopic 同级门禁（§6：与 group 同名才放行）。
+  groupsDelete(group: string, confirmGroup: string) {
+    return callKafka<{ success: boolean }>("kafka/groups/delete", { group, confirmGroup });
   },
   groupsOffsetsReset(
     group: string,

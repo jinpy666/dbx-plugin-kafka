@@ -212,4 +212,18 @@ func TestStartStreamValidationOffline(t *testing.T) {
 	if _, err := service2.StartStream(ConsumeParams{ConnectionID: "ss", Topic: "t", MatchMode: "bogus"}); err == nil {
 		t.Error("bad matchMode expected error")
 	}
+	// KAFKA-M4 回归：decode/decompression 非法值必须在建 client 前拒绝，
+	// 不产生占名额的僵尸会话。
+	if _, err := service2.StartStream(ConsumeParams{ConnectionID: "ss", Topic: "t", Decompression: "brotli"}); err == nil || !strings.Contains(err.Error(), "decompression must be") {
+		t.Errorf("err = %v, want decompression validation error", err)
+	}
+	if _, err := service2.StartStream(ConsumeParams{ConnectionID: "ss", Topic: "t", Decode: "hex"}); err == nil || !strings.Contains(err.Error(), "decode must be") {
+		t.Errorf("err = %v, want decode validation error", err)
+	}
+	service2.Streams.mu.Lock()
+	remaining := len(service2.Streams.sessions)
+	service2.Streams.mu.Unlock()
+	if remaining != 0 {
+		t.Fatalf("failed starts must not leave sessions behind, got %d", remaining)
+	}
 }

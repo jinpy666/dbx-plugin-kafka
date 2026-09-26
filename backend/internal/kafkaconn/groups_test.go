@@ -281,6 +281,35 @@ func TestDeleteGroupGateMatrix(t *testing.T) {
 	if err := service.DeleteGroup(context.Background(), GroupDeleteRequest{ConnectionID: "gd", Group: "g"}); err == nil || !strings.Contains(err.Error(), "does not allow delete") {
 		t.Errorf("error = %v, want allow_delete block", err)
 	}
+
+	// 审查 L4：门禁放行后 confirmGroup 必须与组同名（与 topics/delete 的
+	// confirmTopic 同级；不匹配 → InvalidParamsError/-32602 + blocked 审计）。
+	service = NewService()
+	audits = nil
+	service.Audit = func(rec AuditRecord) { audits = append(audits, rec) }
+	if err := connectWithConfig(t, service, "gc",
+		`{"bootstrap_servers": "127.0.0.1:1", "allow_delete": true}`, `{}`); err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	if err := service.DeleteGroup(context.Background(), GroupDeleteRequest{ConnectionID: "gc", Group: "g"}); err == nil || !strings.Contains(err.Error(), "confirmGroup must match the group name") {
+		t.Errorf("error = %v, want missing confirmGroup guard", err)
+	}
+	if err := service.DeleteGroup(context.Background(), GroupDeleteRequest{ConnectionID: "gc", Group: "g", ConfirmGroup: "other"}); err == nil || !strings.Contains(err.Error(), "does not match group") {
+		t.Errorf("error = %v, want confirmGroup mismatch guard", err)
+	}
+	for _, rec := range audits {
+		if rec.Action != "groups-delete" || rec.Result != "blocked" {
+			t.Fatalf("confirm-guard audits = %+v", audits)
+		}
+	}
+	if len(audits) != 2 {
+		t.Fatalf("audits = %d, want 2 blocked records", len(audits))
+	}
+	// 确认一致 → 门禁放行进 broker（127.0.0.1:1 拨号失败而非参数错）。
+	var paramErr *InvalidParamsError
+	if err := service.DeleteGroup(context.Background(), GroupDeleteRequest{ConnectionID: "gc", Group: "g", ConfirmGroup: "g"}); err == nil || errors.As(err, &paramErr) {
+		t.Errorf("confirmed delete error = %v, want broker dial error (past confirm guard)", err)
+	}
 }
 
 func TestResetGroupOffsetsValidationMatrix(t *testing.T) {

@@ -132,7 +132,8 @@ func (s *Service) GetGroupOffsets(ctx context.Context, req GroupOffsetsListReque
 	return &result, nil
 }
 
-// DeleteGroup 实现 kafka/groups/delete（critical 门禁）。
+// DeleteGroup 实现 kafka/groups/delete（critical 门禁：allow_delete 与门 +
+// confirmGroup 与 topics/delete 的 confirmTopic 同级——审查 L4 补齐）。
 func (s *Service) DeleteGroup(ctx context.Context, req GroupDeleteRequest) error {
 	profile := s.profileOf(req.ConnectionID)
 	group := trimSpace(req.Group)
@@ -140,6 +141,10 @@ func (s *Service) DeleteGroup(ctx context.Context, req GroupDeleteRequest) error
 		return errf("group is required")
 	}
 	if err := ensureDeleteAllowed(profile, "groups/delete"); err != nil {
+		s.emitAudit(req.ConnectionID, "groups-delete", group, "blocked", err.Error())
+		return err
+	}
+	if err := ensureGroupDeleteConfirm(req); err != nil {
 		s.emitAudit(req.ConnectionID, "groups-delete", group, "blocked", err.Error())
 		return err
 	}

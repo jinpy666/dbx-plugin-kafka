@@ -162,7 +162,7 @@ permissions `["host.events","host.workbench"]`。
 | `kafka/groups/list` | — | `groups[]{group,state,protocolType,coordinator}` |
 | `kafka/groups/describe` | `group` | `members[]{memberId,instanceId,clientId,clientHost,assignments{topic:[]partition}}` |
 | `kafka/groups/offsets/list` | `group`, `topics?`(空=committed 全量) | `rows[]{topic,partition,startOffset,endOffset,committedOffset,lag}` + `totalLag`（Option 语义：无 committed 数据→`hasCommitted:false`，与零 lag 区分） |
-| `kafka/groups/delete` | `group` | —（critical 门禁） |
+| `kafka/groups/delete` | `group`, `confirmGroup`（与组同名，-32602 门禁） | —（critical 门禁） |
 | `kafka/groups/offsets/reset` | `group`, `topics[]`, `resetTo`(earliest/latest/timestamp/partitionOffset), `timestampMs?`, `partitionOffsets?` | `rows[]{topic,partition,ok,error}` |
 | `kafka/acls/list` | `filter{}`（拒绝过宽） | `acls[]{resourceType,resourceName,patternType,principal,host,operation,permission}` |
 | `kafka/acls/create` | `acl{}` | — |

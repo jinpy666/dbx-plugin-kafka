@@ -8,7 +8,8 @@ package kafkaconn
 //     groups/delete、acls/delete 额外拒绝；read_only 下 allow_delete 无效
 //     （两者与门）。
 //   - topics/delete 要求 confirmTopic 与待删 topic 同名（防误删）；
-//     topics/records/clear 复用同一单 topic 确认语义（防误清空）。
+//     topics/records/clear 复用同一单 topic 确认语义（防误清空）；
+//     groups/delete 要求 confirmGroup 与待删组同名（同款强度）。
 //   - 凭据（sasl_password、tls_client_key）不落日志、不进审计、不回显。
 
 import (
@@ -66,6 +67,22 @@ func ensureTopicDeleteConfirm(req TopicsDeleteRequest) error {
 	}
 	if strings.TrimSpace(confirm) != topics[0] {
 		return &InvalidParamsError{Msg: fmt.Sprintf("confirmTopic %q does not match topic %q (confirmTopic guard)", strings.TrimSpace(confirm), topics[0])}
+	}
+	return nil
+}
+
+// ensureGroupDeleteConfirm 校验 groups/delete 的确认字段（审查 L4：与
+// topics/delete 的 confirmTopic 同级——confirmGroup 与待删组同名防误删，
+// 2026-09-26 补齐）。失败返回 *InvalidParamsError（§3.2 冻结语义：confirm
+// 不匹配是参数错 → -32602）。
+func ensureGroupDeleteConfirm(req GroupDeleteRequest) error {
+	group := trimSpace(req.Group)
+	confirm := trimSpace(req.ConfirmGroup)
+	if confirm == "" {
+		return &InvalidParamsError{Msg: "confirmGroup must match the group name to delete (confirmGroup guard)"}
+	}
+	if confirm != group {
+		return &InvalidParamsError{Msg: fmt.Sprintf("confirmGroup %q does not match group %q (confirmGroup guard)", confirm, group)}
 	}
 	return nil
 }

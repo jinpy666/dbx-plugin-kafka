@@ -77,9 +77,13 @@ type schemaRegistryClient struct {
 	http     *http.Client
 }
 
-// newSchemaRegistryClient 由 Profile 构建 SR 客户端（sr_url 空 = SR 未配置，
-// 业务错）；password 来自 connSecrets，仅进 Authorization 头。
-func newSchemaRegistryClient(profile Profile, srPassword string) (*schemaRegistryClient, error) {
+// newSchemaRegistryClient 由 Profile + secrets 构建 SR 客户端（sr_url 空 =
+// SR 未配置，业务错）；password 来自 connSecrets，仅进 Authorization 头。
+// TLS 信任面（自签 CA / skip-verify / mTLS 客户端证书）按连接配置复用
+// broker 同款 buildTLSConfig 构建 transport（审查 L3：此前 SR 通道用默认
+// transport，连接 TLS 不生效）；未启用 https 且未配置任何 TLS 项时保持
+// 默认 transport（零行为变化）。
+func newSchemaRegistryClient(profile Profile, secrets connSecrets) (*schemaRegistryClient, error) {
 	baseURL := strings.TrimRight(strings.TrimSpace(profile.SRURL), "/")
 	if baseURL == "" {
 		return nil, errf("schema registry is not configured for connection %q (srUrl is empty)", profile.Name)
@@ -87,12 +91,35 @@ func newSchemaRegistryClient(profile Profile, srPassword string) (*schemaRegistr
 	if _, err := url.ParseRequestURI(baseURL); err != nil {
 		return nil, fmt.Errorf("schema registry URL is invalid: %w", err)
 	}
+	client := &http.Client{Timeout: schemaRegistryTimeout}
+	if schemaUsesTLS(baseURL, profile) {
+		tlsConfig, err := buildTLSConfig(profile, secrets)
+		if err != nil {
+			return nil, err
+		}
+		client.Transport = &http.Transport{
+			// 对齐 http.DefaultTransport 的代理语义，仅替换 TLS 信任面。
+			Proxy:           http.ProxyFromEnvironment,
+			TLSClientConfig: tlsConfig,
+		}
+	}
 	return &schemaRegistryClient{
 		baseURL:  baseURL,
 		username: profile.SRUsername,
-		password: srPassword,
-		http:     &http.Client{Timeout: schemaRegistryTimeout},
+		password: secrets.SRPassword,
+		http:     client,
 	}, nil
+}
+
+// schemaUsesTLS 报告 SR 通道是否需要自定义 TLS transport：URL 为 https，
+// 或连接配置了任一 TLS 信任项。
+func schemaUsesTLS(baseURL string, profile Profile) bool {
+	if strings.HasPrefix(strings.ToLower(baseURL), "https://") {
+		return true
+	}
+	return strings.TrimSpace(profile.TLSCACert) != "" ||
+		strings.TrimSpace(profile.TLSClientCert) != "" ||
+		profile.TLSInsecureSkipVerify
 }
 
 // request 执行一次 SR REST 调用（payload 非 nil 时序列化为 JSON body）。
@@ -638,9 +665,7 @@ func (s *Service) schemaBackendFor(connectionID, registry string) (schemaBackend
 	}
 	entry.mu.Lock()
 	profile := entry.profile
-	srPassword := entry.secrets.SRPassword
-	glueSecret := entry.secrets.GlueSecretAccessKey
-	glueToken := entry.secrets.GlueSessionToken
+	secrets := entry.secrets
 	entry.mu.Unlock()
 
 	provider, err := resolveSchemaProvider(profile, registry)
@@ -649,7 +674,7 @@ func (s *Service) schemaBackendFor(connectionID, registry string) (schemaBackend
 	}
 	switch provider {
 	case schemaProviderConfluent:
-		client, err := newSchemaRegistryClient(profile, srPassword)
+		client, err := newSchemaRegistryClient(profile, secrets)
 		if err != nil {
 			return nil, err
 		}
@@ -660,8 +685,8 @@ func (s *Service) schemaBackendFor(connectionID, registry string) (schemaBackend
 			RegistryName:    profile.GlueRegistryName,
 			AuthMode:        profile.GlueAuthMode,
 			AccessKeyID:     profile.GlueAccessKeyID,
-			SecretAccessKey: glueSecret,
-			SessionToken:    glueToken,
+			SecretAccessKey: secrets.GlueSecretAccessKey,
+			SessionToken:    secrets.GlueSessionToken,
 		}, glueBaseEndpointOverride)
 	default:
 		return nil, errf("schema registry is not enabled for connection %q (set schemaRegistry to confluent or aws_glue)", profile.Name)
@@ -679,9 +704,9 @@ func (s *Service) confluentClientFor(connectionID string) (*schemaRegistryClient
 	}
 	entry.mu.Lock()
 	profile := entry.profile
-	srPassword := entry.secrets.SRPassword
+	secrets := entry.secrets
 	entry.mu.Unlock()
-	return newSchemaRegistryClient(profile, srPassword)
+	return newSchemaRegistryClient(profile, secrets)
 }
 
 // schemaMountSupported 是 produce/consume/stream 的 schema{} 挂载门禁：

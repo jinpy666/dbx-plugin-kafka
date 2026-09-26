@@ -98,6 +98,10 @@ func TestSettingsPersistRoundtrip(t *testing.T) {
 	}
 	settings := DefaultSettings()
 	settings.ReportWaitMs = 250
+	// KAFKA-M2 回归：cursor 两个字段此前 Save 持久化但 Load 漏恢复，
+	// 重启后静默回默认——往返必须全字段一致。
+	settings.CursorTtlSecs = 1234
+	settings.MaxCursorSessions = 16
 	if err := SaveSettings(st, settings); err != nil {
 		t.Fatal(err)
 	}
@@ -110,5 +114,13 @@ func TestSettingsPersistRoundtrip(t *testing.T) {
 	}
 	if got := LoadSettings(nil); got != DefaultSettings() {
 		t.Fatalf("nil store load should return defaults: %+v", got)
+	}
+	// 损坏行回落：持久化文件缺 cursor 字段时保默认（逐项 >0 模式）。
+	if err := st.SaveJSON(settingsFileName, map[string]any{"reportWaitMs": float64(300)}); err != nil {
+		t.Fatal(err)
+	}
+	got := LoadSettings(st)
+	if got.ReportWaitMs != 300 || got.CursorTtlSecs != DefaultSettings().CursorTtlSecs || got.MaxCursorSessions != DefaultSettings().MaxCursorSessions {
+		t.Fatalf("partial file should fall back per-field: %+v", got)
 	}
 }

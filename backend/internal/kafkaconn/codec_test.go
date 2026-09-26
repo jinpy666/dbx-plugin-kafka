@@ -163,6 +163,65 @@ func TestMessageTruncationAtLimit(t *testing.T) {
 	if err != nil || len(decoded) != maxMessageBytes {
 		t.Errorf("truncated length = %d, %v (want %d)", len(decoded), err, maxMessageBytes)
 	}
+	// valueText 与 valueBase64 同用 maxMessageBytes 截断（KAFKA-H1：双通道
+	// 策略一致，digest 高扫描量不再 GB 级驻留）。
+	if len(message.ValueText) != maxMessageBytes {
+		t.Errorf("valueText length = %d, want %d", len(message.ValueText), maxMessageBytes)
+	}
+	// 上限内 valueText 完整（不截断）。
+	small := messageFromRecord(&kgo.Record{Topic: "t", Value: []byte("hello"), Timestamp: time.UnixMilli(1)}, []byte("hello"), false, "", false)
+	if small.Truncated || small.ValueText != "hello" {
+		t.Errorf("within-limit valueText = %q truncated=%v", small.ValueText, small.Truncated)
+	}
+}
+
+// 高压缩比载荷超限：全解压分支（gzip/lz4/zstd/snappy block/framed）都必须
+// 报解压炸弹防护错，而不是把膨胀后的字节物化进内存（KAFKA-H1 回归）。
+func TestDecompressBombGuard(t *testing.T) {
+	payload := bytes.Repeat([]byte{0}, maxDecodedBytes+1024)
+	// gzip。
+	if _, err := decompressPayload(gzipBytes(t, payload), "gzip"); err == nil || !strings.Contains(err.Error(), "decompression bomb guard") {
+		t.Errorf("gzip bomb error = %v, want bomb guard", err)
+	}
+	// lz4。
+	var lz4Buffer bytes.Buffer
+	lz4Writer := lz4.NewWriter(&lz4Buffer)
+	lz4Writer.Write(payload)
+	lz4Writer.Close()
+	if _, err := decompressPayload(lz4Buffer.Bytes(), "lz4"); err == nil || !strings.Contains(err.Error(), "decompression bomb guard") {
+		t.Errorf("lz4 bomb error = %v, want bomb guard", err)
+	}
+	// zstd（WithDecoderMaxMemory 先行兜底 / 显式长度校验同向，任一报限即通过）。
+	encoder, _ := zstd.NewWriter(nil, zstd.WithEncoderLevel(zstd.SpeedFastest))
+	zstdBytes := encoder.EncodeAll(payload, nil)
+	encoder.Close()
+	if _, err := decompressPayload(zstdBytes, "zstd"); err == nil || !(strings.Contains(err.Error(), "decompression bomb guard") || strings.Contains(err.Error(), "exceeds")) {
+		t.Errorf("zstd bomb error = %v, want limit error", err)
+	}
+	// snappy block（DecodedLen 声明长度预检）。
+	snappyBlock := snappy.Encode(nil, payload)
+	if _, err := decompressPayload(snappyBlock, "snappy"); err == nil || !strings.Contains(err.Error(), "decompression bomb guard") {
+		t.Errorf("snappy block bomb error = %v, want bomb guard", err)
+	}
+	// snappy framed（流式 LimitReader）。
+	var framedBuffer bytes.Buffer
+	framedWriter := snappy.NewBufferedWriter(&framedBuffer)
+	framedWriter.Write(payload)
+	framedWriter.Close()
+	if _, err := decompressPayload(framedBuffer.Bytes(), "snappy"); err == nil || !strings.Contains(err.Error(), "decompression bomb guard") {
+		t.Errorf("snappy framed bomb error = %v, want bomb guard", err)
+	}
+	// 上限边界内正常解压不受影响。
+	if got, err := decompressPayload(gzipBytes(t, []byte("ok payload")), "gzip"); err != nil || string(got) != "ok payload" {
+		t.Errorf("within-limit gzip = %q, %v", got, err)
+	}
+	// decodeConsumeValue：超限错误按 DecodeError 语义进消息（保留原值=原始
+	// 压缩字节，不中断消费）。
+	compressed := gzipBytes(t, payload)
+	got, decoded, decodeErr := decodeConsumeValue(compressed, "none", "gzip")
+	if decodeErr == "" || !strings.Contains(decodeErr, "decompression bomb guard") || decoded || !bytes.Equal(got, compressed) {
+		t.Errorf("bomb via decodeConsumeValue: err=%q decoded=%v kept=%v", decodeErr, decoded, bytes.Equal(got, compressed))
+	}
 }
 
 func TestSafeUTF8Preview(t *testing.T) {

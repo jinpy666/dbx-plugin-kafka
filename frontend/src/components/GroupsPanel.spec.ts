@@ -274,6 +274,30 @@ describe("GroupsPanel", () => {
     expect(invokeMock.mock.calls.filter(([method]) => method === "kafka/groups/offsets/reset")).toHaveLength(0);
   });
 
+  it("delete dialog requires typing the group name before submit", async () => {
+    installBridge({
+      "kafka/groups/list": { groups },
+      "kafka/groups/offsets/list": { rows: [] },
+      "kafka/groups/describe": { members: [] },
+      "kafka/groups/delete": { success: true },
+    });
+    const wrapper = mountPanel();
+    await flushPromises();
+    await selectFirstGroup(wrapper);
+    await wrapper.findAll(".result-meta .qb-add")[1].trigger("click");
+    // 确认输入为空 / 不同名：按钮禁用，点击不触发删除。
+    expect(wrapper.find(".modal-backdrop .modal .danger-button").attributes("disabled")).toBeDefined();
+    await wrapper.find(".modal-backdrop .modal .danger-button").trigger("click");
+    await flushPromises();
+    expect(invokeMock.mock.calls.filter(([method]) => method === "kafka/groups/delete")).toHaveLength(0);
+    // 输入同名后放行（confirmGroup 与后端 confirmTopic 同级门禁）。
+    // teleport stub 重渲染会替换弹窗元素：断言/交互前一律重查，不用过期 wrapper。
+    await wrapper.find(".modal-backdrop .modal input[type='text']").setValue("orders-consumer");
+    await wrapper.find(".modal-backdrop .modal .danger-button").trigger("click");
+    await flushPromises();
+    expect(invokeMock.mock.calls.filter(([method]) => method === "kafka/groups/delete")).toHaveLength(1);
+  });
+
   it("delete dialog submits deletion and reloads the list", async () => {
     installBridge({
       "kafka/groups/list": { groups },
@@ -288,11 +312,17 @@ describe("GroupsPanel", () => {
     const modal = wrapper.find(".modal-backdrop .modal");
     expect(modal.text()).toContain("orders-consumer");
     expect(modal.text()).toContain(t("groups.deleteMessage"));
-    await modal.find(".danger-button").trigger("click");
+    expect(modal.text()).toContain(t("groups.deleteConfirmLabel", { group: "orders-consumer" }));
+    await wrapper.find(".modal-backdrop .modal input[type='text']").setValue("orders-consumer");
+    await wrapper.find(".modal-backdrop .modal .danger-button").trigger("click");
     await flushPromises();
     expect(wrapper.emitted("notify")?.at(-1)).toEqual([t("groups.deleted")]);
     expect(wrapper.find(".modal-backdrop").exists()).toBe(false);
-    expect(invokeMock.mock.calls.filter(([method]) => method === "kafka/groups/delete")).toHaveLength(1);
+    // confirmGroup 与组同名随请求上送（后端 confirmTopic 同级门禁；
+    // connectionId 由 api 层注入，objectContaining 只断言本面板关心的字段）。
+    expect(invokeMock.mock.calls.find(([method]) => method === "kafka/groups/delete")?.[1]).toEqual(
+      expect.objectContaining({ group: "orders-consumer", confirmGroup: "orders-consumer" }),
+    );
     // 删除后重载列表
     expect(invokeMock.mock.calls.filter(([method]) => method === "kafka/groups/list").length).toBeGreaterThanOrEqual(2);
   });
@@ -308,6 +338,7 @@ describe("GroupsPanel", () => {
     await flushPromises();
     await selectFirstGroup(wrapper);
     await wrapper.findAll(".result-meta .qb-add")[1].trigger("click");
+    await wrapper.find(".modal-backdrop .modal input[type='text']").setValue("orders-consumer");
     await wrapper.find(".modal-backdrop .modal .danger-button").trigger("click");
     await flushPromises();
     expect(wrapper.emitted("error")?.at(-1)).toEqual(["delete blocked"]);

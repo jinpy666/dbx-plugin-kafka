@@ -96,7 +96,7 @@ func TestProtobufDecodeViaWireFrameAndRegistry(t *testing.T) {
 	registry := newFakeRegistry()
 	id, _ := registry.register("order-value", ordersFDSetB64(t), "PROTOBUF")
 	server := newTestHTTPServer(t, registry.handler)
-	client, err := newSchemaRegistryClient(Profile{SRURL: server.URL}, "")
+	client, err := newSchemaRegistryClient(Profile{SRURL: server.URL}, connSecrets{})
 	if err != nil {
 		t.Fatalf("newSchemaRegistryClient() error = %v", err)
 	}

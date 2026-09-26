@@ -160,6 +160,12 @@ func LoadSettings(st *store.Store) Settings {
 	if persisted.DigestScanLimit > 0 {
 		settings.DigestScanLimit = persisted.DigestScanLimit
 	}
+	if persisted.CursorTtlSecs > 0 {
+		settings.CursorTtlSecs = persisted.CursorTtlSecs
+	}
+	if persisted.MaxCursorSessions > 0 {
+		settings.MaxCursorSessions = persisted.MaxCursorSessions
+	}
 	if persisted.ResponseLimitBytes > 0 {
 		settings.ResponseLimitBytes = persisted.ResponseLimitBytes
 	}

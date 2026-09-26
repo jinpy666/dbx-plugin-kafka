@@ -116,13 +116,19 @@ func (s *Service) consumePoolAcquire(connID, signature string, atStart bool) (*c
 }
 
 // consumePoolPut 新建 client 入池并返回占用中的条目（所有权移交池）。
-// 替换同键旧条目；池超限时先驱逐最旧空闲条目。
+// 同键旧条目空闲则替换（关闭旧 client）；旧条目 inUse 时不替换也不入池、
+// 返回 nil——所有权留给调用方按临时 client 用完即关（KAFKA-M1：此前不看
+// inUse 直接关旧条目，并发同形状消费会关掉正在 poll 的 client；对齐
+// evictConsumePoolLocked 跳过 inUse 的语义）。池超限时先驱逐最旧空闲条目。
 func (s *Service) consumePoolPut(connID, signature string, client *kgo.Client) *consumePoolEntry {
 	s.consumePoolMu.Lock()
 	defer s.consumePoolMu.Unlock()
 
 	key := consumePoolKey(connID, signature)
 	if old := s.consumePool[key]; old != nil {
+		if old.inUse {
+			return nil
+		}
 		s.closeConsumePoolEntry(old, key)
 	}
 	entry := &consumePoolEntry{

@@ -477,6 +477,54 @@ func TestSchemaServicePolicyGates(t *testing.T) {
 	}
 }
 
+// 审查 L3 回归：SR REST 通道复用连接的 TLS 信任面（buildTLSConfig）——
+// https/skip-verify/CA 按连接配置进 transport，默认 transport 不再吞掉 TLS 配置。
+func TestSchemaRegistryClientTLSTransport(t *testing.T) {
+	// https + skip-verify → transport 携带 InsecureSkipVerify。
+	client, err := newSchemaRegistryClient(Profile{
+		SRURL:                 "https://sr.example:8081",
+		TLSInsecureSkipVerify: true,
+	}, connSecrets{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	transport, ok := client.http.Transport.(*http.Transport)
+	if !ok || transport.TLSClientConfig == nil || !transport.TLSClientConfig.InsecureSkipVerify {
+		t.Fatalf("https+skipVerify transport = %+v, want TLSClientConfig with InsecureSkipVerify", client.http.Transport)
+	}
+	// 纯 http 且无任何 TLS 项 → 默认 transport（零行为变化）。
+	plain, err := newSchemaRegistryClient(Profile{SRURL: "http://127.0.0.1:8081"}, connSecrets{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plain.http.Transport != nil {
+		t.Fatalf("plain http transport = %v, want nil", plain.http.Transport)
+	}
+	// CA 配置经 buildTLSConfig 生效：非法 PEM 显式报错（复用路径的证据）。
+	if _, err := newSchemaRegistryClient(Profile{
+		SRURL:     "https://sr.example:8081",
+		TLSCACert: "not-a-pem",
+	}, connSecrets{}); err == nil || !strings.Contains(err.Error(), "tlsCaCert") {
+		t.Fatalf("invalid CA error = %v, want tlsCaCert build failure", err)
+	}
+	// schemaUsesTLS 取值面。
+	cases := []struct {
+		url     string
+		profile Profile
+		want    bool
+	}{
+		{"http://sr:8081", Profile{}, false},
+		{"https://sr:8081", Profile{}, true},
+		{"http://sr:8081", Profile{TLSCACert: "x"}, true},
+		{"http://sr:8081", Profile{TLSInsecureSkipVerify: true}, true},
+	}
+	for _, tc := range cases {
+		if got := schemaUsesTLS(tc.url, tc.profile); got != tc.want {
+			t.Errorf("schemaUsesTLS(%q, %+v) = %v, want %v", tc.url, tc.profile, got, tc.want)
+		}
+	}
+}
+
 func TestSchemaServiceNotConfigured(t *testing.T) {
 	service := NewService()
 	// 无 sr_url（旧连接，开关未设）→ 业务错（不 panic）。
@@ -541,7 +589,7 @@ func TestSchemaDecoderCacheByID(t *testing.T) {
 	registry := newFakeRegistry()
 	id, _ := registry.register("s-value", testAvroSchema, "AVRO")
 	server := newTestHTTPServer(t, registry.handler)
-	client, err := newSchemaRegistryClient(Profile{SRURL: server.URL}, "")
+	client, err := newSchemaRegistryClient(Profile{SRURL: server.URL}, connSecrets{})
 	if err != nil {
 		t.Fatalf("newSchemaRegistryClient() error = %v", err)
 	}

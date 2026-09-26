@@ -49,7 +49,7 @@ func nestedFDSetB64(t *testing.T) string {
 func newTestSRClient(t *testing.T, registry *fakeRegistry) *schemaRegistryClient {
 	t.Helper()
 	server := newTestHTTPServer(t, registry.handler)
-	client, err := newSchemaRegistryClient(Profile{SRURL: server.URL}, "")
+	client, err := newSchemaRegistryClient(Profile{SRURL: server.URL}, connSecrets{})
 	if err != nil {
 		t.Fatalf("newSchemaRegistryClient() error = %v", err)
 	}

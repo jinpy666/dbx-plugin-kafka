@@ -217,6 +217,15 @@ func (s *Service) StartStream(params ConsumeParams) (*StreamStatus, error) {
 	if err := validateConsumeParams(params); err != nil {
 		return nil, err
 	}
+	// 解码/解压方法预校验（对照一次性消费路径先校验）：此前非法值要到
+	// runLoop 才报错，会话已注册进名额——僵尸会话占 20 上限、等 30 分钟
+	// 空闲回收。建 client 前拒绝，失败不留任何注册状态。
+	if _, err := normalizeDecodeMethod(params.Decode); err != nil {
+		return nil, err
+	}
+	if _, err := normalizeDecompressMethod(params.Decompression); err != nil {
+		return nil, err
+	}
 	// §5.5：只读策略下禁止 commit。
 	if params.Commit && profile.ReadOnly {
 		return nil, errf("kafka profile %q is read-only; commit is blocked", profile.Name)

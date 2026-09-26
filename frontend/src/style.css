@@ -1,4 +1,4 @@
-/* LDAP workbench styles — same design system as the ssh-sftp plugin
+/* Kafka workbench styles — same design system as the ssh-sftp plugin
    (DBX token variables, .workbench/.toolbar/.modal/.context-menu classes). */
 
 :root {
@@ -131,8 +131,13 @@ button:disabled { filter: grayscale(.4); }
 .icon-neutral { color: var(--muted-foreground); }
 /* 小尺寸图标（TopicTree 树行 / 过滤框等行内 13px 场景，替代 inline style）。 */
 .icon-13 { width: 13px; height: 13px; flex: 0 0 13px; }
-.icon-emerald { color: light-dark(#10b981, #6ee7b7); }
-.icon-amber { color: light-dark(#d97706, #fcd34d); }
+/* 语义状态图标色走 --success/--warning 令牌（shared/frontend/themeSync.ts
+   桥接宿主 tokens 并带 DBX 规范回退；审查 L1：不再写散装 hex）。 */
+.icon-emerald { color: var(--success); }
+.icon-amber { color: var(--warning); }
+/* 豁免（审查 L1）：cyan/violet/blue 是面板/树行的装饰性分类色（连接页签、
+   internal topic 行等），无成功/警示语义、宿主无对应令牌可映射，保留
+   light-dark 双色 hex；语义状态一律用 --success/--warning/--destructive。 */
 .icon-cyan { color: light-dark(#0891b2, #67e8f9); }
 .icon-violet { color: light-dark(#7c3aed, #c4b5fd); }
 .icon-blue { color: light-dark(#2563eb, #93c5fd); }
@@ -716,8 +721,8 @@ button:disabled { filter: grayscale(.4); }
 
 /* === 审计日志条（AuditFeedPanel）：底部常驻折叠条 + 可展开事件列表 ============ */
 /* 折叠态一行摘要（chevron+图标+标题+计数，计数弱化右随），列表内部自滚（约 7 行
-   上限）不挤压上方面板；结果徽标沿用 .badge-* 混色配方（状态色向前景混提对比），
-   ok 色板照 .icon-emerald 的 light-dark 先例（--success 本仓库未定义）。 */
+   上限）不挤压上方面板；结果徽标沿用 .badge-* 混色配方（状态色向前景混提对比，
+   ok/denied 分支同用 --success/--destructive 令牌）。 */
 .audit-feed { flex: 0 0 auto; border-top: 1px solid var(--border); background: color-mix(in srgb, var(--background) 96%, var(--muted)); }
 .audit-feed-denied { border-top-color: color-mix(in srgb, var(--destructive) 45%, var(--border)); }
 .audit-header { display: flex; min-height: 30px; align-items: center; gap: 2px; padding: 2px var(--space-2); }
@@ -735,7 +740,7 @@ button:disabled { filter: grayscale(.4); }
 .audit-item-denied, .audit-item-error { background: color-mix(in srgb, var(--destructive) 10%, transparent); }
 .audit-time { flex: 0 0 auto; color: var(--muted-foreground); font-family: var(--mono-font-family); font-size: 10.5px; font-variant-numeric: tabular-nums; }
 .audit-badge { flex: 0 0 auto; border: 1px solid var(--border); border-radius: 999px; padding: 0 6px; font-size: 10px; }
-.audit-badge-ok { border-color: color-mix(in srgb, #10b981 55%, var(--border)); color: light-dark(#047857, #6ee7b7); }
+.audit-badge-ok { border-color: color-mix(in srgb, var(--success) 55%, var(--border)); color: color-mix(in srgb, var(--success) 78%, var(--foreground)); }
 .audit-badge-denied, .audit-badge-error { border-color: color-mix(in srgb, var(--destructive) 55%, var(--border)); color: color-mix(in srgb, var(--destructive) 78%, var(--foreground)); }
 .audit-badge-error { background: color-mix(in srgb, var(--destructive) 14%, transparent); }
 .audit-action { min-width: 0; flex: 0 1 auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: var(--mono-font-family); font-size: 10.5px; }

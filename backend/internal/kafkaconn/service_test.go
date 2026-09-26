@@ -110,6 +110,64 @@ func TestAuditCallback(t *testing.T) {
 	}
 }
 
+// 审查 L5 回归：skip-verify 连接在 lifecycle 配置应用（Connect）时发一条
+// success + Detail 审计留痕；普通连接不发。Result 走三值契约，无 warning 态。
+func TestConnectAuditsInsecureSkipVerify(t *testing.T) {
+	insecureParams := func(id string) *lifecycle.Params {
+		params, err := lifecycle.Parse([]byte(`{
+		  "connection": {
+		    "id": "` + id + `",
+		    "name": "insecure-kafka",
+		    "external_config": {
+		      "bootstrap_servers": "k1:9092",
+		      "security_protocol": "SSL",
+		      "tls_insecure_skip_verify": true
+		    }
+		  }
+		}`))
+		if err != nil {
+			t.Fatalf("Parse() error = %v", err)
+		}
+		return params
+	}
+
+	service := NewService()
+	var records []AuditRecord
+	service.Audit = func(rec AuditRecord) { records = append(records, rec) }
+
+	// 普通（非 skip-verify）连接：无审计。
+	if err := service.Connect(connectParams("plain")); err != nil {
+		t.Fatalf("Connect(plain) error = %v", err)
+	}
+	if len(records) != 0 {
+		t.Fatalf("plain connect must not audit, records = %+v", records)
+	}
+
+	// skip-verify 连接：单条 success 审计，Detail 注明 TLS 验证已关闭。
+	if err := service.Connect(insecureParams("insecure")); err != nil {
+		t.Fatalf("Connect(insecure) error = %v", err)
+	}
+	if len(records) != 1 {
+		t.Fatalf("insecure connect audits = %+v, want exactly one", records)
+	}
+	rec := records[0]
+	if rec.ConnectionID != "insecure" || rec.Action != "connection-configure" ||
+		rec.Target != "insecure-kafka" || rec.Result != "success" {
+		t.Errorf("record = %+v", rec)
+	}
+	if !containsAll(rec.Detail, "TLS certificate verification is disabled", "tlsInsecureSkipVerify") {
+		t.Errorf("detail should note disabled verification: %q", rec.Detail)
+	}
+	if containsAll(rec.Detail+rec.Target, "password", "secret") {
+		t.Errorf("audit record must not contain credential markers: %+v", rec)
+	}
+
+	// Audit 回调 nil 时 Connect 不 panic（emitAudit nil 安全）。
+	if err := (NewService()).Connect(insecureParams("insecure-2")); err != nil {
+		t.Fatalf("Connect without audit sink error = %v", err)
+	}
+}
+
 func TestPresets(t *testing.T) {
 	service := NewService()
 	if _, err := service.ListPresets(); err == nil {

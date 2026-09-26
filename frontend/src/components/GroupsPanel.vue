@@ -71,9 +71,10 @@ const resetTo = ref<"earliest" | "latest" | "timestamp" | "partitionOffset">("ea
 const resetTimestampMs = ref("");
 const resetPartitionOffsets = ref("");
 
-// delete dialog
+// delete dialog（confirmGroup 输入同名确认，对齐 TopicsPanel 删除门禁强度）。
 const deleteOpen = ref(false);
 const deleteTarget = ref("");
+const deleteConfirmText = ref("");
 
 // 弹层行为统一接入（UI 扫描第 2 轮 P1-5）：重置位点 / 删除组弹窗支持 Esc 关闭 +
 // Tab 焦点陷阱 + 关闭归还触发元素（决策逻辑 lib/modalBehavior）。
@@ -193,13 +194,16 @@ async function submitReset() {
 function askDelete() {
   if (!selected.value) return;
   deleteTarget.value = selected.value.group;
+  deleteConfirmText.value = "";
   deleteOpen.value = true;
 }
 
 async function submitDelete() {
+  // confirmGroup 必须与组同名（防误删，§6；后端 ensureGroupDeleteConfirm 同规则）。
+  if (deleteConfirmText.value.trim() !== deleteTarget.value) return;
   busy.value = true;
   try {
-    await kafkaApi.groupsDelete(deleteTarget.value);
+    await kafkaApi.groupsDelete(deleteTarget.value, deleteConfirmText.value.trim());
     deleteOpen.value = false;
     emit("notify", t("groups.deleted"));
     if (selected.value?.group === deleteTarget.value) selected.value = null;
@@ -330,16 +334,24 @@ onMounted(() => {
             <h2>{{ t("groups.deleteTitle", { group: deleteTarget }) }}</h2>
             <button class="icon-button" :title="t('close')" @click="deleteOpen = false">✕</button>
           </header>
+          <p>{{ t("groups.deleteMessage") }}</p>
           <div class="destructive-copy">
             <div class="destructive-icon"><Trash2 aria-hidden="true" /></div>
             <div>
               <strong class="mono">{{ deleteTarget }}</strong>
-              <p>{{ t("groups.deleteMessage") }}</p>
+              <p>
+                <label class="settings-field">
+                  <span>{{ t("groups.deleteConfirmLabel", { group: deleteTarget }) }}</span>
+                  <input v-model="deleteConfirmText" type="text" class="mono" spellcheck="false" @keyup.enter="submitDelete" />
+                </label>
+              </p>
             </div>
           </div>
           <footer>
             <button type="button" @click="deleteOpen = false">{{ t("cancel") }}</button>
-            <button class="danger-button" type="button" :disabled="busy" @click="submitDelete">{{ t("delete") }}</button>
+            <button class="danger-button" type="button" :disabled="busy || deleteConfirmText.trim() !== deleteTarget" @click="submitDelete">
+              {{ t("delete") }}
+            </button>
           </footer>
         </div>
       </div>
