@@ -3,7 +3,7 @@
   "manifest_version": 1,
   "id": "io.dbx.kafka",
   "name": "Kafka Studio",
-  "version": "0.1.49",
+  "version": "0.1.50",
   "publisher": "jinpy",
   "description": "Operate Apache Kafka from one workspace: inspect topics and partitions, produce and consume messages, filter and decode payloads, monitor consumer lag, manage offsets and ACLs, stream records, and export results.",
   "source": "https://github.com/jinpy666/dbx-plugin-kafka",
