@@ -1,3 +1,7 @@
+// vendored: DBX 插件族 monorepo `shared/frontend` 的副本（只保留本插件引用的模块）。
+// vendored-sync: 2026-09-27；上游公共层演进后同步回来时更新本行日期，
+// 并按 docs/REPOSITORY_SPLIT.zh-CN.md 的同步约定在拆分基线上重新验证。
+// scripts/validate_repo.py 检查本标记行的存在（副本身份，防「无从判断谁新谁旧」）。
 // 宿主主题令牌 → 插件 CSS 变量桥（四插件共用，唯一实现点）。
 //
 // 宿主在两个时机维护插件根节点上的全套 `--color-*` / `--radius-*` / `--font-*`

@@ -69,12 +69,12 @@ func TestConfirmStoreConcurrentStress(t *testing.T) {
 			for round := 0; round < rounds; round++ {
 				switch round % 4 {
 				case 0: // 即时消费：新令牌必须一次 OK。
-					token, _ := store.Issue(hash, clock.Now())
+					token, _, _ := store.Issue(hash, clock.Now())
 					if got := store.Consume(token, hash, clock.Now()); got != ConfirmOK {
 						errs.add("fresh token must consume ok: got " + string(got))
 					}
 				case 1: // 4 方竞争消费同一令牌：恰好一方 OK（一次性语义）。
-					token, _ := store.Issue(hash, clock.Now())
+					token, _, _ := store.Issue(hash, clock.Now())
 					var race sync.WaitGroup
 					var oks atomic.Int32
 					for racer := 0; racer < 4; racer++ {
@@ -92,12 +92,12 @@ func TestConfirmStoreConcurrentStress(t *testing.T) {
 							": raced token consumed " + strconv.Itoa(int(n)) + " times (want exactly 1)")
 					}
 				case 2: // 远期消费：expired 且删除。
-					token, _ := store.Issue(hash, clock.Now())
+					token, _, _ := store.Issue(hash, clock.Now())
 					if got := store.Consume(token, hash, intentBase.Add(2*ConfirmTTL)); got != ConfirmExpired {
 						errs.add("stale token must expire: got " + string(got))
 					}
 				default: // 弃单：签发后从不消费，靠 Issue 的 prune 收敛。
-					store.Issue(hash, clock.Now())
+					_, _, _ = store.Issue(hash, clock.Now())
 				}
 			}
 		}(worker)
@@ -113,12 +113,12 @@ func TestConfirmStoreConcurrentStress(t *testing.T) {
 		go func() {
 			defer flood.Done()
 			for round := 0; round < 75; round++ {
-				store.Issue(hash, clock.Now())
+				_, _, _ = store.Issue(hash, clock.Now())
 			}
 		}()
 	}
 	flood.Wait()
-	finalToken, _ := store.Issue(hash, intentBase.Add(10*time.Minute)) // 触发 prune
+	finalToken, _, _ := store.Issue(hash, intentBase.Add(10*time.Minute)) // 触发 prune
 	if len(store.items) != 1 {
 		errs.add("prune must clear all expired tokens under concurrency, got " + strconv.Itoa(len(store.items)))
 	}

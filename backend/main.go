@@ -971,7 +971,9 @@ func (h *pluginHandler) mcpSettingsSet(params json.RawMessage) (any, *dbxplugins
 	return result, nil
 }
 
-// --- StreamEmitter 适配（kafka/stream/messages、kafka/stream/error） ---// EmitStreamMessages 实现 kafkaconn.StreamEmitter。
+// --- StreamEmitter 适配（kafka/stream/messages、kafka/stream/error） ---
+
+// EmitStreamMessages 实现 kafkaconn.StreamEmitter。
 func (h *pluginHandler) EmitStreamMessages(batch kafkaconn.StreamMessageBatch) {
 	h.mu.Lock()
 	emitter := h.emitter

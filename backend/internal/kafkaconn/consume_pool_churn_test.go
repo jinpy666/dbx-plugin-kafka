@@ -8,7 +8,9 @@ package kafkaconn
 
 import (
 	"fmt"
+	"sync"
 	"testing"
+	"time"
 )
 
 // poolSignaturesChurn churn 用 signature 组：覆盖 topic/分区集/方向/
@@ -130,4 +132,61 @@ func TestConsumePoolResetFailedReplacement(t *testing.T) {
 		t.Fatal("replacement entry must be reusable after release")
 	}
 	s.consumePoolRelease(good, nil, true)
+}
+
+// S-POOL-RACE release-vs-acquire 并发压测（评审 H-2）：consumePoolRelease
+// 此前在池锁外写 inUse/lastUsedAt，与本文件 :46 的不变式（inUse 由池锁保护）
+// 冲突——并发同形状消费时 Acquire 的锁内读与 Release 的锁外写构成 data race。
+// 本用例以多 goroutine 高频对同一条目 acquire/release 制造交错，配合
+// `go test -race` 钉住锁纪律；终态断言条目回到空闲可复用。
+func TestConsumePoolReleaseAcquireConcurrentRace(t *testing.T) {
+	s := newPoolService()
+	sig := consumeClientSignature("t", "earliest", nil, "")
+	// Put 返回的条目处于占用态（所有权移交池）：先按正常持有期释放为空闲，
+	// worker 才能进入 acquire/release 循环。
+	if entry := s.consumePoolPut("c", sig, nil); entry == nil {
+		t.Fatal("put must register the entry")
+	} else {
+		s.consumePoolRelease(entry, nil, true)
+	}
+	const workers = 8
+	var wg sync.WaitGroup
+	stop := make(chan struct{})
+	for worker := 0; worker < workers; worker++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			observed := map[int32]struct{}{1: {}}
+			for {
+				select {
+				case <-stop:
+					return
+				default:
+				}
+				entry, reusable := s.consumePoolAcquire("c", sig, true)
+				if reusable {
+					if !entry.inUse {
+						t.Error("reusable entry must be marked in-use")
+						return
+					}
+					s.consumePoolRelease(entry, observed, true)
+				}
+			}
+		}()
+	}
+	time.Sleep(300 * time.Millisecond)
+	close(stop)
+	wg.Wait()
+	s.consumePoolMu.Lock()
+	entry := s.consumePool[consumePoolKey("c", sig)]
+	s.consumePoolMu.Unlock()
+	if entry == nil {
+		t.Fatal("entry must remain pooled after churn")
+	}
+	if entry.inUse {
+		t.Fatal("entry must be idle after all workers stop")
+	}
+	if entry.resetFailed {
+		t.Fatal("healthy churn must not mark resetFailed")
+	}
 }

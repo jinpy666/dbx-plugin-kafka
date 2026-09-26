@@ -220,3 +220,52 @@ func TestStdioRobustEmptyLinesAndCRLF(t *testing.T) {
 		}
 	}
 }
+
+// S-STDIO-R4b 有界读行边界（评审 M）：超限判定不得误伤恰好等于上限的合法
+// 请求；无换行、以 EOF 结尾的超限行仍要 -32700（不挂死）；超限后后续请求
+// 存活。
+func TestStdioRobustBoundedLineReadBoundaries(t *testing.T) {
+	server := newTestStdioServer()
+	// 恰好 maxRequestLineBytes 的合法 ping：不超限，正常应答。
+	prefix := `{"jsonrpc":"2.0","id":1,"method":"ping","params":{"pad":"`
+	line := prefix + strings.Repeat("a", maxRequestLineBytes-len(prefix)-len(`"}}`)) + `"}}` + "\n"
+	if len(strings.TrimRight(strings.TrimSpace(line), "\n")) != maxRequestLineBytes {
+		t.Fatalf("test setup: line must be exactly maxRequestLineBytes (got %d)", len(strings.TrimSpace(line)))
+	}
+	input := line + strings.Repeat("b", maxRequestLineBytes+1) + "\n" + `{"jsonrpc":"2.0","id":2,"method":"ping"}` + "\n"
+	var out bytes.Buffer
+	if err := server.Serve(strings.NewReader(input), &out); err != nil {
+		t.Fatal(err)
+	}
+	byID := map[string]map[string]any{}
+	for _, responseLine := range strings.Split(strings.TrimSpace(out.String()), "\n") {
+		var decoded map[string]any
+		if err := json.Unmarshal([]byte(responseLine), &decoded); err != nil {
+			t.Fatalf("response line not JSON: %q", responseLine)
+		}
+		id, _ := json.Marshal(decoded["id"])
+		byID[string(id)] = decoded
+	}
+	if byID["1"] == nil || byID["1"]["result"] == nil {
+		t.Fatalf("line exactly at the limit must be served: %v", byID["1"])
+	}
+	mustErrCode(t, byID["null"], -32700)
+	if byID["2"] == nil || byID["2"]["result"] == nil {
+		t.Fatalf("request after oversized line must survive: %v", byID["2"])
+	}
+
+	// EOF 结尾的无换行超限行：同样 -32700，不挂死不丢响应。
+	var outEOF bytes.Buffer
+	if err := server.Serve(strings.NewReader(strings.Repeat("c", maxRequestLineBytes+1)), &outEOF); err != nil {
+		t.Fatal(err)
+	}
+	lines := strings.Split(strings.TrimSpace(outEOF.String()), "\n")
+	if len(lines) != 1 {
+		t.Fatalf("expect exactly one refusal for unterminated oversized line, got %d", len(lines))
+	}
+	var decoded map[string]any
+	if err := json.Unmarshal([]byte(lines[0]), &decoded); err != nil {
+		t.Fatalf("refusal not JSON: %v", err)
+	}
+	mustErrCode(t, decoded, -32700)
+}

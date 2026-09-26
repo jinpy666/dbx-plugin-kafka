@@ -8,6 +8,16 @@ import { decompress as lz4Decompress } from "lz4js";
 import { uncompress as snappyUncompress } from "snappyjs";
 import type { KafkaMessage } from "./api";
 
+// 解压输出上限（评审 M：对齐后端 kafkaconn maxDecodedBytes——后端解压有
+// 16MiB 防护，前端详情抽屉的手动解压是镜像缺口：恶意 topic 消息在抽屉里
+// 解压可把渲染进程打到 GB 级）。超限返回带 error 的降级结果（原值透传），
+// 语义与解压失败一致。
+export const MAX_DECODED_BYTES = 16 * 1024 * 1024;
+
+function bombGuardError(algorithm: string): string {
+  return `${DECOMPRESSION_LABELS[algorithm] ?? algorithm}: decompressed payload exceeds ${MAX_DECODED_BYTES} bytes (decompression bomb guard)`;
+}
+
 // -- byte helpers -------------------------------------------------------------
 
 export function base64ToBytes(value: string): Uint8Array {
@@ -37,7 +47,22 @@ export function isGzipSupported(): boolean {
 export async function inflateGzip(bytes: Uint8Array): Promise<{ bytes: Uint8Array; error?: string }> {
   if (!isGzipSupported()) return { bytes, error: "gzip: DecompressionStream unsupported" };
   try {
-    const stream = new Blob([bytes as BlobPart]).stream().pipeThrough(new DecompressionStream("gzip"));
+    // 计数中间层：解压输出累计超上限即 error 断流，不物化超出部分。
+    let total = 0;
+    const capped = new TransformStream<Uint8Array, Uint8Array>({
+      transform(chunk, controller) {
+        total += chunk.byteLength;
+        if (total > MAX_DECODED_BYTES) {
+          controller.error(new Error(bombGuardError("gzip")));
+          return;
+        }
+        controller.enqueue(chunk);
+      },
+    });
+    const stream = new Blob([bytes as BlobPart])
+      .stream()
+      .pipeThrough(new DecompressionStream("gzip"))
+      .pipeThrough(capped);
     const buffer = await new Response(stream).arrayBuffer();
     return { bytes: new Uint8Array(buffer) };
   } catch (cause) {
@@ -184,28 +209,80 @@ function decompressError(algorithm: string, cause: unknown): string {
   return `${DECOMPRESSION_LABELS[algorithm] ?? algorithm}: ${cause instanceof Error ? cause.message : String(cause)}`;
 }
 
+/**
+ * zstd 帧头声明的 Frame_Content_Size（魔数不匹配/字段缺省/截断返回 null，
+ * 调用方退回解压后检查）。fzstd 按声明尺寸预分配输出——炸弹帧正是借这条
+ * 路径放大内存，因此解压前先看声明值。
+ */
+export function zstdFrameContentSize(bytes: Uint8Array): number | null {
+  if (bytes.length < 5) return null;
+  // zstd magic 0xFD2FB528（小端字节序 28 B5 2F FD）。
+  if (bytes[0] !== 0x28 || bytes[1] !== 0xb5 || bytes[2] !== 0x2f || bytes[3] !== 0xfd) return null;
+  const fhd = bytes[4];
+  const singleSegment = (fhd & 0x20) !== 0;
+  const fcsFlag = (fhd >> 6) & 0x03;
+  let offset = 5;
+  if (!singleSegment) offset += 1; // Window_Descriptor
+  offset += [0, 1, 2, 4][fhd & 0x03]; // Dictionary_ID
+  const fcsSize = fcsFlag === 0 ? (singleSegment ? 1 : 0) : [0, 2, 4, 8][fcsFlag];
+  if (fcsSize === 0 || offset + fcsSize > bytes.length) return null;
+  let size = 0;
+  for (let index = 0; index < fcsSize; index += 1) size += bytes[offset + index] * 2 ** (8 * index);
+  return size;
+}
+
 // zstd 解压：fzstd（纯 JS、MIT；仅解码，与生产端 zstd 帧格式兼容）。
 export function inflateZstd(bytes: Uint8Array): { bytes: Uint8Array; error?: string } {
+  const declared = zstdFrameContentSize(bytes);
+  if (declared !== null && declared > MAX_DECODED_BYTES) {
+    return { bytes, error: bombGuardError("zstd") };
+  }
   try {
-    return { bytes: fzstdDecompress(bytes) };
+    const output = fzstdDecompress(bytes);
+    if (output.length > MAX_DECODED_BYTES) return { bytes, error: bombGuardError("zstd") };
+    return { bytes: output };
   } catch (cause) {
     return { bytes, error: decompressError("zstd", cause) };
   }
 }
 
+/**
+ * snappy block 前导 varint 声明的未压缩长度（截断/超长 varint 返回 null）。
+ * snappyjs 按声明值分配输出——解压前先看声明值（与后端 DecodedLen 预检同型）。
+ */
+export function snappyDeclaredLength(bytes: Uint8Array): number | null {
+  const limit = Math.min(bytes.length, 10);
+  let length = 0;
+  for (let index = 0; index < limit; index += 1) {
+    length += (bytes[index] & 0x7f) * 2 ** (7 * index);
+    if ((bytes[index] & 0x80) === 0) return length;
+  }
+  return null;
+}
+
 // snappy 解压：snappyjs（纯 JS、MIT，含 Hadoop 变体外的标准 framing）。
 export function inflateSnappy(bytes: Uint8Array): { bytes: Uint8Array; error?: string } {
+  const declared = snappyDeclaredLength(bytes);
+  if (declared !== null && declared > MAX_DECODED_BYTES) {
+    return { bytes, error: bombGuardError("snappy") };
+  }
   try {
-    return { bytes: snappyUncompress(bytes) };
+    const output = snappyUncompress(bytes);
+    if (output.length > MAX_DECODED_BYTES) return { bytes, error: bombGuardError("snappy") };
+    return { bytes: output };
   } catch (cause) {
     return { bytes, error: decompressError("snappy", cause) };
   }
 }
 
-// lz4 解压：lz4js（纯 JS、ISC，frame 格式，与 Kafka lz4 块兼容）。
+// lz4 解压：lz4js（纯 JS、ISC，frame 格式，与 Kafka lz4 块兼容）。frame 的
+// content size 字段可选且 lz4js 不透出，只有解压后检查（zstd/snappy 的
+// 声明预检路径在此不可用）。
 export function inflateLz4(bytes: Uint8Array): { bytes: Uint8Array; error?: string } {
   try {
-    return { bytes: new Uint8Array(lz4Decompress(bytes)) };
+    const output = new Uint8Array(lz4Decompress(bytes));
+    if (output.length > MAX_DECODED_BYTES) return { bytes, error: bombGuardError("lz4") };
+    return { bytes: output };
   } catch (cause) {
     return { bytes, error: decompressError("lz4", cause) };
   }

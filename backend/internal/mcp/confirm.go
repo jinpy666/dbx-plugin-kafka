@@ -79,14 +79,18 @@ func HashParams(canonical []byte) string {
 // 清理已过期未消费的令牌（churn 防线：大量「只要预览不确认」的调用不能
 // 无界撑大令牌表——Consume 只在显式消费时删除，过期即弃的令牌没有别的
 // 删除路径；ldap 同构）。
-func (s *ConfirmStore) Issue(paramHash string, now time.Time) (string, time.Time) {
+func (s *ConfirmStore) Issue(paramHash string, now time.Time) (string, time.Time, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.pruneLocked(now)
-	token := fmt.Sprintf("c-%s", randomHex(6))
+	random, err := randomHex(6)
+	if err != nil {
+		return "", time.Time{}, fmt.Errorf("issue confirmToken: %w", err)
+	}
+	token := "c-" + random
 	expiresAt := now.Add(s.ttl)
 	s.items[token] = ConfirmEntry{ParamHash: paramHash, ExpiresAt: expiresAt}
-	return token, expiresAt
+	return token, expiresAt, nil
 }
 
 // pruneLocked 清除已过期的未消费令牌（调用方持锁；map 遍历中删除安全）。
@@ -120,12 +124,12 @@ func (s *ConfirmStore) Consume(token, paramHash string, now time.Time) ConfirmRe
 	return ConfirmOK
 }
 
-// randomHex n 字节随机 hex。
-func randomHex(n int) string {
+// randomHex n 字节随机 hex。crypto/rand 失败返回 error 而非回退时间戳
+// （评审 L：时间戳回退对 confirmToken 是可猜值——宁可拒签，不降级随机源）。
+func randomHex(n int) (string, error) {
 	buf := make([]byte, n)
 	if _, err := io.ReadFull(cryptorand.Reader, buf); err != nil {
-		// crypto/rand 失败极罕见；退化为纳秒时间戳（防阻塞大于防猜）。
-		return hex.EncodeToString([]byte(time.Now().Format("150405.000000000")))[:n*2]
+		return "", fmt.Errorf("crypto/rand unavailable: %w", err)
 	}
-	return hex.EncodeToString(buf)
+	return hex.EncodeToString(buf), nil
 }

@@ -729,3 +729,28 @@ func TestDecodeDeletedVersionsShapes(t *testing.T) {
 		t.Error("object shape expected error")
 	}
 }
+
+// S-SR-ERRCAP SR 错误体截断（评审 M）：request() 用 LimitReader 只限制了
+// 读取总量，非 2xx 时 string(data) 全量进 error（注释声称"截断"但未实现）
+// ——被劫持/失控 Registry 可用 4MB 错误页撑大 UI/日志链。错误文本必须截断，
+// 且保留 HTTP 状态行。
+func TestSchemaRegistryErrorBodyTruncated(t *testing.T) {
+	big := strings.Repeat("x", 100_000)
+	server := newTestHTTPServer(t, func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, big, http.StatusInternalServerError)
+	})
+	client, err := newSchemaRegistryClient(Profile{SRURL: server.URL}, connSecrets{})
+	if err != nil {
+		t.Fatalf("client: %v", err)
+	}
+	_, err = client.listSubjects(context.Background())
+	if err == nil {
+		t.Fatal("non-2xx must surface as error")
+	}
+	if !strings.Contains(err.Error(), "HTTP 500") {
+		t.Fatalf("error must keep the status line: %.200v", err)
+	}
+	if len(err.Error()) > 4096 {
+		t.Fatalf("error text must be truncated (got %d bytes)", len(err.Error()))
+	}
+}

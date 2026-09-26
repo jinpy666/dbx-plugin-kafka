@@ -69,6 +69,10 @@ type SchemaMeta struct {
 	VersionID  string            `json:"versionId,omitempty"`
 }
 
+// srErrorTextMaxBytes SR 非 2xx 错误体进 error 的截断宽度（诊断需要状态码
+// 与简短原因；整段 4MB 错误页不该进工作台/日志链）。
+const srErrorTextMaxBytes = 2048
+
 // schemaRegistryClient 是 Confluent 兼容 SR 的最小 REST 客户端。
 type schemaRegistryClient struct {
 	baseURL  string
@@ -151,7 +155,13 @@ func (c *schemaRegistryClient) request(ctx context.Context, method, path string,
 	defer resp.Body.Close()
 	data, _ := io.ReadAll(io.LimitReader(resp.Body, 4*1024*1024))
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return fmt.Errorf("schema registry %s %s failed (HTTP %d): %s", method, path, resp.StatusCode, strings.TrimSpace(string(data)))
+		// 错误体截断（评审 M：LimitReader 只管读取上限；string(data) 全量
+		// 进 error 会把大错误页撑进 UI/日志链——LimitReader 防读不防文案）。
+		text := strings.TrimSpace(string(data))
+		if len(text) > srErrorTextMaxBytes {
+			text = text[:srErrorTextMaxBytes] + "…"
+		}
+		return fmt.Errorf("schema registry %s %s failed (HTTP %d): %s", method, path, resp.StatusCode, text)
 	}
 	if target == nil || len(data) == 0 {
 		return nil

@@ -294,7 +294,12 @@ func locatorOf(args map[string]any) (int, int, error) {
 
 // runIntent intent 发起 + 等待 report。
 func (s *Server) runIntent(action string, params map[string]any) map[string]any {
-	intentID := "i-" + randomHex(8)
+	randomID, err := randomHex(8)
+	if err != nil {
+		// intentId 是会话内相关性 id（非安全令牌）：纳秒兜底可接受。
+		randomID = strconv.FormatInt(s.now().UnixNano(), 16)
+	}
+	intentID := "i-" + randomID
 	s.intents.Register(intentID, action, params, s.now())
 	if s.emit != nil {
 		s.emit("kafka/ui/intent", map[string]any{
@@ -498,7 +503,12 @@ func (s *Server) messagesDigest(args map[string]any) (map[string]any, error) {
 		params.Schema = schemaRef
 	}
 	// 保留上限 = 扫描上限：命中消息全量留存做本地聚合（仍不出 sidecar）。
+	// 留存预算（评审 H-1）：聚合只读 valueText——跳过 valueBase64 通道，并
+	// 给留存加字节预算：超预算即停止留存（matched 计数完整，cursor/样本行
+	// 覆盖预算内子集），payload 以 retentionTruncated 提示调小 maxScanRecords。
 	params.Limit = params.MaxScanRecords
+	params.SkipValueBase64 = true
+	params.RetentionByteBudget = digestRetentionByteBudget
 	result, err := s.svc.Consume(getContext(), params)
 	if err != nil {
 		return nil, annotateClusterError(err)
@@ -525,13 +535,14 @@ func (s *Server) messagesDigest(args map[string]any) (map[string]any, error) {
 	session := s.cursors.Put(aggregated.Rows, topic, s.now())
 
 	payload := map[string]any{
-		"connectionId":    connectionID,
-		"topic":           topic,
-		"matched":         aggregated.Matched,
-		"scanned":         result.Scanned,
-		"scanTruncated":   result.HasMore,
-		"cursorId":        session.ID,
-		"cursorTruncated": session.Truncated,
+		"connectionId":       connectionID,
+		"topic":              topic,
+		"matched":            aggregated.Matched,
+		"scanned":            result.Scanned,
+		"scanTruncated":      result.HasMore,
+		"retentionTruncated": result.RetentionTruncated,
+		"cursorId":           session.ID,
+		"cursorTruncated":    session.Truncated,
 	}
 	if format == "rows" {
 		rowLimit := settings.DigestRowLimit
@@ -600,6 +611,12 @@ func digestScanLimit(args map[string]any, fallback int) int {
 	}
 	return limit
 }
+
+// digestRetentionByteBudget digest 命中消息的留存字节预算（评审 H-1）：
+// maxScanRecords=100000 × 大消息的双通道全量驻留理论可达百 GB 级（sidecar
+// OOM）；聚合/样本/cursor 行只消费 valueText 与定位字段，64 MiB 预算把最坏
+// 驻留压到常数级——超预算停止留存并置 retentionTruncated（计数完整）。
+const digestRetentionByteBudget = 64 << 20
 
 // cursorNext 工具 `kafka_cursor_next`：分批取定位字段行（n ≤20/批）。
 func (s *Server) cursorNext(args map[string]any) (map[string]any, error) {
@@ -994,7 +1011,10 @@ func (s *Server) twoPhase(connectionID string, req any, args map[string]any, exe
 	paramHash := HashParams(canonical)
 	token := strings.TrimSpace(stringField(args, "confirmToken"))
 	if token == "" {
-		issued, expiresAt := s.confirms.Issue(paramHash, s.now())
+		issued, expiresAt, issueErr := s.confirms.Issue(paramHash, s.now())
+		if issueErr != nil {
+			return nil, issueErr
+		}
 		return map[string]any{
 			"preview":      req,
 			"confirmToken": issued,
@@ -1192,15 +1212,18 @@ func parsePartitionOffsets(raw any) (map[string]map[int32]int64, error) {
 		}
 		inner := make(map[int32]int64, len(partitionMap))
 		for partition, offset := range partitionMap {
-			number, err := strconv.ParseFloat(fmt.Sprintf("%v", offset), 64)
-			if err != nil || number < 0 {
-				return nil, fmt.Errorf("partitionOffsets[%q][%q] must be a non-negative integer", topic, partition)
+			// 整数 strictly（评审 M：ParseFloat+int64 静默截断把 1.9 折成
+			// 1——与 timestampMs/schema.version 同一条「绝不静默折算」红线，
+			// 存在但非法必须精确点名报错）。
+			offsetNumber, ok := coerceInt64(offset)
+			if !ok || offsetNumber < 0 {
+				return nil, fmt.Errorf("partitionOffsets[%q][%q] must be a non-negative integer (got %v)", topic, partition, offset)
 			}
 			partitionNumber, err := strconv.ParseInt(strings.TrimSpace(partition), 10, 32)
 			if err != nil || partitionNumber < 0 {
 				return nil, fmt.Errorf("partitionOffsets[%q] partition %q must be a non-negative integer", topic, partition)
 			}
-			inner[int32(partitionNumber)] = int64(number)
+			inner[int32(partitionNumber)] = offsetNumber
 		}
 		out[topic] = inner
 	}

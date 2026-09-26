@@ -83,6 +83,14 @@ type ConsumeParams struct {
 	Decode        string `json:"decode,omitempty"`
 	Decompression string `json:"decompression,omitempty"`
 
+	// SkipValueBase64 跳过 valueBase64 通道（评审 H-1：digest 聚合只读
+	// valueText，base64 是纯冤枉驻留；工作台消费保持双通道不变）。
+	SkipValueBase64 bool `json:"skipValueBase64,omitempty"`
+	// RetentionByteBudget 命中消息留存的 value 字节预算（评审 H-1：0 = 无
+	// 预算即契约原语义；超出即停止留存但 matched 计数不受影响，由
+	// ConsumeResult.RetentionTruncated 标记——digest 大扫描防 OOM）。
+	RetentionByteBudget int `json:"retentionByteBudget,omitempty"`
+
 	// Schema 可选（Phase 2）：SR 挂载 —— 解码 Confluent wire format 载荷为
 	// JSON 文本；命中消息附加 schemaId/schemaSubject/schemaVersion 字段，
 	// 解码失败置 decodeError（不中断消费）。
@@ -137,6 +145,9 @@ type ConsumeResult struct {
 	Limited              bool              `json:"limited"`
 	HasMore              bool              `json:"hasMore"`
 	NextPartitionOffsets map[int32]int64   `json:"nextPartitionOffsets"`
+	// RetentionTruncated 标记留存超 RetentionByteBudget 预算（命中计数完整，
+	// messages 为预算内子集——cursor/样本行只覆盖留存部分）。
+	RetentionTruncated bool `json:"retentionTruncated,omitempty"`
 }
 
 // ProduceRequest 对应 kafka/messages/produce。
@@ -358,6 +369,7 @@ func (s *Service) Consume(ctx context.Context, params ConsumeParams) (*ConsumeRe
 		Limited:              result.limited,
 		HasMore:              result.hasMore,
 		NextPartitionOffsets: result.nextPartitionOffsets,
+		RetentionTruncated:   result.retentionTruncated,
 	}, nil
 }
 
@@ -402,7 +414,29 @@ type consumeResult struct {
 	matched              int
 	limited              bool
 	hasMore              bool
+	retentionTruncated   bool
 	nextPartitionOffsets map[int32]int64
+}
+
+// consumeRetentionTracker digest 大扫描的留存预算（评审 H-1）：命中消息的
+// value 字节累计超预算即拒绝留存（matched 计数不受影响，由调用方置
+// RetentionTruncated）。budget<=0 = 无预算（契约原语义）；首条消息恒
+// admitted——预算小于单条消息时保证 digest 至少有 1 条样本可用。
+type consumeRetentionTracker struct {
+	budget   int
+	retained int
+}
+
+func (t *consumeRetentionTracker) admit(valueBytes int) bool {
+	if t.budget <= 0 || t.retained == 0 {
+		t.retained += valueBytes
+		return true
+	}
+	if t.retained+valueBytes > t.budget {
+		return false
+	}
+	t.retained += valueBytes
+	return true
 }
 
 // consumeMessages 一次性消费主循环（tinyrdm consumeMessages :1091 重写：
@@ -533,6 +567,7 @@ func (s *Service) consumeMessages(ctx context.Context, params ConsumeParams) (co
 
 	messages := make([]ConsumedMessage, 0, limit)
 	nextPartitionOffsets := map[int32]int64{}
+	retention := consumeRetentionTracker{budget: params.RetentionByteBudget}
 	scanned := 0
 	matched := 0
 	timedOut := false
@@ -592,7 +627,13 @@ func (s *Service) consumeMessages(ctx context.Context, params ConsumeParams) (co
 				continue
 			}
 			ensureValueDecoded()
-			messages = append(messages, messageFromRecordWithSchema(record, value, decoded, decodeErr, committed, recordSchemaInfo))
+			// 留存预算（评审 H-1）：超预算即停止留存，扫描与命中计数继续
+			//（RetentionTruncated 让调用方区分「预算内子集」与完整命中面）。
+			if !retention.admit(len(value)) {
+				result.retentionTruncated = true
+				continue
+			}
+			messages = append(messages, messageFromRecordWithSchema(record, value, decoded, decodeErr, committed, recordSchemaInfo, params.SkipValueBase64))
 		}
 		if err := fetches.Err(); err != nil {
 			if isDeadline(err) {
@@ -980,6 +1021,46 @@ func (m textMatcher) match(value, query string) bool {
 	}
 }
 
+// matchBytes 是 match 的字节通道版本（评审 M）：valueFilter/keyFilter 直接在
+// record.Value/record.Key 上匹配，省去 string(record.Value) 整串拷贝——大
+// value × 高扫描量下每记录一份拷贝是留存预算之外的第二个内存放大器。语义
+// 与 match 完全一致；contains/prefix 对「纯 ASCII 且无大写」的 value 走零
+// 分配快路径（此时 ToLower 是恒等变换），其余回退与 match 相同的降写路径。
+func (m textMatcher) matchBytes(value []byte, query string) bool {
+	query = trimSpace(query)
+	if query == "" {
+		return true
+	}
+	switch m.mode {
+	case "prefix":
+		if isPlainLowerASCII(value) {
+			return bytes.HasPrefix(value, []byte(strings.ToLower(query)))
+		}
+		return strings.HasPrefix(strings.ToLower(string(value)), strings.ToLower(query))
+	case "exact":
+		return bytes.EqualFold(value, []byte(query))
+	case "regex":
+		return m.match(string(value), query)
+	default:
+		lowered := []byte(strings.ToLower(query))
+		if isPlainLowerASCII(value) {
+			return bytes.Contains(value, lowered)
+		}
+		return bytes.Contains(bytes.ToLower(value), lowered)
+	}
+}
+
+// isPlainLowerASCII 报告字节序列是否纯 ASCII 且不含大写字母（contains/
+// prefix 快路径判据：ToLower 恒等，无需整串降写拷贝）。
+func isPlainLowerASCII(data []byte) bool {
+	for _, b := range data {
+		if b >= utf8.RuneSelf || (b >= 'A' && b <= 'Z') {
+			return false
+		}
+	}
+	return true
+}
+
 // recordMatches 全量过滤链：分区白名单 → 时间/offset 范围 → 全文/分通道 →
 // 字段过滤由 fieldFiltersMatch 处理。
 func recordMatches(params ConsumeParams, matcher textMatcher, record *kgo.Record) bool {
@@ -1001,10 +1082,12 @@ func recordMatches(params ConsumeParams, matcher textMatcher, record *kgo.Record
 	if filter := trimSpace(params.Filter); filter != "" && !matcher.match(recordSearchText(record), filter) {
 		return false
 	}
-	if key := trimSpace(params.KeyFilter); key != "" && !matcher.match(string(record.Key), key) {
+	// key/value 通道走字节匹配（matchBytes）：免 string(record.Key/Value)
+	// 整串拷贝，语义与字符串路径一致。
+	if key := trimSpace(params.KeyFilter); key != "" && !matcher.matchBytes(record.Key, key) {
 		return false
 	}
-	if value := trimSpace(params.ValueFilter); value != "" && !matcher.match(string(record.Value), value) {
+	if value := trimSpace(params.ValueFilter); value != "" && !matcher.matchBytes(record.Value, value) {
 		return false
 	}
 	if header := trimSpace(params.HeaderFilter); header != "" && !matcher.match(headersText(record.Headers), header) {
@@ -1505,16 +1588,23 @@ func decompressSnappy(value []byte) ([]byte, error) {
 // messageFromRecord 构建保真消息（valueText UTF-8 安全预览 + valueBase64
 // 完整；512KB 截断标记；key 非法 UTF-8 → keyBase64）。
 func messageFromRecord(record *kgo.Record, value []byte, decoded bool, decodeErr string, committed bool) ConsumedMessage {
-	return messageFromRecordWithSchema(record, value, decoded, decodeErr, committed, nil)
+	return messageFromRecordWithSchema(record, value, decoded, decodeErr, committed, nil, false)
 }
 
 // messageFromRecordWithSchema 是 messageFromRecord 的 schema 感知变体
-// （Phase 2：schema 解码命中时附 schemaId/schemaSubject/schemaVersion）。
-func messageFromRecordWithSchema(record *kgo.Record, value []byte, decoded bool, decodeErr string, committed bool, schemaInfo *schemaValueInfo) ConsumedMessage {
+// （Phase 2：schema 解码命中时附 schemaId/schemaSubject/schemaVersion）；
+// skipValueBase64 为 digest 大扫描省略 base64 通道（评审 H-1）。
+func messageFromRecordWithSchema(record *kgo.Record, value []byte, decoded bool, decodeErr string, committed bool, schemaInfo *schemaValueInfo, skipValueBase64 bool) ConsumedMessage {
 	// 双通道同用 maxMessageBytes 截断并共用 Truncated 标志（KAFKA-H1：
 	// valueText 此前不截断，digest 高扫描量 × 双字段留存可达 GB 级驻留）。
 	valueText := safeUTF8Preview(boundedValue(value))
-	valueBase64, truncated := encodeBase64WithLimit(value, maxMessageBytes)
+	valueBase64 := ""
+	truncated := false
+	if !skipValueBase64 {
+		valueBase64, truncated = encodeBase64WithLimit(value, maxMessageBytes)
+	} else {
+		truncated = len(value) > maxMessageBytes
+	}
 	message := ConsumedMessage{
 		Topic:       record.Topic,
 		Partition:   record.Partition,

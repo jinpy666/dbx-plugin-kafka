@@ -345,6 +345,8 @@ func TestResetGroupOffsetsValidationMatrix(t *testing.T) {
 		{"earliest without topics", GroupOffsetResetRequest{ConnectionID: "gr", Group: "g", ResetTo: "earliest"}, "topics is required"},
 		{"timestamp without topics", GroupOffsetResetRequest{ConnectionID: "gr", Group: "g", ResetTo: "timestamp"}, "topics is required"},
 		{"negative timestamp", GroupOffsetResetRequest{ConnectionID: "gr", Group: "g", ResetTo: "timestamp", Topics: []string{"t"}, TimestampMs: -1}, "timestampMs must be"},
+		// 评审 L：0 经 ListOffsetsAfterMilli 等价重置到纪元，与 MCP 层同拒绝。
+		{"zero timestamp resets to epoch", GroupOffsetResetRequest{ConnectionID: "gr", Group: "g", ResetTo: "timestamp", Topics: []string{"t"}, TimestampMs: 0}, "timestampMs must be"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

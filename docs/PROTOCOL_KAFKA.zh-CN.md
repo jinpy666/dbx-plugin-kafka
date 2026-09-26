@@ -338,9 +338,11 @@ Host API 1.0 的 `plugin_connection_params` 只发送 `runtime.host:port`，且
 
 **`kafka/presets/list`** — 无附加字段；返回 store 持久化的消费/过滤预设列表。
 
-**`kafka/presets/save`** — `preset{id?, name, payload}`；返回 `{id}`。新增落 store。
+**`kafka/presets/save`** — `preset: KafkaPreset`（`{id?, name, params}`，全量
+对象落 store）；返回 `{success:true, preset}`（落库后的完整预设）。
 
-**`kafka/presets/remove`** — `id:string`；返回空 `data`；未知 id → `-32000`。
+**`kafka/presets/remove`** — `id:string`；返回 `{success:true}`；未知 id →
+`-32000`。
 
 **`kafka/connections/statuses`** — 无附加字段；返回 `statuses[]`，每条含
 `{connectionId, name, bootstrap, status, readOnly, connectedAt?, lastUsedAt?, error?}`，

@@ -9,8 +9,13 @@ import {
   bytesToUtf8,
   formatBitSet,
   formatMessageValue,
+  inflateGzip,
+  inflateLz4,
+  inflateSnappy,
+  inflateZstd,
   looksLikeJson,
   looksLikeXml,
+  MAX_DECODED_BYTES,
   messageFullValueText,
   prettyJson,
   prettyXml,
@@ -214,5 +219,59 @@ describe("format pipeline", () => {
     expect(messageFullValueText(message)).toBe("line1\nline2");
     expect(previewText("a  b\nc", 2)).toBe("a …");
     expect(headersPreview({ h1: "v1", h2: "v2", h3: "v3" })).toBe("h1=v1, h2=v2, …");
+  });
+});
+
+// -- 解压炸弹防护（评审 M：后端已有 16MiB 上限，前端手动解压路径是镜像缺口）--
+
+describe("decompression bomb guard", () => {
+  function snappyVarint(value: number): Uint8Array {
+    const out: number[] = [];
+    let rest = value;
+    while (rest >= 0x80) {
+      out.push((rest & 0x7f) | 0x80);
+      rest = Math.floor(rest / 128);
+    }
+    out.push(rest);
+    return new Uint8Array(out);
+  }
+
+  it("caps gzip output at MAX_DECODED_BYTES (17MiB bomb errors instead of inflating)", async () => {
+    // CompressionStream("gzip")（压缩方向）现场构造炸弹，无 Node 依赖。
+    const stream = new Blob([new Uint8Array(MAX_DECODED_BYTES + 1024)])
+      .stream()
+      .pipeThrough(new CompressionStream("gzip"));
+    const bomb = new Uint8Array(await new Response(stream).arrayBuffer());
+    const result = await inflateGzip(bomb);
+    expect(result.error).toContain("decompression bomb guard");
+    expect(result.bytes.length).toBe(bomb.length);
+  });
+
+  it("rejects zstd frames declaring oversized content size before decompressing", () => {
+    // magic + FHD(0xE0: single_segment + FCS 8 字节) + 声明 17MiB+1。
+    const declared = MAX_DECODED_BYTES + 1;
+    const header = new Uint8Array([
+      0x28, 0xb5, 0x2f, 0xfd, 0xe0,
+      ...new Uint8Array(new DataView(new ArrayBuffer(8)).buffer).map((_, i) => Math.floor(declared / 2 ** (8 * i)) & 0xff),
+    ]);
+    const result = inflateZstd(header);
+    expect(result.error).toContain("decompression bomb guard");
+  });
+
+  it("rejects snappy streams declaring oversized length from the preamble", () => {
+    const preamble = snappyVarint(MAX_DECODED_BYTES + 1);
+    const result = inflateSnappy(preamble);
+    expect(result.error).toContain("decompression bomb guard");
+  });
+
+  it("caps lz4 output (17MiB roundtrip bomb errors instead of inflating)", () => {
+    const bomb = lz4Compress(new Uint8Array(MAX_DECODED_BYTES + 1024));
+    const result = inflateLz4(bomb);
+    expect(result.error).toContain("decompression bomb guard");
+  });
+
+  it("keeps legit payloads under the cap working", () => {
+    const ok = inflateZstd(new Uint8Array(base64ToBytes(ZSTD_ORDER_JSON_BASE64)));
+    expect(ok.error).toBeUndefined();
   });
 });

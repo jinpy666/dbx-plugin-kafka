@@ -11,6 +11,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
+	"strconv"
 	"sync"
 	"time"
 )
@@ -220,12 +221,12 @@ func (s *CursorStore) touchLocked(id string) {
 	s.order = append(s.order, id)
 }
 
-// newCursorID 生成 "cur-<hex16>" 会话 id。
+// newCursorID 生成 "cur-<hex16>" 会话 id。crypto/rand 失败退化为纳秒
+// 时间戳（cursorId 是进程内会话键而非安全令牌，同纳秒冲突仅覆盖会话）。
 func newCursorID() string {
 	buf := make([]byte, 8)
 	if _, err := rand.Read(buf); err != nil {
-		// crypto/rand 失败极罕见；退化为时间戳（同进程内仍几乎不冲突）。
-		return "cur-" + hex.EncodeToString([]byte(time.Now().Format("150405.000000000")))
+		return "cur-" + strconv.FormatInt(time.Now().UnixNano(), 16)
 	}
 	return "cur-" + hex.EncodeToString(buf)
 }
