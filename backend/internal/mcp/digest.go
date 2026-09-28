@@ -276,6 +276,10 @@ func AggregateDigest(input DigestInput) DigestResult {
 		fieldCounts[field] = map[string]int{}
 	}
 
+	// 单遍融合（评审 M-7）：stats 聚合与 cursor 行物化此前对每条命中各做
+	// 一次完整 json.Unmarshal（10 万命中 × 512KB 时 CPU/带宽翻倍）——现在
+	// 每条消息只解析一次，投影结果同时喂计数与行物化。
+	rows := make([]CursorRow, 0, len(input.Messages))
 	for _, message := range input.Messages {
 		partitionCounts[strconv.FormatInt(int64(message.Partition), 10)]++
 		key := message.Key
@@ -292,12 +296,11 @@ func AggregateDigest(input DigestInput) DigestResult {
 		} else {
 			noTimestampCount++
 		}
-		if len(input.Fields) > 0 {
-			values := projectFieldValues(message.ValueText, input.Fields)
-			for field, value := range values {
-				fieldCounts[field][value]++
-			}
+		projected := projectFieldValues(message.ValueText, input.Fields)
+		for field, value := range projected {
+			fieldCounts[field][value]++
 		}
+		rows = append(rows, cursorRowOf(message, projected, input.Width))
 	}
 
 	stats := DigestStats{PerPartition: map[string]int{}, Keys: map[string]int{}}
@@ -332,24 +335,18 @@ func AggregateDigest(input DigestInput) DigestResult {
 		sample = append(sample, projectMessage(message, input.Fields, input.Width))
 	}
 
-	rows := make([]CursorRow, 0, len(input.Messages))
-	for _, message := range input.Messages {
-		rows = append(rows, cursorRowOf(message, input.Fields, input.Width))
-	}
-
 	return DigestResult{Matched: len(input.Messages), Stats: stats, Sample: sample, Rows: rows}
 }
 
 // cursorRowOf 物化 cursor 行：定位字段（topic/partition/offset）不截断；
-// key 与投影字段值过截断宽度。
-func cursorRowOf(message kafkaconn.ConsumedMessage, fields []string, width int) CursorRow {
+// key 与投影字段值过截断宽度。projected 由调用方单遍融合时传入（评审 M-7，
+// 不再重复解析）。
+func cursorRowOf(message kafkaconn.ConsumedMessage, projected map[string]string, width int) CursorRow {
 	key := message.Key
 	if key == "" && message.KeyBase64 != "" {
 		key = "(binary key)"
 	}
-	var projected map[string]string
-	if len(fields) > 0 {
-		projected = projectFieldValues(message.ValueText, fields)
+	if projected != nil {
 		for field, value := range projected {
 			projected[field] = DigestCellTruncate(value, width)
 		}

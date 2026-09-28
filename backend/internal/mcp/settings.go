@@ -190,11 +190,13 @@ func applySettingsUpdate(settings Settings, updates map[string]any) (Settings, e
 		if !present {
 			continue
 		}
-		number, ok := raw.(float64)
+		// 数字字符串宽容解析（评审 L-6）：与包内 coerceInt64 风格一致，
+		// 工作台 JS 传 "600" 不再被拒。
+		int64Value, ok := coerceInt64(raw)
 		if !ok {
 			return settings, fmt.Errorf("%s must be a positive integer", field.name)
 		}
-		value := int(number)
+		value := int(int64Value)
 		if value < field.min || value > field.ceiling {
 			return settings, fmt.Errorf("%s must be between %d and %d", field.name, field.min, field.ceiling)
 		}

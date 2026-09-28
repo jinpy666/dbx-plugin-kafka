@@ -10,12 +10,14 @@ package kafkaconn
 // TCP 预拨（5s），不可达立即失败。
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net"
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/go-zookeeper/zk"
@@ -112,9 +114,14 @@ func parseZKBrokerConfig(data []byte) (host string, port int, err error) {
 }
 
 // dialZKServer 快速 TCP 预拨（zk.Connect 内建重试会拖长不可达等待）。
-func dialZKServer(addr zkBrokerAddress) error {
-	conn, err := net.DialTimeout("tcp", net.JoinHostPort(addr.Host, strconv.Itoa(addr.Port)), zkDialTimeout)
+// ctx 贯穿（评审 M-7）：取消立即失败，不等 5s 超时。
+func dialZKServer(ctx context.Context, addr zkBrokerAddress) error {
+	dialer := &net.Dialer{Timeout: zkDialTimeout}
+	conn, err := dialer.DialContext(ctx, "tcp", net.JoinHostPort(addr.Host, strconv.Itoa(addr.Port)))
 	if err != nil {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return ctxErr
+		}
 		return fmt.Errorf("zookeeper %s is unreachable: %w", addr.Raw, err)
 	}
 	_ = conn.Close()
@@ -123,7 +130,7 @@ func dialZKServer(addr zkBrokerAddress) error {
 
 // discoverBrokersViaZK 经 ZooKeeper 发现 broker 列表（connection_source=
 // zookeeper 时替代 Kafka metadata）。失败返回业务错（-32000）。
-func (s *Service) discoverBrokersViaZK(connectionID string) ([]BrokerInfo, error) {
+func (s *Service) discoverBrokersViaZK(ctx context.Context, connectionID string) ([]BrokerInfo, error) {
 	entry := s.lookup(connectionID)
 	if entry == nil {
 		return nil, errConnectionNotFound(connectionID)
@@ -131,11 +138,13 @@ func (s *Service) discoverBrokersViaZK(connectionID string) ([]BrokerInfo, error
 	entry.mu.Lock()
 	profile := entry.profile
 	entry.mu.Unlock()
-	return discoverBrokersViaZK(profile)
+	return discoverBrokersViaZKProfile(ctx, profile)
 }
 
 // discoverBrokersViaZKProfile 是纯实现（profile 注入，单测可直连）。
-func discoverBrokersViaZK(profile Profile) ([]BrokerInfo, error) {
+// ctx 贯穿预拨（评审 M-7）；zk.Connect 本身不支持 ctx，会话建立仍受
+// zkDialTimeout/ zkSessionTimeout 上界约束。
+func discoverBrokersViaZKProfile(ctx context.Context, profile Profile) ([]BrokerInfo, error) {
 	servers, err := parseZKServers(profile.ZKServers)
 	if err != nil {
 		return nil, err
@@ -148,10 +157,25 @@ func discoverBrokersViaZK(profile Profile) ([]BrokerInfo, error) {
 		}
 		addresses = append(addresses, addr)
 	}
-	// 快速预拨：任一 server 不可达立即失败（业务错路径，单测覆盖）。
-	for _, addr := range addresses {
-		if err := dialZKServer(addr); err != nil {
-			return nil, err
+	// 快速预拨并发化（评审 M-7）：此前串行 N×zkDialTimeout，3 台全不可达
+	// 最坏 15s；并发后最坏 5s，取消立即短路。结果按原始顺序取第一个失败，
+	// 报错确定性不变。
+	dialErrs := make([]error, len(addresses))
+	var dialWG sync.WaitGroup
+	for i, addr := range addresses {
+		dialWG.Add(1)
+		go func(i int, addr zkBrokerAddress) {
+			defer dialWG.Done()
+			dialErrs[i] = dialZKServer(ctx, addr)
+		}(i, addr)
+	}
+	dialWG.Wait()
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	for _, dialErr := range dialErrs {
+		if dialErr != nil {
+			return nil, dialErr
 		}
 	}
 
@@ -183,7 +207,11 @@ func discoverBrokersViaZK(profile Profile) ([]BrokerInfo, error) {
 		if err != nil {
 			return nil, fmt.Errorf("broker %s: %w", id, err)
 		}
-		nodeID, _ := strconv.ParseInt(strings.TrimSpace(id), 10, 32)
+		nodeID, parseErr := strconv.ParseInt(strings.TrimSpace(id), 10, 32)
+		if parseErr != nil {
+			// 非数字 broker id（评审 L-5）：此前静默为 0，多节点会撞 id。
+			return nil, fmt.Errorf("broker node %s: %w", id, parseErr)
+		}
 		brokers = append(brokers, BrokerInfo{NodeID: int32(nodeID), Host: host, Port: int32(port)})
 	}
 	if len(brokers) == 0 {
@@ -194,8 +222,8 @@ func discoverBrokersViaZK(profile Profile) ([]BrokerInfo, error) {
 
 // zkSeedsForTest 在 connection_source=zookeeper 时经 ZK 解析 Kafka 拨号种子
 // （connection/test 探活用；bootstrap 模式直接走 seedBrokers）。
-func zkSeedsForTest(profile Profile) ([]string, error) {
-	brokers, err := discoverBrokersViaZK(profile)
+func zkSeedsForTest(ctx context.Context, profile Profile) ([]string, error) {
+	brokers, err := discoverBrokersViaZKProfile(ctx, profile)
 	if err != nil {
 		return nil, err
 	}

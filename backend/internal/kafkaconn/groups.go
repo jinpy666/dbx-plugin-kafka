@@ -102,8 +102,9 @@ func (s *Service) GetGroupOffsets(ctx context.Context, req GroupOffsetsListReque
 		if commitErr != nil {
 			return commitErr
 		}
-		// Option 语义：committed 响应全空 = 组从未提交过。
-		result.HasCommitted = len(committed) > 0
+		// Option 语义：任一无错分区 At>=0 = 有提交（topics 过滤路径的
+		// 预填 At=-1 不算——len>0 判定会恒真）。
+		result.HasCommitted = hasCommittedOffsets(committed)
 
 		// committed 涉及的 topic 全集（空 committed 时回退请求 topics）。
 		scope := committedTopics(committed, topics)
@@ -326,6 +327,19 @@ func normalizeResetMode(value string) (OffsetResetMode, error) {
 	default:
 		return "", errf("resetTo must be earliest, latest, timestamp, or partitionOffset")
 	}
+}
+
+// hasCommittedOffsets 判定组是否有真实提交：FetchOffsetsForTopics 会把请求
+// topic 的全部分区预填 At=-1，len(committed)>0 恒真——须看任一无错响应的
+// At>=0（契约语义：从未提交 → hasCommitted=false，与零 lag 区分）。
+func hasCommittedOffsets(committed kadm.OffsetResponses) bool {
+	found := false
+	committed.Each(func(response kadm.OffsetResponse) {
+		if response.Err == nil && response.At >= 0 {
+			found = true
+		}
+	})
+	return found
 }
 
 // committedTopics 汇总 committed offsets 涉及的 topic（带请求过滤）。

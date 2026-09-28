@@ -3,6 +3,8 @@ package store
 import (
 	"os"
 	"path/filepath"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -250,5 +252,40 @@ func TestReadAuditLinesEmpty(t *testing.T) {
 	}
 	if lines != nil && len(lines) != 0 {
 		t.Errorf("ReadAuditLines() = %v, want nil/empty", lines)
+	}
+}
+
+// S-SAVE-RACE（评审 M-2）：SaveJSON 此前用固定 <name>.tmp + 无 fsync——
+// 并发写同一文件时不同长度的交错可产生损坏的正式文件。唯一临时名 +
+// Sync + Rename 后，最终文件必须始终是某一次完整写入且无临时文件残留。
+func TestSaveJSONConcurrentValidFile(t *testing.T) {
+	st := openTestStore(t)
+	var wg sync.WaitGroup
+	for g := 0; g < 8; g++ {
+		wg.Add(1)
+		go func(g int) {
+			defer wg.Done()
+			for i := 0; i < 40; i++ {
+				payload := map[string]any{"g": g, "pad": strings.Repeat("x", g*97)}
+				if err := st.SaveJSON("race.json", payload); err != nil {
+					t.Errorf("SaveJSON: %v", err)
+					return
+				}
+			}
+		}(g)
+	}
+	wg.Wait()
+	var out map[string]any
+	if _, err := st.LoadJSON("race.json", &out); err != nil {
+		t.Fatalf("final file corrupt: %v", err)
+	}
+	entries, err := os.ReadDir(st.Dir())
+	if err != nil {
+		t.Fatalf("ReadDir: %v", err)
+	}
+	for _, entry := range entries {
+		if strings.HasSuffix(entry.Name(), ".tmp") {
+			t.Errorf("leftover temp file: %s", entry.Name())
+		}
 	}
 }

@@ -124,44 +124,110 @@ func (s *StdioServer) Serve(in io.Reader, out io.Writer) error {
 	var writeMu sync.Mutex
 	var wg sync.WaitGroup
 	slots := make(chan struct{}, maxConcurrentRequests)
+
+	// 读入与分派分离（评审 M-6）：此前主循环读行后同步取槽，32 槽全忙时
+	// 读入停摆——EOF 无法被观察，宿主关闭输入后进程退出时间取决于单个
+	// 在途请求何时结束。reader goroutine 独占读入，EOF 时关闭 eofSeen；
+	// 分派端等槽期间持续把到达的行收入积压，EOF 一到即可放弃未启动的
+	// 积压行并进入既有 300s drain（在途请求不受影响）。
+	type inbound struct {
+		line    []byte
+		tooLong bool
+	}
+	lines := make(chan inbound, maxConcurrentRequests)
+	eofSeen := make(chan struct{})
+	readDone := make(chan error, 1)
+	go func() {
+		defer close(eofSeen)
+		defer close(lines)
+		for {
+			line, tooLong, err := readLineBounded(reader)
+			if tooLong {
+				lines <- inbound{tooLong: true}
+			} else if trimmed := strings.TrimSpace(string(line)); trimmed != "" {
+				lines <- inbound{line: []byte(trimmed)}
+			}
+			if err != nil {
+				readDone <- err
+				return
+			}
+		}
+	}()
+
+	spawn := func(request string, limited bool) {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if limited {
+				defer func() { <-slots }()
+			}
+			if response := requestRecoverSafe(func() map[string]any { return s.handleLine([]byte(request)) }); response != nil {
+				payload, marshalErr := json.Marshal(response)
+				if marshalErr != nil {
+					payload, _ = json.Marshal(map[string]any{
+						"jsonrpc": "2.0", "id": nil,
+						"error": map[string]any{"code": -32603, "message": marshalErr.Error()},
+					})
+				}
+				writeMu.Lock()
+				_, _ = out.Write(append(payload, '\n'))
+				writeMu.Unlock()
+			}
+		}()
+	}
+	var pending []inbound
+	var current *inbound // 已取出、正在等槽的行（保持行序：先于 pending 处理）
+	readerDone := false  // 读侧终止（lines 已关闭）：后续行不受槽约束
 	for {
-		line, tooLong, err := readLineBounded(reader)
-		if tooLong {
+		var item inbound
+		if current != nil {
+			item = *current
+			current = nil
+		} else if len(pending) > 0 {
+			item = pending[0]
+			pending = pending[1:]
+		} else if readerDone {
+			break
+		} else {
+			next, ok := <-lines
+			if !ok {
+				readerDone = true
+				break
+			}
+			item = next
+		}
+		if item.tooLong {
 			payload, _ := json.Marshal(rpcFailure(json.RawMessage("null"), -32700,
 				fmt.Sprintf("Parse error: request line exceeds %d bytes", maxRequestLineBytes)))
 			writeMu.Lock()
 			_, _ = out.Write(append(payload, '\n'))
 			writeMu.Unlock()
-		} else if trimmed := strings.TrimSpace(string(line)); trimmed != "" {
-			request := trimmed
-			wg.Add(1)
-			// 并发背压（评审 M）：槽满时主循环暂停读入，在途请求收敛在
-			// maxConcurrentRequests 内；超限行处置不经过槽（拒绝必须即时）。
-			slots <- struct{}{}
-			go func() {
-				defer wg.Done()
-				defer func() { <-slots }()
-				if response := s.handleLine([]byte(request)); response != nil {
-					payload, marshalErr := json.Marshal(response)
-					if marshalErr != nil {
-						payload, _ = json.Marshal(map[string]any{
-							"jsonrpc": "2.0", "id": nil,
-							"error": map[string]any{"code": -32603, "message": marshalErr.Error()},
-						})
-					}
-					writeMu.Lock()
-					_, _ = out.Write(append(payload, '\n'))
-					writeMu.Unlock()
-				}
-			}()
+			continue
 		}
-		if err != nil {
-			if err != io.EOF {
-				return err
+		request := string(item.line)
+		if readerDone {
+			// 输入已终止：积压行仍全部受理，不再受背压槽约束（并发上限
+			// 即积压规模），退出由 300s drain 封顶（评审 M-6）。
+			spawn(request, false)
+			continue
+		}
+		// 并发背压（评审 M）：在途请求收敛在 maxConcurrentRequests 内；等槽
+		// 期间新到行入积压（读入不再停摆），读侧终止可随时打断等待。
+		select {
+		case slots <- struct{}{}:
+			spawn(request, true)
+		case next, ok := <-lines:
+			if !ok {
+				readerDone = true
+				spawn(request, false)
+				continue
 			}
-			break
+			pending = append(pending, next)
+			current = &item
 		}
 	}
+	// 读侧结果：EOF 之外的读错误在 drain 后仍终止 Serve。
+	readErr := <-readDone
 	drained := make(chan struct{})
 	go func() {
 		wg.Wait()
@@ -170,6 +236,9 @@ func (s *StdioServer) Serve(in io.Reader, out io.Writer) error {
 	select {
 	case <-drained:
 	case <-time.After(300 * time.Second):
+	}
+	if readErr != nil && readErr != io.EOF {
+		return readErr
 	}
 	return nil
 }
@@ -230,6 +299,18 @@ func readLineBounded(reader *bufio.Reader) (line []byte, tooLong bool, err error
 // （MCP_ACCEPTANCE §2）：解析失败 -32700、非法请求（缺 id / method 缺失或
 // 非字符串 / id 为 object/array / jsonrpc 版本非 2.0）-32600——全部结构化
 // 报错，进程不崩（ldap 同构）。纯分派、无 I/O，单测直接喂行。
+// requestRecoverSafe 运行请求处理并把 panic 转为 -32603 失败响应（评审
+// H-2）：单个畸形请求引发的 panic 不得带崩插件进程；panic 路径上请求 id
+// 不可靠，置 null（JSON-RPC 允许）。
+func requestRecoverSafe(handle func() map[string]any) (response map[string]any) {
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			response = rpcFailure(json.RawMessage("null"), -32603, fmt.Sprintf("Internal error: %v", recovered))
+		}
+	}()
+	return handle()
+}
+
 func (s *StdioServer) handleLine(line []byte) map[string]any {
 	var raw struct {
 		JSONRPC json.RawMessage `json:"jsonrpc"`
@@ -242,8 +323,13 @@ func (s *StdioServer) handleLine(line []byte) map[string]any {
 	}
 	method, methodErr := decodeMethod(raw.Method)
 	if methodErr == nil && strings.HasPrefix(method, "notifications/") {
-		// notifications/initialized 等通知不回包（MCP 规约），未知通知名容忍。
-		return nil
+		if len(raw.ID) == 0 {
+			// notifications/initialized 等通知不回包（MCP 规约），未知通知名容忍。
+			return nil
+		}
+		// 带 id 的"通知"是非法请求（评审 M-4）：JSON-RPC 规约通知 = 无 id，
+		// 带 id 的消息必须应答——静默吞掉会让同步等响应的客户端永久挂起。
+		return rpcFailure(raw.ID, -32600, "Invalid request: notifications must not carry an id")
 	}
 	id := json.RawMessage("null")
 	switch {
@@ -585,10 +671,17 @@ func (s *StdioServer) pooledConnectionID(inline inlineConn) (string, error) {
 	}
 	params := inline.toLifecycle(id)
 	if err := s.svc.Connect(params); err != nil {
-		// 注册失败不残留池项（下次同参数调用重试）。
+		// 注册失败不残留池项（下次同参数调用重试）；order 同步剔除
+		//（评审 L-1）：残留会让后续淘汰弹到陈旧项时多逐出一个真实连接。
 		s.mu.Lock()
 		delete(s.hash, id)
 		delete(s.ids, id)
+		for index, existing := range s.order {
+			if existing == id {
+				s.order = append(s.order[:index], s.order[index+1:]...)
+				break
+			}
+		}
 		s.mu.Unlock()
 		return "", err
 	}

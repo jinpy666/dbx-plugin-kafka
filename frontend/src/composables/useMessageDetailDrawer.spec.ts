@@ -162,3 +162,21 @@ describe("useMessageDetailDrawer 弹层交互", () => {
     expect(drawer.detail.value).toBeNull();
   });
 });
+
+// S-B64-PREVIEW-BOUNDED（评审 MED-5）：showFullBase64 的 <pre> 渲染必须有界
+// ——此前全量 valueBase64 直接进 DOM，大 payload 可塞数十 MB 文本节点。
+describe("useMessageDetailDrawer full base64 preview", () => {
+  it("exposes a bounded preview for large payloads", async () => {
+    const { wrapper, drawer } = mountHost();
+    const bigBase64 = btoa("x".repeat(2_000_000));
+    drawer.detail.value = { topic: "t", partition: 0, offset: 1, timestamp: 0, valueBase64: bigBase64 };
+    await flushPromises();
+    await nextTick();
+    drawer.showFullBase64.value = true;
+    await nextTick();
+    expect(typeof drawer.fullBase64Preview.value.text).toBe("string");
+    expect(drawer.fullBase64Preview.value.text.length).toBeLessThanOrEqual(17000);
+    expect(drawer.fullBase64Preview.value.truncated).toBe(true);
+    wrapper.unmount();
+  });
+});

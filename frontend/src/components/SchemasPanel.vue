@@ -106,7 +106,7 @@ async function probeRegistries() {
     (["confluent", "glue"] as const).map(async (candidate) => {
       try {
         const response = await kafkaApi.schemaTest(candidate);
-        return [candidate, response.success !== false] as const;
+        return [candidate, response.ok !== false] as const;
       } catch {
         return [candidate, false] as const;
       }
@@ -231,24 +231,32 @@ const treeAvailable = computed(() => schemaTreeRoot.value !== null);
 // PROTOBUF：保持文本 + 行内提示（后端 FDSet 树化登记后续，§12.2.7）。
 const treeUnsupported = computed(() => Boolean(detail.value && detail.value.format === "protobuf"));
 
+// 请求序号守卫（评审 MED-3）：registry 快速来回切换时，慢到的旧响应不得
+// 把旧 registry 的 subject 列表覆盖到新 registry 名下。
+let registrySeq = 0;
+
 async function loadSubjects() {
+  const seq = ++registrySeq;
   loading.value = true;
   emit("error", "");
   try {
     const probe = await kafkaApi.schemaTest(registry.value);
-    srAvailable.value = probe.success !== false;
+    if (seq !== registrySeq) return;
+    srAvailable.value = probe.ok !== false;
     if (!srAvailable.value) {
       subjects.value = [];
       return;
     }
     const response = await kafkaApi.schemaSubjectsList(registry.value);
+    if (seq !== registrySeq) return;
     subjects.value = response.subjects ?? [];
   } catch (cause) {
+    if (seq !== registrySeq) return;
     srAvailable.value = false;
     subjects.value = [];
     emit("error", cause instanceof Error ? cause.message : String(cause));
   } finally {
-    loading.value = false;
+    if (seq === registrySeq) loading.value = false;
   }
 }
 

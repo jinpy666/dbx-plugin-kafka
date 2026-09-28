@@ -362,3 +362,27 @@ func TestConsumeParamsSchemaRefParsing(t *testing.T) {
 		t.Errorf("schema = %+v", consume.Schema)
 	}
 }
+
+// S-CAP-LIMIT（评审 H-3/SEC-002）：limit/maxScanRecords 硬上限——此前
+// limit 无上界且按值预分配结果切片，单请求可要求约 200GB，打爆长驻
+// sidecar。limit 上限与 export 对齐（10000）；maxScan 上限 1e6。
+func TestConsumeLimitAndScanCaps(t *testing.T) {
+	if got := clampConsumeLimit(0); got != 100 {
+		t.Errorf("default limit = %d, want 100", got)
+	}
+	if got := clampConsumeLimit(500); got != 500 {
+		t.Errorf("explicit limit = %d", got)
+	}
+	if got := clampConsumeLimit(1_000_000_000); got != consumeLimitHardCap {
+		t.Errorf("clamped limit = %d, want %d", got, consumeLimitHardCap)
+	}
+	if got := consumeMaxScanRecords(100, 2_000_000_000); got != consumeMaxScanHardCap {
+		t.Errorf("clamped maxScan = %d, want %d", got, consumeMaxScanHardCap)
+	}
+	if got := consumeMaxScanRecords(10000, 0); got != 100000 {
+		t.Errorf("default maxScan = %d, want 100000", got)
+	}
+	if got := consumeMaxScanRecords(100, 0); got != 1000 {
+		t.Errorf("small default maxScan = %d, want 1000", got)
+	}
+}

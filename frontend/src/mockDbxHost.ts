@@ -139,7 +139,15 @@ interface MockTopic {
 }
 
 function utf8ToBase64(text: string): string {
-  return btoa(String.fromCharCode(...new TextEncoder().encode(text)));
+  const bytes = new TextEncoder().encode(text);
+  // 分块展开（评审 LOW-8）：String.fromCharCode(...bytes) 对大 payload
+  // 会因参数个数上限栈溢出。
+  let binary = "";
+  const chunk = 0x8000;
+  for (let index = 0; index < bytes.length; index += chunk) {
+    binary += String.fromCharCode(...bytes.subarray(index, index + chunk));
+  }
+  return btoa(binary);
 }
 
 function makeMessage(topic: string, partition: number, offset: number, key: string, value: string, headers: Record<string, string> = {}): MockMessage {
@@ -804,7 +812,9 @@ const invoke: DbxPluginApi["invoke"] = async <T = unknown>(method: string, rawPa
     };
   } else if (method === "kafka/topics/config/alter") {
     guardWrite("topics/config/alter", String(input.topic ?? ""));
-    result = { entries: brokerConfigs };
+    // 形状对齐 sidecar（MutationResult[]）：逐键结果；面板改完后经
+    // config/get 重拉列表（sidecar 不在 alter 响应里回完整条目）。
+    result = { results: [{ topic: String(input.topic ?? ""), ok: true }] };
   } else if (method === "kafka/topics/offsets/list") {
     const names = (input.topics ?? []) as string[];
     const rows: Array<Record<string, unknown>> = [];
@@ -1044,12 +1054,12 @@ const invoke: DbxPluginApi["invoke"] = async <T = unknown>(method: string, rawPa
       ],
     };
   } else if (method === "kafka/schema/test") {
-    // Phase P：按 registry 参数探测（glue-only 模式下 confluent 返回 none）。
+    // Phase P：按 registry 参数探测。形状对齐 sidecar SchemaTestResult；
+    // glue-only 模式下 confluent 未配置 → 业务错（sidecar 为 -32000），
+    // 不再虚构 {success:false}（mock 不能为后端没有的语义背书）。
     const wanted = resolveProvider(input);
-    result =
-      wanted === "confluent" && glueOnly
-        ? { success: false, provider: "none" }
-        : { success: true, provider: wanted };
+    if (wanted === "confluent" && glueOnly) throw new Error("schema registry not configured (fixture)");
+    result = { ok: true, version: "1", compatibleFormats: [], provider: wanted };
   } else if (method === "kafka/schema/subjects/list") {
     const wanted = resolveProvider(input);
     result = {
@@ -1132,16 +1142,20 @@ const invoke: DbxPluginApi["invoke"] = async <T = unknown>(method: string, rawPa
     const subjectName = String(input.subject ?? "");
     guardWrite("schema/delete", subjectName, { critical: true });
     const subject = findSubject(subjectName, resolveProvider(input));
-    result = { success: subject ? schemaSubjects.delete(subjectName) : false };
+    if (!subject) throw new Error("schema subject not found (fixture)");
+    // 形状对齐 sidecar（deletedVersions）：整 subject 删除返回全部版本号。
+    const deletedVersions = subject.versions.map((version) => version.version);
+    schemaSubjects.delete(subjectName);
+    result = { deletedVersions };
   } else if (method === "kafka/schema/delete/version") {
     const subjectName = String(input.subject ?? "");
     guardWrite("schema/delete/version", subjectName, { critical: true });
     const subject = findSubject(subjectName, resolveProvider(input));
     if (!subject) throw new Error("schema subject not found (fixture)");
     const wanted = Number(input.version ?? 0);
-    const before = subject.versions.length;
+    const deletedVersions = subject.versions.filter((entry) => entry.version === wanted).map((entry) => entry.version);
     subject.versions = subject.versions.filter((entry) => entry.version !== wanted);
-    result = { success: subject.versions.length < before };
+    result = { deletedVersions };
   } else if (method === "kafka/ui/state/report") {
     // MCP UI intent 回报（M3）：镜像 sidecar 校验——带 intentId 时 status
     // 必须是 applied|rejected；无 intentId 为快照型（恒 success）。

@@ -4,6 +4,7 @@ package kafkaconn
 
 import (
 	"context"
+	"sync"
 	"testing"
 
 	"io.dbx.kafka.plugin/internal/lifecycle"
@@ -208,5 +209,35 @@ func TestPresets(t *testing.T) {
 	}
 	if err := service.RemovePreset(""); err == nil {
 		t.Error("removing empty id should error")
+	}
+}
+
+// S-PRESET-RACE（评审 M-3）：SavePreset 是 Load→改→Save 读改写，此前无锁
+// ——并发保存的不同预设会互相覆盖丢更新，最终必须全部留存。
+func TestSavePresetConcurrentNoLostUpdates(t *testing.T) {
+	svc := NewService()
+	svc.Presets = &memPresetStore{}
+	const workers, each = 8, 12
+	var wg sync.WaitGroup
+	for w := 0; w < workers; w++ {
+		wg.Add(1)
+		go func(w int) {
+			defer wg.Done()
+			for i := 0; i < each; i++ {
+				id := sprintf("p-%d-%d", w, i)
+				if _, err := svc.SavePreset(ConsumePreset{ID: id, Name: id}); err != nil {
+					t.Errorf("SavePreset(%s): %v", id, err)
+					return
+				}
+			}
+		}(w)
+	}
+	wg.Wait()
+	got, err := svc.ListPresets()
+	if err != nil {
+		t.Fatalf("ListPresets: %v", err)
+	}
+	if len(got) != workers*each {
+		t.Fatalf("presets = %d, want %d (lost updates under concurrency)", len(got), workers*each)
 	}
 }

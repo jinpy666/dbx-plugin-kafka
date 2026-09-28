@@ -5,9 +5,16 @@
 import type { KafkaMessage } from "./api";
 import { messageFullValueText } from "./messageCodec";
 
+// 公式注入中和（评审 LOW-5）：以 = + - @ 制表/回车开头的单元格在 Excel/
+// Sheets 中会被当公式执行——前缀 ' 中和（业界通行约定）。
+function neutralizeFormula(value: string): string {
+  return /^[=+\-@\t\r]/.test(value) ? `'${value}` : value;
+}
+
 function csvEscape(value: string): string {
-  if (/[",\n\r]/.test(value)) return `"${value.replace(/"/g, '""')}"`;
-  return value;
+  const neutral = neutralizeFormula(value);
+  if (/[",\n\r]/.test(neutral)) return `"${neutral.replace(/"/g, '""')}"`;
+  return neutral;
 }
 
 const CSV_COLUMNS = ["topic", "partition", "offset", "timestamp", "key", "value", "headers"] as const;
@@ -45,7 +52,9 @@ export function serializeMessagesToCsv(messages: KafkaMessage[]): string {
 // TSV 转义与 CSV 不同：无引号包裹机制，字段内的分隔符（制表符）与换行必须
 // 转义才能保列/行结构；反斜杠先转义避免歧义（对齐 Hive/MySQL LOAD DATA 约定）。
 function tsvEscape(value: string): string {
-  return value.replace(/\\/g, "\\\\").replace(/\t/g, "\\t").replace(/\n/g, "\\n").replace(/\r/g, "\\r");
+  return neutralizeFormula(
+    value.replace(/\\/g, "\\\\").replace(/\t/g, "\\t").replace(/\n/g, "\\n").replace(/\r/g, "\\r"),
+  );
 }
 
 /** 消息数组 → TSV 文本（列序与 CSV 一致；转义见 tsvEscape，行分隔同为 CRLF）。 */

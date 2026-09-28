@@ -50,20 +50,26 @@ func TestStdioRobustMalformedBytes(t *testing.T) {
 }
 
 // S-STDIO-R2 通知（无 id）不响应：notifications/* 前缀（含未知通知名）保持
-// 静默，且连接继续可用。
+// 静默，且连接继续可用。带 id 的"通知"是非法请求（评审 M-4：JSON-RPC 规约
+// 通知 = 无 id，带 id 必须应答，静默会挂起同步客户端）——回 -32600 且 id 回显。
 func TestStdioRobustNotificationSilence(t *testing.T) {
 	server := newTestStdioServer()
 	for name, line := range map[string]string{
 		"initialized":    `{"jsonrpc":"2.0","method":"notifications/initialized"}`,
 		"unknown-notify": `{"jsonrpc":"2.0","method":"notifications/custom/x","params":{"a":1}}`,
-		"notify-with-id": `{"jsonrpc":"2.0","id":9,"method":"notifications/progress"}`,
 	} {
 		if response := server.handleLine([]byte(line)); response != nil {
 			t.Fatalf("%s must stay silent, got %v", name, response)
 		}
 	}
+	// notify-with-id：-32600 应答（不再静默），id 回显。
+	decoded := decodeResponse(t, server.handleLine([]byte(`{"jsonrpc":"2.0","id":9,"method":"notifications/progress"}`)))
+	mustErrCode(t, decoded, -32600)
+	if got, _ := json.Marshal(decoded["id"]); string(got) != "9" {
+		t.Fatalf("notify-with-id response must echo id 9, got %s", got)
+	}
 	// 通知之后连接继续可用。
-	decoded := decodeResponse(t, server.handleLine([]byte(`{"jsonrpc":"2.0","id":1,"method":"ping"}`)))
+	decoded = decodeResponse(t, server.handleLine([]byte(`{"jsonrpc":"2.0","id":1,"method":"ping"}`)))
 	if _, ok := decoded["result"]; !ok {
 		t.Fatalf("ping after notifications must work: %v", decoded)
 	}
@@ -268,4 +274,24 @@ func TestStdioRobustBoundedLineReadBoundaries(t *testing.T) {
 		t.Fatalf("refusal not JSON: %v", err)
 	}
 	mustErrCode(t, decoded, -32700)
+}
+
+// S-POOL-ORDER（评审 L-1）：Connect 注册失败必须把 id 从 order 一并剔除
+// ——残留会让后续淘汰弹到陈旧项时多逐出一个真实连接，重复项还会累积。
+func TestPooledConnectionIDFailureCleansOrder(t *testing.T) {
+	server := newTestStdioServer()
+	id := inlineConn{}.poolKey()
+	if _, err := server.pooledConnectionID(inlineConn{}); err == nil {
+		t.Fatal("empty inline conn must fail Connect")
+	}
+	server.mu.Lock()
+	defer server.mu.Unlock()
+	if _, ok := server.hash[id]; ok {
+		t.Fatal("hash must be cleaned")
+	}
+	for _, existing := range server.order {
+		if existing == id {
+			t.Fatalf("failed registration left %q in order", id)
+		}
+	}
 }

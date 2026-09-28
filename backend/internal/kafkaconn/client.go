@@ -59,16 +59,43 @@ type connTarget struct {
 type connEntry struct {
 	mu sync.Mutex
 
+	// profile/secrets/target 发布后不可变（Connect/Test 每次构造全新
+	// entry 原子替换），statuses 快照等只读方无需持 mu。
 	profile     Profile     // 已 NormalizeProfile 的连接配置（不含凭据）
 	secrets     connSecrets // binding: secret
 	target      connTarget  // runtime 兜底端点
 	client      *kgo.Client // admin 类调用共享 client（nil = 未建）
 	fingerprint string      // 建 client 时的配置指纹
 
+	// SR HTTP 客户端缓存（评审 L-2）：此前每次 produce/consume/stream 新建
+	// http.Client+Transport，TLS 下无连接复用、每请求重做握手。
+	srClient      *schemaRegistryClient
+	srFingerprint string
+
+	// 状态面用独立细粒度锁（评审 M-6）：此前与 mu 共锁，withAdmin 在 mu 内
+	// 执行整个 admin RPC（≤20s），statuses UI 轮询被串行阻塞。锁序：
+	// mu → statusMu，禁反向。
+	statusMu    sync.Mutex
 	connectedAt int64 // unix ms
 	lastUsedAt  int64 // unix ms
 	status      string
 	lastError   string
+}
+
+// setStatus 更新状态面（statusMu；lastUsedAt 记本次活动时间）。
+func (e *connEntry) setStatus(status, lastErr string) {
+	e.statusMu.Lock()
+	e.status = status
+	e.lastError = lastErr
+	e.lastUsedAt = time.Now().UnixMilli()
+	e.statusMu.Unlock()
+}
+
+// statusSnapshot 原子读取状态面三元组（statuses 快照用）。
+func (e *connEntry) statusSnapshot() (status, lastErr string, lastUsedAt int64) {
+	e.statusMu.Lock()
+	defer e.statusMu.Unlock()
+	return e.status, e.lastError, e.lastUsedAt
 }
 
 // computeFingerprint 计算连接配置摘要（凭据进摘要但不落任何日志；配置任一
@@ -159,8 +186,11 @@ func (e *connEntry) buildClientOpts(extraOpts ...kgo.Opt) ([]kgo.Opt, error) {
 	seeds := e.seedBrokers()
 	if len(seeds) == 0 && e.profile.ConnectionSource == ConnectionSourceZookeeper {
 		// zookeeper 源且未给 bootstrap：经 ZK 发现 broker 作为拨号种子
-		//（discoverBrokersViaZK 是纯 profile 实现，不触 entry/service）。
-		resolved, err := zkSeedsForTest(e.profile)
+		//（discoverBrokersViaZKProfile 是纯 profile 实现，不触 entry/service）。
+		// 评审 M-7：此路径暂无 ctx 可贯穿（buildClientOpts 签名波及池化面），
+		// ZK 会话仍受 zkDialTimeout/zkSessionTimeout 上界约束；请求级入口
+		// （brokers/list、connection/test）已贯穿 ctx 可取消。
+		resolved, err := zkSeedsForTest(context.Background(), e.profile)
 		if err != nil {
 			return nil, err
 		}
@@ -407,14 +437,17 @@ func buildSASLOpt(profile Profile, secrets connSecrets) (kgo.Opt, error) {
 	}
 }
 
-// closeLocked 关闭共享 client（调用方须持 entry.mu）。
+// closeLocked 关闭共享 client（调用方须持 entry.mu；状态面走 statusMu，
+// 锁序 mu → statusMu）。
 func (e *connEntry) closeLocked() {
 	if e.client != nil {
 		e.client.Close()
 		e.client = nil
 		e.fingerprint = ""
 	}
+	e.statusMu.Lock()
 	e.status = "closed"
+	e.statusMu.Unlock()
 }
 
 // adminClientLocked 返回共享 admin client：指纹匹配直接复用，否则重建
@@ -442,31 +475,28 @@ func (e *connEntry) adminClientLocked() (*kgo.Client, error) {
 	return client, nil
 }
 
-// withAdmin 在 entry 锁内执行 admin 回调（共享 client 串行使用 + 指纹失效
-// 重建）。回调内禁止再取 entry.mu。
+// withAdmin 执行 admin 回调（共享 client 指纹失效重建）。mu 仅覆盖 client
+// 获取/重建；RPC 期间不持 mu（评审 M-6）：kgo.Client 并发安全，Close 与
+// 在途请求并发也有文档保证（在途请求收 ErrClientClosed）——慢 admin RPC
+// 不再串行阻塞 statuses 轮询与同连接的 client 构建。回调内禁止再取 entry.mu。
 func (s *Service) withAdmin(connectionID string, fn func(client *kgo.Client) error) error {
 	entry := s.lookup(connectionID)
 	if entry == nil {
 		return errConnectionNotFound(connectionID)
 	}
 	entry.mu.Lock()
-	defer entry.mu.Unlock()
-
 	client, err := entry.adminClientLocked()
+	entry.mu.Unlock()
 	if err != nil {
-		entry.status = "error"
-		entry.lastError = err.Error()
+		entry.setStatus("error", err.Error())
 		return err
 	}
 	err = fn(client)
-	entry.lastUsedAt = time.Now().UnixMilli()
 	if err == nil {
-		entry.status = "connected"
-		entry.lastError = ""
-		return nil
+		entry.setStatus("connected", "")
+	} else {
+		entry.setStatus("error", err.Error())
 	}
-	entry.status = "error"
-	entry.lastError = err.Error()
 	return err
 }
 

@@ -9,6 +9,7 @@ import (
 	"regexp"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/twmb/franz-go/pkg/kgo"
 )
@@ -216,5 +217,34 @@ func TestBuildOauthSASLOptStaticOffline(t *testing.T) {
 	opt, err = buildOauthSASLOpt(Profile{OauthTokenSource: "msk_iam", MSKRegion: "us-east-1"}, connSecrets{})
 	if err != nil || opt == nil {
 		t.Fatalf("msk opt = %v, %v", opt, err)
+	}
+}
+
+// S-STATUS-LOCK（评审 M-6）：statuses 快照不得被 entry.mu 阻塞——此前
+// withAdmin 在 entry 锁内执行整个 admin RPC（≤20s），statuses UI 轮询与
+// 该连接全部管理面操作串行排队。
+func TestSnapshotStatusesIndependentOfEntryLock(t *testing.T) {
+	svc := NewService()
+	if err := connectWithConfig(t, svc, "st", `{`+baseBootstrap+`}`, `{}`); err != nil {
+		t.Fatalf("connect error = %v", err)
+	}
+	svc.mu.Lock()
+	entry := svc.conns["st"]
+	svc.mu.Unlock()
+	if entry == nil {
+		t.Fatal("entry missing")
+	}
+	entry.mu.Lock() // 模拟慢 admin RPC 持 entry.mu
+	defer entry.mu.Unlock()
+
+	done := make(chan []ConnectionStatus, 1)
+	go func() { done <- svc.SnapshotStatuses() }()
+	select {
+	case statuses := <-done:
+		if len(statuses) != 1 || statuses[0].ConnectionID != "st" {
+			t.Fatalf("statuses = %+v", statuses)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("statuses snapshot blocked by entry lock")
 	}
 }

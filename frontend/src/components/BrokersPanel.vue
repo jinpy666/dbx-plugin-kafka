@@ -35,14 +35,21 @@ async function load() {
   }
 }
 
+// 序号守卫（评审 LOW-3）：快速关弹窗再点另一 broker，慢到的旧响应不得把
+// 旧 broker 的配置挂到新弹窗名下。
+let configSeq = 0;
+
 async function openConfig(broker: KafkaBroker) {
+  const seq = ++configSeq;
   configBroker.value = broker;
   entries.value = [];
   configOpen.value = true;
   try {
     const response = await kafkaApi.brokersConfig(broker.nodeId);
+    if (seq !== configSeq) return;
     entries.value = response.entries ?? [];
   } catch (cause) {
+    if (seq !== configSeq) return;
     emit("error", cause instanceof Error ? cause.message : String(cause));
   }
 }

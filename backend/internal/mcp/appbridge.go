@@ -19,6 +19,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"os"
@@ -103,12 +104,17 @@ func bridgePortAlive(appDataDir string) (int, bool) {
 // 致命——下面的端口文件轮询才是事实来源。DBX_APP_LAUNCH_CMD 仅支持 ":"
 // 哨兵（跳过拉起，smoke/CI 用来避免 UI 弹出）；不透传任意命令到 exec，
 // env 值不构成命令注入面。
+// bridgeResponseLimit 桥响应体读取上限（评审 L-2）。
+const bridgeResponseLimit = 8 * 1024 * 1024
+
 func launchAppDBX() {
 	if strings.TrimSpace(os.Getenv("DBX_APP_LAUNCH_CMD")) == ":" {
 		return
 	}
 	if proc := exec.Command("open", "-a", "DBX.app"); proc != nil {
-		_ = proc.Start()
+		if err := proc.Start(); err == nil {
+			go func() { _ = proc.Wait() }() // 回收子进程，防僵尸累积（评审 L-3）
+		}
 	}
 }
 
@@ -183,7 +189,8 @@ func callPluginTool(port int, connectionID, tool string, arguments map[string]an
 	}
 	defer func() { _ = response.Body.Close() }()
 	var raw bytes.Buffer
-	if _, err := raw.ReadFrom(response.Body); err != nil {
+	// 响应体上限（评审 L-2）：桥/宿主异常时无界读取可拉满 sidecar 内存。
+	if _, err := raw.ReadFrom(io.LimitReader(response.Body, bridgeResponseLimit)); err != nil {
 		return nil, fmt.Errorf("DBX app bridge read failed: %v", err)
 	}
 	text := strings.TrimSpace(raw.String())

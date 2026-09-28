@@ -4,8 +4,10 @@ package kafkaconn
 // ZooKeeper；broker 发现的正路径由容器/集成验证覆盖，单测覆盖解析与错误）。
 
 import (
+	"context"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestParseZKServers(t *testing.T) {
@@ -78,7 +80,7 @@ func TestParseZKBrokerConfig(t *testing.T) {
 func TestDiscoverBrokersZKUnreachable(t *testing.T) {
 	// ZK 不可达（127.0.0.1:1 立即拒绝）→ 业务错（main 层映射 -32000）。
 	profile := Profile{ZKServers: []string{"127.0.0.1:1"}}
-	_, err := discoverBrokersViaZK(profile)
+	_, err := discoverBrokersViaZKProfile(context.Background(), profile)
 	if err == nil {
 		t.Fatal("unreachable ZK expected error")
 	}
@@ -88,18 +90,34 @@ func TestDiscoverBrokersZKUnreachable(t *testing.T) {
 
 	// 多 server 时任一不可达即失败（快速预拨短路）。
 	profile = Profile{ZKServers: []string{"127.0.0.1:1", "127.0.0.1:2"}}
-	if _, err := discoverBrokersViaZK(profile); err == nil {
+	if _, err := discoverBrokersViaZKProfile(context.Background(), profile); err == nil {
 		t.Error("second server unreachable expected error")
 	}
 }
 
 func TestDiscoverBrokersZKServerListRequired(t *testing.T) {
-	if _, err := discoverBrokersViaZK(Profile{}); err == nil || !strings.Contains(err.Error(), "zkServers") {
+	if _, err := discoverBrokersViaZKProfile(context.Background(), Profile{}); err == nil || !strings.Contains(err.Error(), "zkServers") {
 		t.Errorf("missing zkServers error = %v", err)
 	}
 	// Service 路径：未连接 → 连接不存在。
 	service := NewService()
-	if _, err := service.discoverBrokersViaZK("missing"); err == nil {
+	if _, err := service.discoverBrokersViaZK(context.Background(), "missing"); err == nil {
 		t.Error("discover on missing connection expected error")
+	}
+}
+
+// S-ZK-CTX（评审 M-7）：ZK 发现路径贯穿 ctx——取消立即失败（此前全程
+// 无 ctx，预拨还串行 N×5s）；预拨并发化后最坏 1×5s。
+func TestDiscoverBrokersViaZKHonorsCtx(t *testing.T) {
+	profile := Profile{ZKServers: []string{"10.255.255.1:2181", "10.255.255.2:2181", "10.255.255.3:2181"}}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	start := time.Now()
+	_, err := discoverBrokersViaZKProfile(ctx, profile)
+	if err == nil {
+		t.Fatal("canceled ctx must fail fast")
+	}
+	if elapsed := time.Since(start); elapsed > time.Second {
+		t.Fatalf("canceled ctx took %v, want immediate", elapsed)
 	}
 }

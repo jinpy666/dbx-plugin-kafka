@@ -14,6 +14,7 @@ import { formatTimestamp } from "../lib/timestamps";
 import { setWorkbenchTimestampTz, TIMESTAMP_TZ_STORAGE_KEY } from "../lib/kafkaColumns";
 import { pluginStore, MSG_FORM_OPEN_KEY } from "../lib/pluginStore";
 import { t } from "../lib/i18n";
+import { serializeMessagesToCsv, serializeMessagesToJson } from "../lib/messageExport";
 
 // -- DbxAgGrid 轻量 stub（镜像真实桥形状，见 GroupsPanel.spec 同款） -----------------
 let goToLatestCalls = 0;
@@ -609,5 +610,43 @@ describe("MessagesPanel TSV export (Lane4)", () => {
     await wrapper.find('[data-testid="consume-run"]').trigger("click");
     await flushPromises();
     expect(wrapper.find('[data-testid="export-tsv"]').exists()).toBe(true);
+  });
+});
+
+// S-EXPORT-WYSIWYG（评审 MED-2）：JSON/CSV 与 TSV 一致——导出当前已加载
+// 结果行（纯前端序列化，所见即所导），不按当前表单参数重查后端。
+describe("MessagesPanel JSON/CSV export (review MED-2)", () => {
+  it("exports the loaded result client-side without re-querying the backend", async () => {
+    const consumed = [
+      { topic: "order-events", partition: 0, offset: 7, timestamp: 1_700_000_000_000, key: "k1", valueText: "plain", headers: { trace: "abc" } },
+    ];
+    installBridge({
+      "kafka/presets/list": { presets: [] },
+      "kafka/messages/consume": { messages: consumed, scanned: 3, matched: 1, limited: false, hasMore: false },
+    });
+    const createObjectURL = vi.spyOn(URL, "createObjectURL").mockReturnValue("blob:mock");
+    const revokeObjectURL = vi.spyOn(URL, "revokeObjectURL").mockImplementation(() => {});
+    vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(() => {});
+    const wrapper = mountPanel();
+    await flushPromises();
+    await wrapper.find('[data-testid="consume-run"]').trigger("click");
+    await flushPromises();
+    expect(invokeMock.mock.calls.filter(([method]) => method === "kafka/messages/consume")).toHaveLength(1);
+
+    const buttonByLabel = (label: string) => wrapper.findAll("button").find((button) => button.text() === label)!;
+    await buttonByLabel("CSV").trigger("click");
+    await flushPromises();
+    const csvBlob = createObjectURL.mock.calls.at(-1)![0] as Blob;
+    await buttonByLabel("JSON").trigger("click");
+    await flushPromises();
+    const jsonBlob = createObjectURL.mock.calls.at(-1)![0] as Blob;
+
+    // 不发额外请求：consume 仍 1 次、无 export 调用。
+    expect(invokeMock.mock.calls.filter(([method]) => method === "kafka/messages/export")).toHaveLength(0);
+    expect(invokeMock.mock.calls.filter(([method]) => method === "kafka/messages/consume")).toHaveLength(1);
+    // 内容 = 前端序列化的当前结果行。
+    expect(await csvBlob.text()).toBe(serializeMessagesToCsv(consumed));
+    expect(await jsonBlob.text()).toBe(serializeMessagesToJson(consumed));
+    expect(wrapper.emitted("notify")?.at(-1)).toEqual([t("messages.exportDone", { name: "JSON" })]);
   });
 });

@@ -45,6 +45,9 @@ type Service struct {
 	// Presets 提供预设持久化（main.go 注入 store-backed 实现）。
 	// nil 时 kafka/presets/* 返回业务错误。
 	Presets PresetStore
+	// presetsMu 串行化预设读改写（评审 M-3）：Save/Remove 是
+	// Load→改→Save 三步，无锁时并发写互相覆盖丢更新。
+	presetsMu sync.Mutex
 
 	// Streams 提供流式会话管理（stream.go；NewService 时初始化）。
 	Streams *StreamRegistry
@@ -101,8 +104,11 @@ func (s *Service) Connect(params *lifecycle.Params) error {
 		old.closeLocked()
 		old.mu.Unlock()
 		// 同 id 重连可能换了集群/凭据：旧流式会话立刻停止（它们的
-		// per-request client 已随 session 关闭，这里只是兜底清理状态）。
+		// per-request client 已随 session 关闭，这里只是兜底清理状态）；
+		// 消费池条目同步失效——池 key 不含连接配置，不失效则同形状消费
+		// 命中旧集群的 client（admin 面经指纹重建，消费面在此对齐）。
 		s.Streams.StopAllForConnection(profile.ID)
+		s.consumePoolCloseFor(profile.ID)
 	}
 	return nil
 }
@@ -130,7 +136,7 @@ func (s *Service) Test(ctx context.Context, params *lifecycle.Params) (string, e
 	// 解析实际拨号种子（ZK 源先经 ZK 发现；语义与 brokers/list 一致）。
 	seeds := entry.seedBrokers()
 	if entry.profile.ConnectionSource == ConnectionSourceZookeeper {
-		resolved, seedErr := zkSeedsForTest(entry.profile)
+		resolved, seedErr := zkSeedsForTest(ctx, entry.profile)
 		if seedErr != nil {
 			return "", seedErr
 		}
@@ -243,16 +249,18 @@ func (s *Service) SnapshotStatuses() []ConnectionStatus {
 
 	statuses := make([]ConnectionStatus, 0, len(entries))
 	for _, entry := range entries {
-		entry.mu.Lock()
+		// profile 发布后不可变（评审 M-6），无需持 entry.mu；状态面走
+		// statusMu 细粒度锁——慢 admin RPC 不再阻塞本快照。
+		statusValue, lastErr, lastUsedAt := entry.statusSnapshot()
 		status := ConnectionStatus{
 			ConnectionID:     entry.profile.ID,
 			Name:             entry.profile.Name,
 			Bootstrap:        strings.Join(entry.profile.BootstrapServers, ","),
-			Status:           statusForContract(entry.status),
+			Status:           statusForContract(statusValue),
 			ReadOnly:         entry.profile.ReadOnly,
 			ConnectedAt:      entry.connectedAt,
-			LastUsedAt:       entry.lastUsedAt,
-			Error:            entry.lastError,
+			LastUsedAt:       lastUsedAt,
+			Error:            lastErr,
 			ConnectionSource: entry.profile.ConnectionSource,
 		}
 		// Phase 2/3 摘要：SR（开关 mode + provider + url/registryName，不含
@@ -295,7 +303,6 @@ func (s *Service) SnapshotStatuses() []ConnectionStatus {
 		// 值一律不透出；未使用导入时为 nil 省略）。
 		status.PropertiesImport = entry.profile.PropertiesImport
 		statuses = append(statuses, status)
-		entry.mu.Unlock()
 	}
 	return statuses
 }
@@ -366,6 +373,7 @@ func (s *Service) ListPresets() ([]ConsumePreset, error) {
 }
 
 // SavePreset 保存预设（id 空 = 新建，uuid 兜底；非空 = 覆盖）。
+// presetsMu 串行化读改写（并发 Save/Remove 无锁会丢更新）。
 func (s *Service) SavePreset(preset ConsumePreset) (*ConsumePreset, error) {
 	if s.Presets == nil {
 		return nil, errf("preset store is unavailable")
@@ -378,6 +386,8 @@ func (s *Service) SavePreset(preset ConsumePreset) (*ConsumePreset, error) {
 	if preset.Name == "" {
 		return nil, errf("preset name is required")
 	}
+	s.presetsMu.Lock()
+	defer s.presetsMu.Unlock()
 	presets, err := s.Presets.LoadPresets()
 	if err != nil {
 		return nil, err
@@ -408,6 +418,8 @@ func (s *Service) RemovePreset(id string) error {
 	if id == "" {
 		return errf("preset id is required")
 	}
+	s.presetsMu.Lock()
+	defer s.presetsMu.Unlock()
 	presets, err := s.Presets.LoadPresets()
 	if err != nil {
 		return err

@@ -43,9 +43,10 @@ const totalScanned = ref(0);
 const totalMatched = ref(0);
 const bufferSize = ref(0);
 const droppedRows = ref(0);
-// rows 是逻辑数据源（KafkaMessage，供 appendStreamRows/分页裁剪）；
-// messageRows 是表格展示行（MessageRow，时区格式化一次成型）。
-const rows = ref<KafkaMessage[]>([]);
+// rows 是逻辑数据源（KafkaMessage，供 appendStreamRows/分页裁剪；只做整组
+// 替换、读取点均不需深响应——shallowRef 免去每批千行的深代理开销，评审
+// MED-1）；messageRows 是表格展示行（MessageRow，时区格式化一次成型）。
+const rows = shallowRef<KafkaMessage[]>([]);
 const messageRows = shallowRef<MessageRow[]>([]);
 const messageCols = computed(() => messageColumns() as ColDef<MessageRow>[]);
 const starting = ref(false);

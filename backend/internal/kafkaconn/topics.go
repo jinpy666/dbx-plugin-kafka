@@ -23,7 +23,7 @@ const adminTimeout = 20 * time.Second
 func (s *Service) ListBrokers(ctx context.Context, connectionID string) (*BrokersListResult, error) {
 	profile := s.profileOf(connectionID)
 	if profile.ConnectionSource == ConnectionSourceZookeeper {
-		brokers, err := s.discoverBrokersViaZK(connectionID)
+		brokers, err := s.discoverBrokersViaZK(ctx, connectionID)
 		if err != nil {
 			return nil, err
 		}
@@ -317,7 +317,7 @@ func clearRecordsRows(topic string, before map[int32]int64, beforeErr map[int32]
 			continue
 		}
 		low := resp.LowWatermark
-		deletedCount := before[p] - low
+		deletedCount := max64(before[p]-low, 0) // 并发 DeleteRecords 下 low 可能越过 before（评审 L-6）
 		row.LowWatermark = &low
 		row.Deleted = &deletedCount
 		row.OK = true

@@ -115,19 +115,21 @@ const (
 )
 
 // Get 读取 intent：found（含终态/pending）、expired（存在但过 TTL，读取时
-// 顺手清除）、unknown（从未登记）。
-func (s *IntentStore) Get(id string, now time.Time) (*Intent, LookupStatus) {
+// 顺手清除）、unknown（从未登记）。返回值拷贝（评审 H-1）：指针逃逸会让
+// 轮询方在锁外读 State/Summary/Reason，与 Report 的持锁写构成数据竞争；
+// Summary/Params 发布后只被整体替换、不在原 map 上改写，浅拷贝即安全。
+func (s *IntentStore) Get(id string, now time.Time) (Intent, LookupStatus) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	intent, ok := s.items[id]
 	if !ok {
-		return nil, LookupUnknown
+		return Intent{}, LookupUnknown
 	}
 	if !now.Before(intent.ExpiresAt) {
 		s.removeLocked(id)
-		return nil, LookupExpired
+		return Intent{}, LookupExpired
 	}
-	return intent, LookupFound
+	return *intent, LookupFound
 }
 
 // SetSnapshot 覆盖最新 UI 快照（快照型 report，无 intentId）；写入即复制，

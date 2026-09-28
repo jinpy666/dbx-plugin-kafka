@@ -104,7 +104,7 @@ function confluentBridge() {
   return (method: string, params: Record<string, unknown>) => {
     switch (method) {
       case "kafka/schema/test":
-        return { success: true, provider: "confluent" };
+        return { ok: true, version: "1", compatibleFormats: [], provider: "confluent" };
       case "kafka/schema/subjects/list":
         return {
           subjects: [
@@ -339,4 +339,47 @@ describe("SchemasPanel register submit (schemaWrite)", () => {
     // 选中未被清空：版本表已渲染新 subject 的版本行（bridge 对未知 subject 走 AVRO 双版本兜底）。
     expect(wrapper.findAll(".grid-stub[data-key='schema-versions'] .grid-stub-row").length).toBeGreaterThan(0);
   });
+});
+
+// S-SCHEMA-REGISTRY-RACE（评审 MED-3）：registry 快速来回切换时，慢到的旧
+// 响应不得把旧 registry 的 subject 列表覆盖到新 registry 名下。
+it("registry switch race: stale subject list must not overwrite the new namespace", async () => {
+  const deferreds: Array<{ params: Record<string, unknown>; resolve: (value: unknown) => void }> = [];
+  (window as unknown as { dbxPlugin: unknown }).dbxPlugin = {
+    invoke: (method: string, params: Record<string, unknown>) => {
+      if (method === "kafka/schema/test") {
+        return Promise.resolve({ ok: true, version: "1", compatibleFormats: [], provider: String(params.registry ?? "confluent") });
+      }
+      if (method === "kafka/schema/subjects/list") {
+        return new Promise((resolve) => deferreds.push({ params, resolve }));
+      }
+      return Promise.resolve({});
+    },
+  };
+  setKafkaConnectionId("conn-test");
+  const wrapper = mountPanel();
+  await flushPromises();
+  expect(deferreds.length).toBe(1); // 挂载期 confluent 的 subjects/list
+
+  const select = wrapper.find("select");
+  await select.setValue("glue");
+  await flushPromises();
+  expect(deferreds.length).toBe(2); // glue 的 subjects/list
+
+  // 先新后旧：glue 列表先落地，随后慢到的 confluent 旧响应不得覆盖。
+  deferreds[1].resolve({
+    subjects: [{ subject: "fresh-glue-subject", formats: ["avro"], latestVersion: 1, compatibilityLevel: "NONE" }],
+  });
+  await flushPromises();
+  deferreds[0].resolve({
+    subjects: [{ subject: "stale-confluent-subject", formats: ["avro"], latestVersion: 1, compatibilityLevel: "NONE" }],
+  });
+  await flushPromises();
+
+  const subjectsGrid = wrapper
+    .findAllComponents(DbxAgGridStub)
+    .find((grid) => grid.props("tableKey") === "schema-subjects");
+  expect(subjectsGrid).toBeDefined();
+  const rows = subjectsGrid!.props("rowData") as Array<{ subject: string }>;
+  expect(rows.map((row) => row.subject)).toEqual(["fresh-glue-subject"]);
 });

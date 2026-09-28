@@ -5,7 +5,8 @@
  */
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, shallowRef, watch, type Ref } from "vue";
 import type { DecodeMode, Decompression } from "../lib/api";
-import { formatMessageValue, looksLikeJson, looksLikeXml, messageFullValueText, type DecodedValue, type ValueFormat } from "../lib/messageCodec";
+import { formatMessageValue, looksLikeJson, looksLikeXml, messageValueSniffText, type DecodedValue, type ValueFormat } from "../lib/messageCodec";
+import { truncatedValuePreview } from "../lib/uiHelpers";
 import { decideModalKeydown, focusableElements } from "../lib/modalBehavior";
 import type { KafkaMessage } from "../lib/api";
 
@@ -23,6 +24,9 @@ export function useMessageDetailDrawer(detail: Ref<KafkaMessage | null> = shallo
   // Headers / Value 区块折叠态（抽屉内会话级；默认全展开）。
   const sectionsOpen = ref({ headers: true, value: true });
   const headersEntries = computed(() => Object.entries(detail.value?.headers ?? {}));
+  // showFullBase64 的渲染文本有界（评审 MED-5）：此前全量 valueBase64 直接
+  // 进 <pre>，大 payload 可塞数十 MB 文本节点。
+  const fullBase64Preview = computed(() => truncatedValuePreview(detail.value?.valueBase64 ?? detail.value?.valueText ?? ""));
   const headersJsonText = computed(() => JSON.stringify(detail.value?.headers ?? {}, null, 2));
 
   watch(detail, (message) => {
@@ -30,7 +34,8 @@ export function useMessageDetailDrawer(detail: Ref<KafkaMessage | null> = shallo
     headersView.value = "table";
     sectionsOpen.value = { headers: true, value: true };
     if (!message) return;
-    const text = messageFullValueText(message).trim();
+    // 嗅探只解码前缀（评审 MED-5）：全量解码留给 renderView 一次完成。
+    const text = messageValueSniffText(message).trim();
     viewFormat.value = looksLikeXml(text) ? "xml" : looksLikeJson(text) ? "json" : "raw";
     viewDecode.value = "none";
     viewDecompression.value = "none";
@@ -113,6 +118,7 @@ export function useMessageDetailDrawer(detail: Ref<KafkaMessage | null> = shallo
     viewResult,
     viewBusy,
     showFullBase64,
+    fullBase64Preview,
     headersView,
     sectionsOpen,
     headersEntries,

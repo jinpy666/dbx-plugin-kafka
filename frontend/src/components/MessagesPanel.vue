@@ -15,7 +15,7 @@ import MessageDetailDrawer from "./MessageDetailDrawer.vue";
 import { kafkaApi, type ConsumeResult, type KafkaMessage, type KafkaTopic, type MatchMode, type OffsetStrategy } from "../lib/api";
 import type { MessageRow } from "../lib/kafkaColumns";
 import { messageCellCopyText, MINIMAL_MESSAGE_FIELDS } from "../lib/kafkaColumns";
-import { serializeMessagesToJson, serializeMessagesToTsv } from "../lib/messageExport";
+import { serializeMessagesToCsv, serializeMessagesToJson, serializeMessagesToTsv } from "../lib/messageExport";
 import { saveTextFile, type SaveFileOutcome } from "../lib/download";
 import { copyTextToClipboard } from "../lib/uiHelpers";
 import { nowDatetimeLocal, validateConsumeForm } from "../lib/consumeForm";
@@ -347,23 +347,17 @@ defineExpose({ applyIntentConsume, applyIntentSelect });
 
 async function exportMessages(format: "json" | "csv" | "tsv") {
   if (!result.value || result.value.messages.length === 0) return;
-  // Lane4 打磨：后端 kafka/messages/export 仅接受 json/csv（其余 -32000），
-  // TSV 走前端序列化——直接导出当前已加载结果行（复用 messageExport 的保真
-  // value 文本与 TSV 转义；列序/行分隔与后端 CSV 一致），不发额外请求。
-  if (format === "tsv") {
-    await saveExport("kafka-messages.tsv", "text/tab-separated-values", serializeMessagesToTsv(result.value.messages), "TSV");
-    return;
-  }
-  try {
-    const response = await kafkaApi.messagesExport({
-      ...buildParams(),
-      format,
-      limit: Math.max(result.value.messages.length, positiveInt(limit.value, 100), 1),
-    });
-    await saveExport(response.filename || `kafka-messages.${format}`, response.contentType, response.content, format.toUpperCase());
-  } catch (cause) {
-    emit("error", cause instanceof Error ? cause.message : String(cause));
-  }
+  // 所见即所导（评审 MED-2）：此前 JSON/CSV 按当前表单参数重查后端——消费
+  // 后改条件再导出，导出内容 ≠ 表格所见。三格式统一走前端序列化（复用
+  // messageExport 的保真 value 文本与转义；列序/行分隔与后端一致），不发
+  // 额外请求。
+  const specs = {
+    json: { file: "kafka-messages.json", type: "application/json", run: serializeMessagesToJson },
+    csv: { file: "kafka-messages.csv", type: "text/csv", run: serializeMessagesToCsv },
+    tsv: { file: "kafka-messages.tsv", type: "text/tab-separated-values", run: serializeMessagesToTsv },
+  } as const;
+  const spec = specs[format];
+  await saveExport(spec.file, spec.type, spec.run(result.value.messages), format.toUpperCase());
 }
 
 /** 保存导出内容（宿主另存为优先/网页下载兜底，见 lib/download）；用户取消另存为不提示成功。 */
