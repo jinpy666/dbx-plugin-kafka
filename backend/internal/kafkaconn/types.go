@@ -100,7 +100,9 @@ func NormalizeSecurityProtocol(value string) string {
 
 // NormalizeSASLMechanism 归一化 SASL 机制；未知返回空串。
 func NormalizeSASLMechanism(value string) string {
-	switch strings.TrimSpace(value) {
+	// 大小写不敏感（评审 L-12）：粘贴 "scram-sha-256" 归一到规范形式，
+	// 不落进忽略清单。
+	switch strings.ToUpper(strings.TrimSpace(value)) {
 	case SASLMechanismPlain:
 		return SASLMechanismPlain
 	case SASLMechanismSCRAMSHA256:

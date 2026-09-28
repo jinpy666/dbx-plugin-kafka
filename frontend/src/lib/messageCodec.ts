@@ -357,3 +357,22 @@ export function messageFullValueText(message: KafkaMessage): string {
     return message.valueText ?? "";
   }
 }
+
+// messageValueSniffText 取值文本前缀（评审 MED-5）：格式嗅探只需开头几个
+// 字节——此前 watch(detail) 全量 base64→utf8 解码一次、renderView 再解码
+// 一次，大 payload 主线程双倍峰值。base64 只解前 4096 字符（4 的倍数 +
+// 补 padding），utf8 解码 fatal:false 与 valueText 预览语义一致。
+export function messageValueSniffText(message: KafkaMessage, maxChars = 4096): string {
+  const fallback = (message.valueText ?? "").slice(0, maxChars);
+  if (!message.valueBase64) return fallback;
+  try {
+    const chars = message.valueBase64.slice(0, 4096);
+    const padded = chars + "=".repeat((4 - (chars.length % 4)) % 4);
+    const binary = atob(padded.replace(/-/g, "+").replace(/_/g, "/"));
+    const bytes = new Uint8Array(binary.length);
+    for (let index = 0; index < binary.length; index += 1) bytes[index] = binary.charCodeAt(index);
+    return bytesToUtf8(bytes).slice(0, maxChars);
+  } catch {
+    return fallback;
+  }
+}

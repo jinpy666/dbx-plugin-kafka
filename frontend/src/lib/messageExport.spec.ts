@@ -44,3 +44,25 @@ describe("export serialization", () => {
     expect(second).toBe("orders\t0\t1\t1700000000000\tplain\tno escapes\t");
   });
 });
+
+// S-EXPORT-FORMULA（评审 LOW-5）：CSV/TSV 公式注入中和——以 = + - @ TAB CR
+// 开头的单元格在 Excel/Sheets 中会被当公式执行，前缀 ' 中和。
+describe("export formula neutralization", () => {
+  it("neutralizes formula-leading cells in CSV", () => {
+    const csv = serializeMessagesToCsv([
+      msg({ key: "-1", valueText: "=cmd|' /C calc'!A0" }),
+      msg({ key: "safe", valueText: "plain" }),
+    ]);
+    expect(csv).toContain("'-1");
+    expect(csv).toContain("'=cmd");
+    expect(csv).toContain("plain");
+    // 安全值不加前缀。
+    expect(csv).not.toContain("'safe");
+  });
+
+  it("neutralizes formula-leading cells in TSV", () => {
+    const tsv = serializeMessagesToTsv([msg({ key: "+1", valueText: "@x" })]);
+    expect(tsv).toContain("'+1");
+    expect(tsv).toContain("'@x");
+  });
+});

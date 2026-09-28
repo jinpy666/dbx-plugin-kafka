@@ -41,7 +41,7 @@ type Server struct {
 // maxCursorSessions 同款语义）。
 func NewServer(svc *kafkaconn.Service, st *store.Store) *Server {
 	settings := LoadSettings(st)
-	return &Server{
+	server := &Server{
 		svc:      svc,
 		st:       st,
 		intents:  NewIntentStore(0, 0),
@@ -50,9 +50,16 @@ func NewServer(svc *kafkaconn.Service, st *store.Store) *Server {
 		settings: settings,
 		now:      time.Now,
 	}
+	// 持久化的 confirmTtlSecs 启动即生效（评审 M-1）：此前固定默认 60s，
+	// 要等下一次 settings/set 才应用——settings/get 报告值与实际签发的
+	// 令牌 TTL 不符。
+	server.confirms.SetTTL(time.Duration(settings.ConfirmTtlSecs) * time.Second)
+	return server
 }
 
 // SetEmitter 注入事件回调（main.go 持锁转发到当前 Emitter）。
+// 并发约束：仅启动期（Serve 之前）调用一次，此后只读——不另设锁
+// （评审 L-7：无实际竞争窗口，约束在此固化）。
 func (s *Server) SetEmitter(emit func(method string, params any)) {
 	s.emit = emit
 }

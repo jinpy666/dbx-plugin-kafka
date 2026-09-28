@@ -21,6 +21,7 @@ const {
   viewResult,
   viewBusy,
   showFullBase64,
+  fullBase64Preview,
   headersView,
   sectionsOpen,
   headersEntries,
@@ -171,7 +172,7 @@ async function downloadValue() {
                 </label>
               </div>
               <pre v-if="viewResult.error" class="value-view error">{{ viewResult.error }}</pre>
-              <pre v-else-if="showFullBase64" class="value-view">{{ detail.valueBase64 ?? detail.valueText ?? "" }}</pre>
+              <pre v-else-if="showFullBase64" class="value-view">{{ fullBase64Preview.text }}</pre>
               <CodeEditor
                 v-else
                 :model-value="viewResult.text"

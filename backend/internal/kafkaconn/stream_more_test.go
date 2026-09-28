@@ -227,3 +227,51 @@ func TestStartStreamValidationOffline(t *testing.T) {
 		t.Fatalf("failed starts must not leave sessions behind, got %d", remaining)
 	}
 }
+
+// S-STREAM-CAP（评审 M-2）：名额 check+reserve 必须同临界区——check-then-act
+// 之间隔着 profile/client 构建，并发 start 可超限。预留期间名额计入
+// reserved，注册（admit）与失败释放（release）均锁内结转。
+func TestStreamRegistryReserveAdmit(t *testing.T) {
+	r := &StreamRegistry{sessions: map[string]*streamSession{}}
+	for i := 0; i < StreamMaxSessions; i++ {
+		r.inject(newTestSession(sprintf("s-%d", i), "c", "t"))
+	}
+	if _, ok := r.reserveStreamSlot(); ok {
+		t.Fatal("full registry must refuse reserve")
+	}
+	r.mu.Lock()
+	delete(r.sessions, "s-0")
+	r.mu.Unlock()
+	id, ok := r.reserveStreamSlot()
+	if !ok {
+		t.Fatal("slot must be reservable after stop")
+	}
+	if _, ok := r.reserveStreamSlot(); ok {
+		t.Fatal("reserved slot must count against the cap")
+	}
+	r.releaseStreamSlot()
+	if _, ok := r.reserveStreamSlot(); !ok {
+		t.Fatal("release must free the slot")
+	}
+	r.admitStreamSlot(id, newTestSession(id, "c", "t"))
+	if _, ok := r.reserveStreamSlot(); ok {
+		t.Fatal("admitted session must count against the cap")
+	}
+}
+
+// S-STREAM-COMMIT（评审 M-3）：流式会话不提交 offset（runLoop 无提交点），
+// commit=true 此前静默无效——诚实拒绝；只读拦截文案不变。
+func TestStartStreamCommitRejected(t *testing.T) {
+	svc := NewService()
+	_, err := svc.StartStream(ConsumeParams{ConnectionID: "ghost", Topic: "t", Commit: true})
+	if err == nil || !strings.Contains(err.Error(), "read-only") {
+		t.Fatalf("err = %v, want read-only commit block", err)
+	}
+	if err := connectWithConfig(t, svc, "sc", `{"bootstrap_servers": "127.0.0.1:1"}`, `{}`); err != nil {
+		t.Fatalf("connect error = %v", err)
+	}
+	_, err = svc.StartStream(ConsumeParams{ConnectionID: "sc", Topic: "t", Commit: true})
+	if err == nil || !strings.Contains(err.Error(), "commit") {
+		t.Fatalf("err = %v, want explicit commit rejection", err)
+	}
+}

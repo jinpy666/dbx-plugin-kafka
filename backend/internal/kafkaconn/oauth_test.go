@@ -8,6 +8,8 @@ package kafkaconn
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -18,8 +20,9 @@ func TestNormalizeSASLMechanismOAUTHBEARER(t *testing.T) {
 	if got := NormalizeSASLMechanism(" OAUTHBEARER "); got != SASLMechanismOAUTHBEARER {
 		t.Errorf("NormalizeSASLMechanism = %q, want %q", got, SASLMechanismOAUTHBEARER)
 	}
-	if got := NormalizeSASLMechanism("oauthbearer"); got != "" {
-		t.Errorf("NormalizeSASLMechanism lowercase = %q, want \"\"（机制名大小写敏感，与 PLAIN/SCRAM 一致）", got)
+	// 大小写不敏感（评审 L-12）：小写归一到规范形式，不再落进忽略清单。
+	if got := NormalizeSASLMechanism("oauthbearer"); got != SASLMechanismOAUTHBEARER {
+		t.Errorf("NormalizeSASLMechanism lowercase = %q, want %q", got, SASLMechanismOAUTHBEARER)
 	}
 	if got := NormalizeSASLMechanism("KERBEROS"); got != "" {
 		t.Errorf("NormalizeSASLMechanism(unknown) = %q, want \"\"", got)
@@ -209,5 +212,37 @@ func TestOauthProfileJSONShape(t *testing.T) {
 		if strings.Contains(string(raw), forbidden) {
 			t.Errorf("profile JSON must not contain %s: %s", forbidden, raw)
 		}
+	}
+}
+
+// S-SASL-CASE（评审 L-12）：机制归一化大小写不敏感——粘贴 "scram-sha-256"
+// 不应整键落进忽略清单。
+func TestNormalizeSASLMechanismCaseInsensitive(t *testing.T) {
+	for raw, want := range map[string]string{
+		"plain":          "PLAIN",
+		"SCRAM-sha-256":  "SCRAM-SHA-256",
+		" scram-sha-512": "SCRAM-SHA-512",
+		"OauthBearer":    "OAUTHBEARER",
+	} {
+		if got := NormalizeSASLMechanism(raw); got != want {
+			t.Errorf("NormalizeSASLMechanism(%q) = %q, want %q", raw, got, want)
+		}
+	}
+	if got := NormalizeSASLMechanism("bogus"); got != "" {
+		t.Errorf("bogus mechanism = %q, want empty", got)
+	}
+}
+
+// S-DEADLINE-WRAP（评审 L-8）：isDeadline 用 errors.Is 识别包装错误——
+// fmt.Errorf("%w") 包装的超时此前不被识别。
+func TestIsDeadlineWrapped(t *testing.T) {
+	if !isDeadline(fmt.Errorf("poll: %w", context.DeadlineExceeded)) {
+		t.Fatal("wrapped DeadlineExceeded must be recognized")
+	}
+	if !isDeadline(fmt.Errorf("poll: %w", context.Canceled)) {
+		t.Fatal("wrapped Canceled must be recognized")
+	}
+	if isDeadline(errors.New("broker said no")) {
+		t.Fatal("plain error must not match")
 	}
 }

@@ -3,23 +3,7 @@
 import { describe, expect, it } from "vitest";
 import { compress as lz4Compress } from "lz4js";
 import { compress as snappyCompress } from "snappyjs";
-import {
-  base64ToBytes,
-  bytesToHex,
-  bytesToUtf8,
-  formatBitSet,
-  formatMessageValue,
-  inflateGzip,
-  inflateLz4,
-  inflateSnappy,
-  inflateZstd,
-  looksLikeJson,
-  looksLikeXml,
-  MAX_DECODED_BYTES,
-  messageFullValueText,
-  prettyJson,
-  prettyXml,
-} from "./messageCodec";
+import { base64ToBytes, bytesToHex, bytesToUtf8, formatBitSet, formatMessageValue, inflateGzip, inflateLz4, inflateSnappy, inflateZstd, looksLikeJson, looksLikeXml, MAX_DECODED_BYTES, messageFullValueText, prettyJson, prettyXml, messageValueSniffText } from "./messageCodec";
 import { headersPreview, previewText } from "./uiHelpers";
 import type { KafkaMessage } from "./api";
 
@@ -273,5 +257,26 @@ describe("decompression bomb guard", () => {
   it("keeps legit payloads under the cap working", () => {
     const ok = inflateZstd(new Uint8Array(base64ToBytes(ZSTD_ORDER_JSON_BASE64)));
     expect(ok.error).toBeUndefined();
+  });
+});
+
+// S-SNIFF-BOUNDED（评审 MED-5）：格式嗅探只解码值前缀——此前全量解码，
+// 大 payload（16MiB 解压上限）主线程双倍解码峰值。
+describe("messageValueSniffText", () => {
+  it("decodes only a bounded prefix of large base64 payloads", () => {
+    const big = "A".repeat(2_000_000);
+    const sniff = messageValueSniffText({
+      topic: "t", partition: 0, offset: 1, timestamp: 0,
+      valueBase64: btoa(big),
+    });
+    expect(sniff.length).toBeLessThanOrEqual(4096);
+    // 4096 个 base64 字符（4 的倍数）→ 3072 字节 → 3072 个 "A"。
+    expect(sniff).toBe("A".repeat(3072));
+  });
+
+  it("falls back to valueText prefix and tolerates invalid base64", () => {
+    const message = { topic: "t", partition: 0, offset: 1, timestamp: 0, valueText: "plain".repeat(2000) };
+    expect(messageValueSniffText(message)).toBe("plain".repeat(2000).slice(0, 4096));
+    expect(messageValueSniffText({ ...message, valueBase64: "!!not-base64!!" })).toBe("plain".repeat(2000).slice(0, 4096));
   });
 });

@@ -363,3 +363,32 @@ func TestResetGroupOffsetsValidationMatrix(t *testing.T) {
 		t.Error("partitionOffset without partitionOffsets should reach broker (dial error), got nil")
 	}
 }
+
+// S-GO-HASCOMMITTED（评审 M-1）：FetchOffsetsForTopics 会把请求 topic 的
+// 全部分区预填 At=-1，len(committed)>0 恒真——组从未提交时必须报
+// hasCommitted=false（与零 lag 区分的契约语义）。
+func TestHasCommittedOffsets(t *testing.T) {
+	if hasCommittedOffsets(nil) {
+		t.Fatal("nil committed must report false")
+	}
+	prefilled := kadm.OffsetResponses{"orders": {
+		0: kadm.OffsetResponse{Offset: kadm.Offset{Topic: "orders", Partition: 0, At: -1}},
+		1: kadm.OffsetResponse{Offset: kadm.Offset{Topic: "orders", Partition: 1, At: -1}},
+	}}
+	if hasCommittedOffsets(prefilled) {
+		t.Fatal("all At=-1 (prefilled) must report hasCommitted=false")
+	}
+	mixed := kadm.OffsetResponses{"orders": {
+		0: kadm.OffsetResponse{Offset: kadm.Offset{Topic: "orders", Partition: 0, At: -1}},
+		1: kadm.OffsetResponse{Offset: kadm.Offset{Topic: "orders", Partition: 1, At: 3}},
+	}}
+	if !hasCommittedOffsets(mixed) {
+		t.Fatal("any At>=0 must report hasCommitted=true")
+	}
+	errored := kadm.OffsetResponses{"orders": {
+		0: kadm.OffsetResponse{Offset: kadm.Offset{Topic: "orders", Partition: 0, At: 5}, Err: kerr.UnknownTopicOrPartition},
+	}}
+	if hasCommittedOffsets(errored) {
+		t.Fatal("error responses must not count as committed")
+	}
+}

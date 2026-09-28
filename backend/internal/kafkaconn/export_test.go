@@ -110,3 +110,20 @@ func TestExportFilename(t *testing.T) {
 		t.Errorf("fallback filename = %q", name)
 	}
 }
+
+// S-CSV-FORMULA（评审 LOW-5）：CSV 导出对公式头字符中和。
+func TestSerializeCSVFormulaNeutralized(t *testing.T) {
+	content, _, err := serializeConsumedMessages("csv", []ConsumedMessage{
+		{Topic: "t", Partition: 0, Offset: 1, Key: "-1", ValueText: "=cmd|' /C calc'!A0"},
+		{Topic: "t", Partition: 0, Offset: 2, Key: "safe", ValueText: "plain"},
+	})
+	if err != nil {
+		t.Fatalf("serialize error = %v", err)
+	}
+	if !strings.Contains(content, "'-1") || !strings.Contains(content, "'=cmd") {
+		t.Fatalf("formula cells not neutralized: %s", content)
+	}
+	if strings.Contains(content, "'safe") || strings.Contains(content, "'plain") {
+		t.Fatalf("safe cells must stay untouched: %s", content)
+	}
+}

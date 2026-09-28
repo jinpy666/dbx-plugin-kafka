@@ -249,8 +249,17 @@ func TestMCPFaceOffline(t *testing.T) {
 	if _, perr = callHandle(h, "mcp/settings/set", `{"responseLimitBytes":0}`, nil); perr == nil || perr.Code != -32000 {
 		t.Fatalf("settings/set 0: perr=%v, want -32000 (below min)", perr)
 	}
-	if _, perr = callHandle(h, "mcp/settings/set", `{"responseLimitBytes":"2048"}`, nil); perr == nil || perr.Code != -32000 {
-		t.Fatalf("settings/set string: perr=%v, want -32000", perr)
+	// 数字字符串宽容（评审 L-6）：与 coerceInt64 风格一致，"2048" 接受。
+	if _, perr = callHandle(h, "mcp/settings/set", `{"responseLimitBytes":"2048"}`, nil); perr != nil {
+		t.Fatalf("settings/set string: %v", perr)
+	}
+	res, _ = callHandle(h, "mcp/settings/get", `{}`, nil)
+	if got := res.(map[string]any)["responseLimitBytes"]; got != 2048 {
+		t.Fatalf("responseLimitBytes = %v, want 2048", got)
+	}
+	// 非数字字符串仍拒绝。
+	if _, perr = callHandle(h, "mcp/settings/set", `{"responseLimitBytes":"abc"}`, nil); perr == nil || perr.Code != -32000 {
+		t.Fatalf("settings/set bad string: perr=%v, want -32000", perr)
 	}
 
 	// mcp/call：缺 tool / 未注册工具 / lifecycle、arguments 坏 JSON。

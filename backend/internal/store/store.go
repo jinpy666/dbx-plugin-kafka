@@ -127,7 +127,9 @@ func (s *Store) LoadJSON(name string, out any) (bool, error) {
 	return true, nil
 }
 
-// SaveJSON 原子写入 dataDir/<name>（临时文件 + rename，权限 0600）。
+// SaveJSON 原子写入 dataDir/<name>：唯一临时名（评审 M-2——固定 <name>.tmp
+// 在并发写同一文件时会互相 rename 走对方写了一半的内容或报 rename 失败）+
+// fsync 后 rename，权限 0600（CreateTemp 默认）。
 func (s *Store) SaveJSON(name string, value any) error {
 	data, err := json.MarshalIndent(value, "", "  ")
 	if err != nil {
@@ -135,12 +137,27 @@ func (s *Store) SaveJSON(name string, value any) error {
 	}
 	data = append(data, '\n')
 	path := filepath.Join(s.dir, name)
-	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, data, 0o600); err != nil {
+	tmp, err := os.CreateTemp(s.dir, name+".*")
+	if err != nil {
+		return fmt.Errorf("store: tmp %s: %w", name, err)
+	}
+	tmpName := tmp.Name()
+	if _, err := tmp.Write(data); err != nil {
+		_ = tmp.Close()
+		_ = os.Remove(tmpName)
 		return fmt.Errorf("store: write %s: %w", name, err)
 	}
-	if err := os.Rename(tmp, path); err != nil {
-		_ = os.Remove(tmp)
+	if err := tmp.Sync(); err != nil {
+		_ = tmp.Close()
+		_ = os.Remove(tmpName)
+		return fmt.Errorf("store: sync %s: %w", name, err)
+	}
+	if err := tmp.Close(); err != nil {
+		_ = os.Remove(tmpName)
+		return fmt.Errorf("store: close %s: %w", name, err)
+	}
+	if err := os.Rename(tmpName, path); err != nil {
+		_ = os.Remove(tmpName)
 		return fmt.Errorf("store: rename %s: %w", name, err)
 	}
 	return nil

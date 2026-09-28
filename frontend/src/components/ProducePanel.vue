@@ -494,6 +494,12 @@ watch(
   },
 );
 
+watch(flowOn, (on) => {
+  // 取消勾选即停（评审 LOW-4）：此前运行中取消勾选不停止生成流，UI 语义
+  // 不一致（只有 canWrite/topic 变化或点 Stop 才停）。
+  if (!on && flowRunning.value) stopFlow("manual");
+});
+
 watch(
   () => props.topic,
   () => {

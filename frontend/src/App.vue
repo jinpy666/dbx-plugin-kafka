@@ -394,9 +394,14 @@ async function waitForHostApi(timeoutMs = 8000) {
 
 async function initialize() {
   const api = await waitForHostApi();
+  // 竞速超时兜底（评审 LOW-2）：宿主 request 挂起时界面此前永久 Loading
+  // 且无错误出口——8s（与 waitForHostApi 同额）后取 ready/超时错误。
   hostContext.value = await Promise.any([
     api.ready,
     api.request<Record<string, unknown>>("host.getContext"),
+    new Promise<Record<string, unknown>>((_, reject) =>
+      setTimeout(() => reject(new Error(t("hostApiUnavailable"))), 8000),
+    ),
   ]);
   setWorkbenchLocale(api.locale || "zh-CN");
   if (api.appearance) applyAppearance(api.appearance);
@@ -439,6 +444,9 @@ onMounted(() => {
 onBeforeUnmount(() => {
   document.removeEventListener("visibilitychange", onVisibilityChange);
   document.removeEventListener("contextmenu", preventNativeContextMenu, true);
+  // 兜底移除（评审 LOW-1）：connectionsOpen=true 时卸载，keydown 监听不随
+  // 关闭路径摘除——HMR/测试场景会泄漏。
+  window.removeEventListener("keydown", onConnectionsKeydown);
   window.clearTimeout(noticeTimer);
   uiIntent.stop();
   for (const dispose of [...unsubscribeAppearance, ...unsubscribeLocale, ...unsubscribeContext, ...unsubscribeEvent]) dispose();

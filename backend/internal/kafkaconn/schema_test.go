@@ -11,6 +11,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 
 	"io.dbx.kafka.plugin/internal/lifecycle"
@@ -632,7 +633,10 @@ func TestSchemaDecoderCacheByID(t *testing.T) {
 func TestSchemaTextDiff(t *testing.T) {
 	before := "a\nb\nc\nd"
 	after := "a\nX\nc\nd\nY"
-	hunks, summary := schemaTextDiff(before, after)
+	hunks, summary, err := schemaTextDiff(before, after)
+	if err != nil {
+		t.Fatalf("diff error = %v", err)
+	}
 	if summary.Removed != 1 || summary.Added != 2 || summary.Unchanged != 3 {
 		t.Fatalf("summary = %+v", summary)
 	}
@@ -650,7 +654,10 @@ func TestSchemaTextDiff(t *testing.T) {
 	}
 
 	// 纯新增。
-	hunks, summary = schemaTextDiff("a", "a\nb")
+	hunks, summary, err = schemaTextDiff("a", "a\nb")
+	if err != nil {
+		t.Errorf("add-only diff error = %v", err)
+	}
 	if len(hunks) != 1 || hunks[0].Op != "add" || hunks[0].After != "b" {
 		t.Errorf("add-only hunks = %+v", hunks)
 	}
@@ -659,13 +666,13 @@ func TestSchemaTextDiff(t *testing.T) {
 	}
 
 	// 纯删除。
-	hunks, summary = schemaTextDiff("a\nb", "a")
+	hunks, summary, err = schemaTextDiff("a\nb", "a")
 	if len(hunks) != 1 || hunks[0].Op != "remove" || hunks[0].Before != "b" {
 		t.Errorf("remove-only hunks = %+v", hunks)
 	}
 
 	// 完全相同 → 无 hunks。
-	hunks, _ = schemaTextDiff("same", "same")
+	hunks, _, _ = schemaTextDiff("same", "same")
 	if len(hunks) != 0 {
 		t.Errorf("identical text hunks = %+v", hunks)
 	}
@@ -752,5 +759,74 @@ func TestSchemaRegistryErrorBodyTruncated(t *testing.T) {
 	}
 	if len(err.Error()) > 4096 {
 		t.Fatalf("error text must be truncated (got %d bytes)", len(err.Error()))
+	}
+}
+
+// S-DIFF-CAP（评审 M-4）：LCS DP 矩阵 O(n×m)，输入来自远端 SR 响应且无上限
+// ——20k×20k 行即 ~80GB。行数超限拒绝（业务错），不进 DP。
+func TestSchemaTextDiffLineCap(t *testing.T) {
+	big := strings.Repeat("line\n", schemaDiffMaxLines+1)
+	if _, _, err := schemaTextDiff(big, big); err == nil {
+		t.Fatal("over-cap diff must be rejected")
+	}
+	small := strings.TrimRight(strings.Repeat("line\n", 10), "\n")
+	hunks, summary, err := schemaTextDiff(small, small)
+	if err != nil || len(hunks) != 0 || summary.Unchanged != 10 {
+		t.Fatalf("within-cap diff broken: err=%v hunks=%d summary=%+v", err, len(hunks), summary)
+	}
+}
+
+// S-SRID-CTX（评审 M-5）：schemaIDForVersion 必须从调用方 ctx 派生预算——
+// 此前 context.Background() 另起预算，取消不传播且每版本独立 10s。
+func TestSchemaIDForVersionHonorsCtx(t *testing.T) {
+	var hits int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		atomic.AddInt32(&hits, 1)
+		w.Header().Set("Content-Type", "application/vnd.schemaregistry.v1+json")
+		_, _ = w.Write([]byte(`{"subject":"s","version":1,"id":7,"schemaType":"AVRO","schema":"{\"type\":\"record\"}"}`))
+	}))
+	defer server.Close()
+	client, err := newSchemaRegistryClient(Profile{SRURL: server.URL}, connSecrets{})
+	if err != nil {
+		t.Fatalf("newSchemaRegistryClient() error = %v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if got := schemaIDForVersion(ctx, client, "s", 1); got != 0 {
+		t.Fatalf("id = %d, want 0 (canceled ctx must not fetch)", got)
+	}
+	if n := atomic.LoadInt32(&hits); n != 0 {
+		t.Fatalf("server hits = %d, want 0", n)
+	}
+}
+
+// S-SR-CACHE（评审 L-2）：SR HTTP 客户端按连接缓存复用——此前每次
+// produce/consume/stream 新建 http.Client+Transport，TLS 下无连接复用。
+func TestConfluentClientForReusesCachedClient(t *testing.T) {
+	svc := NewService()
+	if err := connectWithConfig(t, svc, "src", `{"bootstrap_servers": "k1:9092", "schema_registry": "confluent", "sr_url": "http://127.0.0.1:18081"}`, `{}`); err != nil {
+		t.Fatalf("connect error = %v", err)
+	}
+	first, err := svc.confluentClientFor("src")
+	if err != nil {
+		t.Fatalf("confluentClientFor() error = %v", err)
+	}
+	second, err := svc.confluentClientFor("src")
+	if err != nil {
+		t.Fatalf("confluentClientFor() error = %v", err)
+	}
+	if first != second {
+		t.Fatal("SR client must be cached per connection")
+	}
+	// 重连同 id（换 SR URL）→ 缓存失效重建。
+	if err := connectWithConfig(t, svc, "src", `{"bootstrap_servers": "k1:9092", "schema_registry": "confluent", "sr_url": "http://127.0.0.1:18082"}`, `{}`); err != nil {
+		t.Fatalf("reconnect error = %v", err)
+	}
+	third, err := svc.confluentClientFor("src")
+	if err != nil {
+		t.Fatalf("confluentClientFor() after reconnect error = %v", err)
+	}
+	if third == first {
+		t.Fatal("reconnect with different SR config must rebuild client")
 	}
 }

@@ -100,3 +100,58 @@ func TestIntentSnapshotRoundtrip(t *testing.T) {
 		t.Fatal("snapshot should be copied on read")
 	}
 }
+
+// S-INTENT-COPY（评审 H-1）：Get 返回值拷贝——此前指针逃逸使轮询方在锁外
+// 读 State/Summary/Reason，与 Report 的持锁写构成数据竞争。
+func TestIntentGetReturnsCopy(t *testing.T) {
+	store := NewIntentStore(0, 0)
+	store.Register("i-copy", "search", nil, intentBase)
+	got, status := store.Get("i-copy", intentBase)
+	if status != LookupFound {
+		t.Fatalf("status = %v", status)
+	}
+	got.State = IntentRejected
+	got.Reason = "tampered"
+	again, _ := store.Get("i-copy", intentBase)
+	if again.State != IntentPending || again.Reason != "" {
+		t.Fatalf("Get must return a copy, store saw %+v", again)
+	}
+}
+
+// S-INTENT-RACE：并发回报 × 轮询读同一条目（配合 go test -race 验证拷贝
+// 语义消除了 Report 写 × Get 逃逸指针读的竞争窗口）。
+func TestIntentConcurrentReportAndGet(t *testing.T) {
+	store := NewIntentStore(0, 0)
+	store.Register("i-race", "search", nil, intentBase)
+	stop := make(chan struct{})
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+			}
+			intent, status := store.Get("i-race", intentBase.Add(time.Second))
+			if status != LookupFound {
+				continue
+			}
+			_ = intent.Reason
+			if intent.Summary != nil {
+				_ = intent.Summary["n"]
+			}
+		}
+	}()
+	for i := 0; i < 200; i++ {
+		state := IntentApplied
+		reason := "ok"
+		if i%2 == 1 {
+			state = IntentRejected
+			reason = "no"
+		}
+		store.Report("i-race", state, map[string]any{"n": float64(i)}, reason, intentBase.Add(time.Second))
+	}
+	close(stop)
+	<-done
+}

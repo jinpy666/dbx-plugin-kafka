@@ -284,7 +284,13 @@ async function submitConfig() {
   busy.value = true;
   try {
     const response = await kafkaApi.topicsConfigAlter(selected.value.name, config, deleteKeys);
-    configEntries.value = response.entries ?? [];
+    // alter 返回逐键结果（MutationResult）：失败键报错；列表经 config/get
+    // 重拉（sidecar 不在 alter 响应里回完整条目，此前按 entries 解析恒为空）。
+    const failures = (response.results ?? []).filter((entry) => !entry.ok);
+    if (failures.length > 0) {
+      emit("error", failures.map((entry) => entry.error || entry.topic).join("; "));
+    }
+    configEntries.value = (await kafkaApi.topicsConfigGet(selected.value.name)).entries ?? [];
     configEdits.value = [];
     emit("notify", t("topics.altered"));
   } catch (cause) {

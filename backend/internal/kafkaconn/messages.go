@@ -17,12 +17,14 @@ import (
 	"encoding/base64"
 	"encoding/csv"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"regexp"
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 	"unicode/utf8"
 
@@ -451,10 +453,15 @@ func (s *Service) consumeMessages(ctx context.Context, params ConsumeParams) (co
 	if err := validateConsumeParams(params); err != nil {
 		return result, err
 	}
-	limit := params.Limit
-	if limit <= 0 {
-		limit = 100
+	// §5.5：只读策略下禁止 commit（与 stream/start 同门禁）。此前一次性
+	// 消费路径漏检——read_only 连接可经本路径为消费组提交 offset 且不留
+	// 审计。未连接连接按 profileOf 只读兜底拒绝。
+	profile := s.profileOf(params.ConnectionID)
+	if params.Commit && profile.ReadOnly {
+		s.emitAudit(params.ConnectionID, "messages-consume-commit", topic, "blocked", "read-only profile")
+		return result, errf("kafka profile %q is read-only; commit is blocked", profile.Name)
 	}
+	limit := clampConsumeLimit(params.Limit)
 	maxScan := consumeMaxScanRecords(limit, params.MaxScanRecords)
 	timeout := time.Duration(params.TimeoutMs) * time.Millisecond
 	if timeout <= 0 {
@@ -473,16 +480,6 @@ func (s *Service) consumeMessages(ctx context.Context, params ConsumeParams) (co
 	// schema 挂载（Phase 2）：per-consume 解码器（SR 客户端 + 元数据缓存）。
 	// wire format 解码仅支持 Confluent：provider=glue → 业务错（Phase 3 门禁）。
 	var schemaDec *schemaDecoder
-	if params.Schema != nil {
-		if err := s.schemaMountSupported(params.ConnectionID, params.Schema.Registry, "consume"); err != nil {
-			return result, err
-		}
-		schemaClient, schemaErr := s.confluentClientFor(params.ConnectionID)
-		if schemaErr != nil {
-			return result, schemaErr
-		}
-		schemaDec = newSchemaDecoder(schemaClient, params.Schema)
-	}
 	matcher, err := newConsumeTextMatcher(params)
 	if err != nil {
 		return result, err
@@ -552,6 +549,20 @@ func (s *Service) consumeMessages(ctx context.Context, params ConsumeParams) (co
 		}
 	}()
 
+	// schema 挂载放在 client 就绪与 defer 注册之后（评审 L-10）：此前 SR
+	// client 先建，后续 consumeClient 失败把它连同保活连接丢给 GC；现在
+	// 失败路径统一经 defer 释放消费 client。
+	if params.Schema != nil {
+		if err := s.schemaMountSupported(params.ConnectionID, params.Schema.Registry, "consume"); err != nil {
+			return result, err
+		}
+		schemaClient, schemaErr := s.confluentClientFor(params.ConnectionID)
+		if schemaErr != nil {
+			return result, schemaErr
+		}
+		schemaDec = newSchemaDecoder(schemaClient, params.Schema)
+	}
+
 	// 启动期预算与扫描窗口分离：冷启动的 TLS/SASL/metadata/ListOffsets 不吃
 	// 用户 timeoutMs（5s 窗口在跨境链路上连启动都跑不完）；Ping 等 metadata
 	// ready 后才开扫描窗口。
@@ -565,7 +576,9 @@ func (s *Service) consumeMessages(ctx context.Context, params ConsumeParams) (co
 	consumeCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
-	messages := make([]ConsumedMessage, 0, limit)
+	// 预分配按 min(limit, maxScan) 收敛：留存条数同时受两者约束，不再
+	// 按未上界的入参做虚拟预留。
+	messages := make([]ConsumedMessage, 0, min(limit, maxScan))
 	nextPartitionOffsets := map[int32]int64{}
 	retention := consumeRetentionTracker{budget: params.RetentionByteBudget}
 	scanned := 0
@@ -652,10 +665,14 @@ func (s *Service) consumeMessages(ctx context.Context, params ConsumeParams) (co
 	hasMore := limited || scanned >= maxScan || timedOut
 
 	if params.Commit {
-		if err := client.CommitUncommittedOffsets(consumeCtx); err != nil {
+		// commit 不复用扫描窗口 ctx（窗口超时退出是 commit 型消费最常见
+		// 的退出方式）；成功留审计（offset 提交是写操作，§5.4）。
+		if err := commitConsumeOffsets(ctx, client.CommitUncommittedOffsets); err != nil {
 			healthy = false
+			s.emitAudit(params.ConnectionID, "messages-consume-commit", topic, "error", err.Error())
 			return result, err
 		}
+		s.emitAudit(params.ConnectionID, "messages-consume-commit", topic, "success", sprintf("group=%s", groupID))
 	}
 	result.messages = messages
 	result.matched = matched
@@ -920,7 +937,8 @@ func isolationLevelValue(level string) (kgo.IsolationLevel, error) {
 }
 
 func isDeadline(err error) bool {
-	return err == context.DeadlineExceeded || err == context.Canceled
+	// errors.Is（评审 L-8）：包装错误（fmt.Errorf("%w")）同样识别。
+	return errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled)
 }
 
 // --- 匹配器与过滤引擎（tinyrdm :2213-2300 / :2508-2930 重写） ---
@@ -1079,8 +1097,18 @@ func recordMatches(params ConsumeParams, matcher textMatcher, record *kgo.Record
 	if params.OffsetTo != nil && record.Offset > *params.OffsetTo {
 		return false
 	}
-	if filter := trimSpace(params.Filter); filter != "" && !matcher.match(recordSearchText(record), filter) {
-		return false
+	if filter := trimSpace(params.Filter); filter != "" {
+		// filter 通道走复用缓冲 + 字节匹配（评审 L-3）：此前每条扫描记录
+		// string(record.Value) 整串拷贝拼检索文本，高扫描量下是第三个内存
+		// 放大器；字节级拼接与原实现逐字节等价。
+		bufp := searchTextBufPool.Get().(*[]byte)
+		buf := appendRecordSearchText((*bufp)[:0], record)
+		matched := matcher.matchBytes(buf, filter)
+		*bufp = buf[:0]
+		searchTextBufPool.Put(bufp)
+		if !matched {
+			return false
+		}
 	}
 	// key/value 通道走字节匹配（matchBytes）：免 string(record.Key/Value)
 	// 整串拷贝，语义与字符串路径一致。
@@ -1108,19 +1136,28 @@ func partitionAllowed(partitions []int32, partition int32) bool {
 	return false
 }
 
-func recordSearchText(record *kgo.Record) string {
+// searchTextBufPool 复用检索文本缓冲（评审 L-3）。
+var searchTextBufPool = sync.Pool{New: func() any { return new([]byte) }}
+
+// appendRecordSearchText 追加全文检索文本（topic/partition/offset/ts/key/
+// value/headers 空格拼接；字节级等价于原 strings.Join 实现）。
+func appendRecordSearchText(dst []byte, record *kgo.Record) []byte {
 	if record == nil {
-		return ""
+		return dst
 	}
-	return strings.Join([]string{
-		record.Topic,
-		strconv.FormatInt(int64(record.Partition), 10),
-		strconv.FormatInt(record.Offset, 10),
-		strconv.FormatInt(record.Timestamp.UnixMilli(), 10),
-		string(record.Key),
-		string(record.Value),
-		headersText(record.Headers),
-	}, " ")
+	dst = append(dst, record.Topic...)
+	dst = append(dst, ' ')
+	dst = strconv.AppendInt(dst, int64(record.Partition), 10)
+	dst = append(dst, ' ')
+	dst = strconv.AppendInt(dst, record.Offset, 10)
+	dst = append(dst, ' ')
+	dst = strconv.AppendInt(dst, record.Timestamp.UnixMilli(), 10)
+	dst = append(dst, ' ')
+	dst = append(dst, record.Key...)
+	dst = append(dst, ' ')
+	dst = append(dst, record.Value...)
+	dst = append(dst, ' ')
+	return append(dst, headersText(record.Headers)...)
 }
 
 func headersText(headers []kgo.RecordHeader) string {
@@ -1757,10 +1794,42 @@ func produceDeliveryOpts(acks string, enableIdempotence *bool) ([]kgo.Opt, error
 	return nil, nil
 }
 
-// consumeMaxScanRecords 扫描上限（默认 max(1000, limit×10)，§5.3）。
+// consumeCommitBudget commit 独立预算：不复用扫描窗口 ctx——窗口耗尽
+// （timeoutMs 到点）是 commit 型消费最常见的退出方式，复用已超时的
+// consumeCtx 会让提交必然失败并丢弃全部已扫结果。
+const consumeCommitBudget = 10 * time.Second
+
+// commitConsumeOffsets 以独立预算执行 offset 提交：ctx 从父请求派生
+// （保持取消传播），deadline 重新起算，提交错误原样上抛。
+func commitConsumeOffsets(ctx context.Context, commit func(context.Context) error) error {
+	commitCtx, cancel := context.WithTimeout(ctx, consumeCommitBudget)
+	defer cancel()
+	return commit(commitCtx)
+}
+
+// consumeLimitHardCap / consumeMaxScanHardCap 消费内存上界（评审 H-3）：
+// limit 曾无上界且按值预分配结果切片，单请求即可要求约 200GB（OOM 长驻
+// sidecar）。limit 上限与 export 对齐（maxExportRecords=10000）；扫描上限
+// 1e6（与 digest maxScanRecords 上限同量级）。
+const (
+	consumeLimitHardCap   = maxExportRecords
+	consumeMaxScanHardCap = 1_000_000
+)
+
+// clampConsumeLimit 归一化返回条数上限：<=0 默认 100，>硬上限按 export 语义
+// 收敛到上限。
+func clampConsumeLimit(limit int) int {
+	if limit <= 0 {
+		return 100
+	}
+	return min(limit, consumeLimitHardCap)
+}
+
+// consumeMaxScanRecords 扫描上限（默认 max(1000, limit×10)，§5.3；硬上限
+// consumeMaxScanHardCap 防无界扫描）。
 func consumeMaxScanRecords(limit, maxScan int) int {
 	if maxScan > 0 {
-		return maxScan
+		return min(maxScan, consumeMaxScanHardCap)
 	}
 	scanLimit := limit * 10
 	if scanLimit < 1000 {
@@ -1769,7 +1838,7 @@ func consumeMaxScanRecords(limit, maxScan int) int {
 	if scanLimit < limit {
 		scanLimit = limit
 	}
-	return scanLimit
+	return min(scanLimit, consumeMaxScanHardCap)
 }
 
 // consumeScanBatchSize 单轮 poll 大小（上限 256）。
@@ -1843,14 +1912,15 @@ func serializeCSV(messages []ConsumedMessage) (string, error) {
 		return "", err
 	}
 	for _, message := range messages {
+		// 公式注入中和（评审 LOW-5）：每个单元格过 csvFormulaSafe。
 		row := []string{
-			message.Topic,
+			csvFormulaSafe(message.Topic),
 			strconv.FormatInt(int64(message.Partition), 10),
 			strconv.FormatInt(message.Offset, 10),
 			strconv.FormatInt(message.Timestamp, 10),
-			firstNonEmpty(message.Key, message.KeyBase64),
-			message.ValueText,
-			headersExportText(message.Headers),
+			csvFormulaSafe(firstNonEmpty(message.Key, message.KeyBase64)),
+			csvFormulaSafe(message.ValueText),
+			csvFormulaSafe(headersExportText(message.Headers)),
 		}
 		if err := writer.Write(row); err != nil {
 			return "", err
@@ -1861,6 +1931,20 @@ func serializeCSV(messages []ConsumedMessage) (string, error) {
 		return "", err
 	}
 	return buffer.String(), nil
+}
+
+// csvFormulaSafe 中和公式注入（评审 LOW-5）：以 = + - @ TAB CR 开头的
+// 单元格在 Excel/Sheets 打开时会被当公式执行——前缀 ' 中和（业界通行
+// 约定；与前端 messageExport.ts 同款）。
+func csvFormulaSafe(value string) string {
+	if value == "" {
+		return value
+	}
+	switch value[0] {
+	case '=', '+', '-', '@', '\t', '\r':
+		return "'" + value
+	}
+	return value
 }
 
 func headersExportText(headers map[string]string) string {

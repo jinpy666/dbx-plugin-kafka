@@ -19,8 +19,10 @@ package kafkaconn
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/base64"
 	"encoding/binary"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -153,7 +155,11 @@ func (c *schemaRegistryClient) request(ctx context.Context, method, path string,
 		return err
 	}
 	defer resp.Body.Close()
-	data, _ := io.ReadAll(io.LimitReader(resp.Body, 4*1024*1024))
+	data, readErr := io.ReadAll(io.LimitReader(resp.Body, 4*1024*1024))
+	if readErr != nil {
+		// 读一半失败（评审 L-9）：截断体进 decode 只会报出误导性错误。
+		return fmt.Errorf("schema registry: read response: %w", readErr)
+	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		// 错误体截断（评审 M：LimitReader 只管读取上限；string(data) 全量
 		// 进 error 会把大错误页撑进 UI/日志链——LimitReader 防读不防文案）。
@@ -570,22 +576,32 @@ func (b *confluentBackend) listSubjects(ctx context.Context) ([]SubjectInfo, err
 	if err != nil {
 		return nil, err
 	}
-	out := make([]SubjectInfo, 0, len(subjects))
-	for _, subject := range subjects {
-		item := SubjectInfo{Subject: subject, Formats: []string{}}
-		// 逐条最新版补 format/latestVersion；兼容级别逐条查（404 = 未覆盖，
-		// 继承全局，省略）。
-		if meta, err := b.client.getSchema(ctx, subject, 0); err == nil {
-			item.Formats = []string{normalizeConfluentSchemaType(meta.SchemaType)}
-			item.LatestVersion = meta.Version
-		} else {
-			item.Formats = []string{"UNKNOWN"}
-		}
-		if compat, err := b.client.getCompatibility(ctx, subject); err == nil {
-			item.CompatibilityLevel = compat.level()
-		}
-		out = append(out, item)
+	// 逐条最新版补 format/latestVersion；兼容级别逐条查（404 = 未覆盖，
+	// 继承全局，省略）。有界并发（评审 L-1）：此前串行 2×N 个 REST，
+	// 500 subject = 1001 次顺序往返，大 registry 必然超时截断。
+	out := make([]SubjectInfo, len(subjects))
+	sem := make(chan struct{}, schemaSubjectsConcurrency)
+	var wg sync.WaitGroup
+	for i, subject := range subjects {
+		wg.Add(1)
+		go func(i int, subject string) {
+			defer wg.Done()
+			sem <- struct{}{}
+			defer func() { <-sem }()
+			item := SubjectInfo{Subject: subject, Formats: []string{}}
+			if meta, err := b.client.getSchema(ctx, subject, 0); err == nil {
+				item.Formats = []string{normalizeConfluentSchemaType(meta.SchemaType)}
+				item.LatestVersion = meta.Version
+			} else {
+				item.Formats = []string{"UNKNOWN"}
+			}
+			if compat, err := b.client.getCompatibility(ctx, subject); err == nil {
+				item.CompatibilityLevel = compat.level()
+			}
+			out[i] = item
+		}(i, subject)
 	}
+	wg.Wait()
 	return out, nil
 }
 
@@ -603,17 +619,19 @@ func (b *confluentBackend) listVersions(ctx context.Context, subject string) ([]
 		out = append(out, SchemaVersionInfo{
 			Version: int64(version),
 			Format:  format,
-			ID:      schemaIDForVersion(b.client, subject, int64(version)),
+			ID:      schemaIDForVersion(ctx, b.client, subject, int64(version)),
 		})
 	}
 	return out, nil
 }
 
-// schemaIDForVersion 尽力补 id（失败返回 0，不阻断列表）。
-func schemaIDForVersion(client *schemaRegistryClient, subject string, version int64) int {
-	ctx, cancel := context.WithTimeout(context.Background(), schemaRegistryTimeout)
+// schemaIDForVersion 尽力补 id（失败返回 0，不阻断列表）。ctx 从调用方
+// 传入（评审 M-5）：此前 context.Background() 另起独立预算，取消不传播
+// 且每版本独立 10s、最坏 V×10s 串行远超调用方总预算。
+func schemaIDForVersion(ctx context.Context, client *schemaRegistryClient, subject string, version int64) int {
+	probeCtx, cancel := context.WithTimeout(ctx, schemaRegistryTimeout)
 	defer cancel()
-	meta, err := client.getSchema(ctx, subject, version)
+	meta, err := client.getSchema(probeCtx, subject, version)
 	if err != nil {
 		return 0
 	}
@@ -713,10 +731,36 @@ func (s *Service) confluentClientFor(connectionID string) (*schemaRegistryClient
 		return nil, errConnectionNotFound(connectionID)
 	}
 	entry.mu.Lock()
-	profile := entry.profile
-	secrets := entry.secrets
-	entry.mu.Unlock()
-	return newSchemaRegistryClient(profile, secrets)
+	defer entry.mu.Unlock()
+	// 缓存命中（评审 L-2）：SR 配置指纹未变直接复用——http.Client 并发安全，
+	// TLS 下免每请求重握手。entry 随 Connect 整体替换，配置变更自然失效。
+	if key := entry.srFingerprintLocked(); entry.srClient != nil && entry.srFingerprint == key {
+		return entry.srClient, nil
+	}
+	client, err := newSchemaRegistryClient(entry.profile, entry.secrets)
+	if err != nil {
+		return nil, err
+	}
+	entry.srClient = client
+	entry.srFingerprint = entry.srFingerprintLocked()
+	return client, nil
+}
+
+// srFingerprintLocked 计算 SR 通道配置摘要（调用方须持 entry.mu；凭据进
+// 摘要不落盘，同 computeFingerprint 先例）。
+func (e *connEntry) srFingerprintLocked() string {
+	parts := []string{
+		e.profile.SRURL,
+		e.profile.SchemaRegistry,
+		e.profile.SRUsername,
+		e.secrets.SRPassword,
+		e.profile.TLSCACert,
+		e.profile.TLSClientCert,
+		e.secrets.TLSClientKey,
+		fmt.Sprintf("%t", e.profile.TLSInsecureSkipVerify),
+	}
+	sum := sha256.Sum256([]byte(strings.Join(parts, "\x00")))
+	return hex.EncodeToString(sum[:])
 }
 
 // schemaMountSupported 是 produce/consume/stream 的 schema{} 挂载门禁：
@@ -854,7 +898,10 @@ func (s *Service) CompareSchemaVersions(ctx context.Context, req SchemaVersionsC
 	if err != nil {
 		return nil, err
 	}
-	hunks, summary := schemaTextDiff(fromMeta.Schema, toMeta.Schema)
+	hunks, summary, err := schemaTextDiff(fromMeta.Schema, toMeta.Schema)
+	if err != nil {
+		return nil, err
+	}
 	return &SchemaDiffResult{
 		Subject: subject,
 		From:    fromMeta.Version,
@@ -1596,15 +1643,27 @@ type schemaDiffOp struct {
 	text string
 }
 
+// schemaSubjectsConcurrency subjects 明细拉取并发上限（评审 L-1）。
+const schemaSubjectsConcurrency = 8
+
+// schemaDiffMaxLines 逐行 diff 输入上限（每侧）：LCS DP 矩阵 O(n×m)，而
+// 输入来自远端 SR 响应（单响应体上限 4MB），20k×20k 行即 ~80GB 内存——
+// 超限拒绝（评审 M-4）。
+const schemaDiffMaxLines = 20000
+
 // schemaTextDiff 逐行 LCS diff，输出语义 hunks（相邻 remove/add 归并为
-// modify 块）与统计 summary。
-func schemaTextDiff(before, after string) ([]SchemaDiffHunk, SchemaDiffSummary) {
+// modify 块）与统计 summary；任一侧行数超 schemaDiffMaxLines 报业务错。
+func schemaTextDiff(before, after string) ([]SchemaDiffHunk, SchemaDiffSummary, error) {
 	beforeLines := splitSchemaLines(before)
 	afterLines := splitSchemaLines(after)
 
 	summary := SchemaDiffSummary{
 		BeforeLines: len(beforeLines),
 		AfterLines:  len(afterLines),
+	}
+
+	if len(beforeLines) > schemaDiffMaxLines || len(afterLines) > schemaDiffMaxLines {
+		return nil, SchemaDiffSummary{}, errf("schema too large to diff: %d/%d lines exceeds limit %d", len(beforeLines), len(afterLines), schemaDiffMaxLines)
 	}
 
 	// DP 求 LCS 长度表（逐行，行数有限、schema 文本量级小）。
@@ -1693,7 +1752,7 @@ func schemaTextDiff(before, after string) ([]SchemaDiffHunk, SchemaDiffSummary) 
 			})
 		}
 	}
-	return hunks, summary
+	return hunks, summary, nil
 }
 
 func joinDiffLines(ops []schemaDiffOp) string {

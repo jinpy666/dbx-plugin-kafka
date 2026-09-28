@@ -88,6 +88,7 @@ func runMcpStdio() {
 	})
 	defer server.Close()
 	if err := server.Serve(os.Stdin, os.Stdout); err != nil {
+		server.Close() // log.Fatal 跳过 defer（评审 L-4）：先清理再退出
 		log.Fatal(err)
 	}
 }
@@ -147,6 +148,7 @@ func main() {
 	// stdin EOF（进程生命周期结束）→ Serve 返回 → 清理全部连接与流式会话（M0 §3.2）。
 	defer svc.CloseAll()
 	if err := server.Serve(); err != nil {
+		svc.CloseAll() // log.Fatal 跳过 defer（评审 L-4）：先清理再退出
 		log.Fatal(err)
 	}
 }
@@ -670,15 +672,20 @@ func (h *pluginHandler) streamStatus(params json.RawMessage) (any, *dbxpluginsdk
 }
 
 func (h *pluginHandler) streamMessages(params json.RawMessage) (any, *dbxpluginsdk.PluginError) {
-	var req struct {
-		SessionID string `json:"sessionId"`
-		Offset    int    `json:"offset"`
-		Limit     int    `json:"limit"`
-	}
-	if perr := decodeParams(params, &req); perr != nil {
+	// sessionId 是主键（评审 L-5）：decodeParams 的 connectionId 必填对本
+	// 方法是误伤，改走 requireSessionID。
+	sessionID, perr := requireSessionID(params)
+	if perr != nil {
 		return nil, perr
 	}
-	result, err := h.svc.StreamMessages(req.SessionID, req.Offset, req.Limit)
+	var req struct {
+		Offset int `json:"offset"`
+		Limit  int `json:"limit"`
+	}
+	if err := json.Unmarshal(params, &req); err != nil {
+		return nil, invalidParams(err)
+	}
+	result, err := h.svc.StreamMessages(sessionID, req.Offset, req.Limit)
 	if err != nil {
 		return nil, bizError(err)
 	}

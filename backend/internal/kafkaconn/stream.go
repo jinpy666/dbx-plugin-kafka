@@ -155,6 +155,10 @@ type StreamRegistry struct {
 	mu       sync.Mutex
 	next     int64
 	sessions map[string]*streamSession
+	// reserved 在建名额（评审 M-2）：StartStream 的 check-then-act 之间隔着
+	// profile/client 构建，并发 start 可超限——reserve/admit/release 全程
+	// 锁内结转，名额不变量恒成立（in-flight start 必计入 reserved 或 sessions）。
+	reserved int
 	Emitter  StreamEmitter // nil 安全
 
 	// evictStop 关闭即令 evictLoop 退出（Close 幂等；nil 安全——直构字面量的
@@ -204,6 +208,11 @@ func (r *StreamRegistry) Close() {
 func (s *Service) StartStream(params ConsumeParams) (*StreamStatus, error) {
 	entry := s.lookup(params.ConnectionID)
 	if entry == nil {
+		// 未连接 + commit=true：按只读兜底拦截（与 consumeMessages 的
+		// profileOf 语义一致）；非 commit 保持连接未找到错误。
+		if params.Commit {
+			return nil, errf("kafka profile %q is read-only; commit is blocked", params.ConnectionID)
+		}
 		return nil, errConnectionNotFound(params.ConnectionID)
 	}
 	entry.mu.Lock()
@@ -230,16 +239,31 @@ func (s *Service) StartStream(params ConsumeParams) (*StreamStatus, error) {
 	if params.Commit && profile.ReadOnly {
 		return nil, errf("kafka profile %q is read-only; commit is blocked", profile.Name)
 	}
+	// 流式会话不提交 offset（runLoop 无提交点）：此前接受 commit=true 但
+	// 静默无效——诚实拒绝（对照 glue normalize 的处理风格）。
+	if params.Commit {
+		return nil, errf("stream sessions do not commit offsets; drop the commit parameter")
+	}
 
-	s.Streams.mu.Lock()
-	if len(s.Streams.sessions) >= StreamMaxSessions {
-		s.Streams.mu.Unlock()
+	sessionID, ok := s.Streams.reserveStreamSlot()
+	if !ok {
 		return nil, errf("maximum %d concurrent stream sessions reached", StreamMaxSessions)
 	}
-	s.Streams.next++
-	sessionID := sprintf("kafka-stream-%d-%d", time.Now().UnixNano(), s.Streams.next)
-	s.Streams.mu.Unlock()
 
+	session, err := s.buildStreamSession(sessionID, profile, params, topic)
+	if err != nil {
+		s.Streams.releaseStreamSlot()
+		return nil, err
+	}
+	s.Streams.admitStreamSlot(sessionID, session)
+
+	go s.Streams.runLoop(session)
+	return s.Streams.Status(sessionID)
+}
+
+// buildStreamSession StartStream 的可失败构建段（名额已预留）：参数归一、
+// consume opts、schema 挂载与消费 client 构建。失败由调用方释放名额。
+func (s *Service) buildStreamSession(sessionID string, profile Profile, params ConsumeParams, topic string) (*streamSession, error) {
 	partitions, err := normalizeConsumePartitions(params.Partitions)
 	if err != nil {
 		return nil, err
@@ -261,26 +285,29 @@ func (s *Service) StartStream(params ConsumeParams) (*StreamStatus, error) {
 	if err != nil {
 		return nil, err
 	}
-	// schema 挂载：SR 客户端在会话创建期构建一次（失败即 start 失败）。
-	// wire format 解码仅支持 Confluent：provider=glue → 业务错（Phase 3 门禁）。
-	var schemaClient *schemaRegistryClient
-	if params.Schema != nil {
-		if err := s.schemaMountSupported(params.ConnectionID, params.Schema.Registry, "consume"); err != nil {
-			return nil, err
-		}
-		schemaClient, err = s.confluentClientFor(params.ConnectionID)
-		if err != nil {
-			return nil, err
-		}
-	}
 	client, closeClient, err := s.consumeClient(params.ConnectionID, consumeOpts...)
 	if err != nil {
 		return nil, err
 	}
+	// schema 挂载：SR 客户端在会话创建期构建一次（失败即 start 失败）。
+	// wire format 解码仅支持 Confluent：provider=glue → 业务错（Phase 3 门禁）。
+	// 消费 client 先建（评审 L-10）：SR 失败路径显式关闭 client，不再靠 GC。
+	var schemaClient *schemaRegistryClient
+	if params.Schema != nil {
+		if err := s.schemaMountSupported(params.ConnectionID, params.Schema.Registry, "consume"); err != nil {
+			closeClient()
+			return nil, err
+		}
+		schemaClient, err = s.confluentClientFor(params.ConnectionID)
+		if err != nil {
+			closeClient()
+			return nil, err
+		}
+	}
 
 	sessionCtx, cancel := context.WithCancel(context.Background())
 	now := time.Now().UnixMilli()
-	session := &streamSession{
+	return &streamSession{
 		sessionID:          sessionID,
 		connectionID:       params.ConnectionID,
 		topic:              topic,
@@ -293,14 +320,34 @@ func (s *Service) StartStream(params ConsumeParams) (*StreamStatus, error) {
 		ring:               newRingBuffer(StreamRingCapacity),
 		partitionOffsets:   map[int32]int64{},
 		lastActivityUnixMs: now,
+	}, nil
+}
+
+// reserveStreamSlot 占名额（check+reserve 同临界区）。返回会话 id。
+func (r *StreamRegistry) reserveStreamSlot() (string, bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if len(r.sessions)+r.reserved >= StreamMaxSessions {
+		return "", false
 	}
+	r.reserved++
+	r.next++
+	return sprintf("kafka-stream-%d-%d", time.Now().UnixNano(), r.next), true
+}
 
-	s.Streams.mu.Lock()
-	s.Streams.sessions[sessionID] = session
-	s.Streams.mu.Unlock()
+// releaseStreamSlot 释放预留（构建失败路径）。
+func (r *StreamRegistry) releaseStreamSlot() {
+	r.mu.Lock()
+	r.reserved--
+	r.mu.Unlock()
+}
 
-	go s.Streams.runLoop(session)
-	return s.Streams.Status(sessionID)
+// admitStreamSlot 登记会话并结转预留（先登记后结转，避免窗口期少计数）。
+func (r *StreamRegistry) admitStreamSlot(sessionID string, session *streamSession) {
+	r.mu.Lock()
+	r.sessions[sessionID] = session
+	r.reserved--
+	r.mu.Unlock()
 }
 
 // StopStream 停止单个会话（或 all:true 全停，§5.2 kafka/stream/stop）。
@@ -347,8 +394,10 @@ func (s *Service) StreamMessages(sessionID string, offset, limit int) (*StreamMe
 	msgs := session.ring.Page(offset, limit)
 	session.mu.Unlock()
 	return &StreamMessagesResult{
-		Total:    total,
-		Offset:   offset,
+		Total: total,
+		// 回显钳位后的起点（评审 L-7）：负数 offset 此前原样回显，分页方按
+		// 返回值续翻会错位。
+		Offset:   max(offset, 0),
 		Limit:    limit,
 		Messages: msgs,
 	}, nil

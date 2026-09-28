@@ -341,3 +341,22 @@ func TestStdioServeLoop(t *testing.T) {
 		t.Fatalf("ui unavailable via loop: %v", byID[`4`])
 	}
 }
+
+// S-STDIO-BACKPRESSURE（评审 M-6）：槽满后的积压行仍须全部处理、EOF 后
+// Serve 正常返回——读入/分派分离重构的回归钉。
+func TestStdioServeProcessesBacklogUnderBackpressure(t *testing.T) {
+	server := newTestStdioServer()
+	var input strings.Builder
+	const total = maxConcurrentRequests + 8
+	for id := 1; id <= total; id++ {
+		fmt.Fprintf(&input, `{"jsonrpc":"2.0","id":%d,"method":"ping"}`+"\n", id)
+	}
+	var out bytes.Buffer
+	if err := server.Serve(strings.NewReader(input.String()), &out); err != nil {
+		t.Fatalf("Serve error = %v", err)
+	}
+	lines := strings.Split(strings.TrimSpace(out.String()), "\n")
+	if len(lines) != total {
+		t.Fatalf("responses = %d, want %d", len(lines), total)
+	}
+}

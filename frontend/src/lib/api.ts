@@ -119,6 +119,23 @@ export interface ConfigEntry {
   isDefault?: boolean;
 }
 
+// kafka/topics/config/alter 逐键结果（sidecar MutationResult）。
+export interface ConfigAlterResult {
+  topic: string;
+  ok: boolean;
+  error?: string;
+}
+
+// kafka/schema/test 探测结果（sidecar SchemaTestResult；未配置 SR 时方法
+// 直接业务错，而非返回 ok=false）。
+export interface SchemaTestResult {
+  ok: boolean;
+  version: string;
+  compatibleFormats: string[];
+  subjectCount?: number;
+  provider: SchemaRegistryTestProvider;
+}
+
 export interface KafkaTopic {
   name: string;
   topicId?: string;
@@ -402,7 +419,7 @@ export const kafkaApi = {
     return callKafka<{ entries: ConfigEntry[] }>("kafka/topics/config/get", { topic });
   },
   topicsConfigAlter(topic: string, config: Record<string, string>, deleteKeys: string[] = []) {
-    return callKafka<{ entries: ConfigEntry[] }>("kafka/topics/config/alter", { topic, config, deleteKeys });
+    return callKafka<{ results: ConfigAlterResult[] }>("kafka/topics/config/alter", { topic, config, deleteKeys });
   },
   topicsOffsetsList(topics: string[], offsetTime?: string | number) {
     return callKafka<{ rows: TopicOffsetRow[] }>(
@@ -518,7 +535,7 @@ export const kafkaApi = {
   // schema registry（Phase 2 冻结契约 + Phase P registry 参数；只读/写门禁与
   // delete 双门禁同 §6。registry 省略 = 连接默认提供方，与旧 sidecar 兼容）
   schemaTest(registry?: SchemaRegistryProvider) {
-    return callKafka<{ success: boolean; provider?: SchemaRegistryTestProvider }>(
+    return callKafka<SchemaTestResult>(
       "kafka/schema/test",
       registry ? { registry } : {},
     );
@@ -576,13 +593,13 @@ export const kafkaApi = {
     );
   },
   schemaDelete(subject: string, registry?: SchemaRegistryProvider) {
-    return callKafka<{ success: boolean }>(
+    return callKafka<{ deletedVersions: number[] }>(
       "kafka/schema/delete",
       registry ? { subject, registry } : { subject },
     );
   },
   schemaDeleteVersion(subject: string, version: number, registry?: SchemaRegistryProvider) {
-    return callKafka<{ success: boolean }>(
+    return callKafka<{ deletedVersions: number[] }>(
       "kafka/schema/delete/version",
       registry ? { subject, version, registry } : { subject, version },
     );

@@ -270,3 +270,24 @@ func TestConsumeStartupBudget(t *testing.T) {
 // 编译期守住 client 类型签名（reset 参数面），防止接口漂移。
 var _ = resetConsumeClientForReuse
 var _ *kgo.Client
+
+// S-POOL-RECONNECT（评审 H-2）：同 id 重连可能换了集群/凭据，Connect 必须
+// 失效该连接的全部池条目——池 key 不含连接配置，不失效则同形状消费命中
+// 旧集群的 client 读错数据（admin 面经指纹失效重建，消费面此前漏掉）。
+func TestConnectInvalidatesConsumePool(t *testing.T) {
+	s := newPoolService()
+	if err := connectWithConfig(t, s, "rc", `{`+baseBootstrap+`}`, `{}`); err != nil {
+		t.Fatalf("connect error = %v", err)
+	}
+	sig := consumeClientSignature("t1", "earliest", nil, "")
+	entry := s.consumePoolPut("rc", sig, nil)
+	s.consumePoolRelease(entry, nil, true)
+
+	// 重连同 id（换 bootstrap）。
+	if err := connectWithConfig(t, s, "rc", `{"bootstrap_servers": "k2:9092"}`, `{}`); err != nil {
+		t.Fatalf("reconnect error = %v", err)
+	}
+	if _, still := s.consumePool[consumePoolKey("rc", sig)]; still {
+		t.Fatal("reconnect must invalidate consume pool entries for the connection")
+	}
+}

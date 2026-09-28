@@ -48,11 +48,14 @@ func ensureTopicDeleteConfirm(req TopicsDeleteRequest) error {
 	}
 	confirm := req.ConfirmTopic
 	if len(topics) > 1 {
-		if len(req.ConfirmTopics) != len(topics) {
-			return &InvalidParamsError{Msg: fmt.Sprintf("confirmTopics must list exactly the topics to delete (got %d, want %d)", len(req.ConfirmTopics), len(topics))}
+		// 先归一去重再比长度（评审 L-8）：调用方传重复 topic（["a","a"]）
+		// 时原始切片长度比较会误报 mismatch，且错误发生在令牌已消费之后。
+		confirmedList := normalizeTopicNames(req.ConfirmTopics)
+		if len(confirmedList) != len(topics) {
+			return &InvalidParamsError{Msg: fmt.Sprintf("confirmTopics must list exactly the topics to delete (got %d, want %d)", len(confirmedList), len(topics))}
 		}
 		confirmed := map[string]struct{}{}
-		for _, name := range normalizeTopicNames(req.ConfirmTopics) {
+		for _, name := range confirmedList {
 			confirmed[name] = struct{}{}
 		}
 		for _, topic := range topics {
