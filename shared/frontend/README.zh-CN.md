@@ -1,10 +1,8 @@
-# shared/frontend — 插件前端宿主适配公共层（vendored）
+# shared/frontend — 插件前端宿主适配公共层
 
-宿主桥/宿主特性的**前端适配公共代码**实现点。本目录是从 DBX 插件族 monorepo
-`shared/frontend/` 复制进本仓库的 vendored 副本（拆分基线见
-`docs/REPOSITORY_SPLIT.zh-CN.md`），只保留 Kafka 实际引用的模块；插件前端以
-相对路径引用这里的模块，不在插件内另抄一份。上游公共层演进后，按拆分文档的
-同步约定把变更带回来。
+宿主桥/宿主特性的**前端适配公共代码唯一实现点**。四插件（ssh / files / ldap /
+kafka）前端一律以相对路径引用这里的模块，**禁止在插件内各抄一份**（背景：binary
+事件契约变更曾在 ssh/files 各落一份相同修复，收敛后单点演进）。
 
 ## 引用方式
 
@@ -24,7 +22,8 @@ import { bridgeBinaryBytes } from "../../../shared/frontend/binaryEvent";
   解析、打包、行为都成立）；实现与文档只在 shared 维护。
 - 收敛候选：宿主桥 binary 事件（binaryEvent.ts）、主题令牌兜底、
   workbenchState/fileTransfer 降级 shim、七语工具等跨插件同构逻辑。
-- 宿主契约变更的发现与跟进流程见 `docs/REPOSITORY_SPLIT.zh-CN.md` 的同步约定。
+- 宿主契约变更的发现与跟进流程见 `AGENTS.md` 硬性规则 7 与
+  `scripts/host-sync.sh contract`。
 
 ## 现有模块
 
@@ -34,7 +33,8 @@ import { bridgeBinaryBytes } from "../../../shared/frontend/binaryEvent";
 | `uiIntent.ts` | MCP UI intent 通道公共 composable（`useUiIntent(domain, handlers)`）：订阅 `<domain>/ui/intent` 事件（形状归一化）→ 分派 handler → 自动调 `<domain>/ui/state/report` 回报 applied/rejected/summary；`reportSnapshot` 上报无 intentId 的快照型 report | ldap（M1 先行）；files / kafka（M2/M3 沿用） |
 | `editorTheme.ts` | CodeMirror 6 语法高亮调色板单点维护（`EDITOR_TOKEN_COLORS` / `syntaxTokenSpecs` / `dbxSyntaxHighlight`）：暗色为提亮后的 GitHub Dark 系（用户反馈 basicSetup 内置浅底配色与标准 Dark+ 偏暗），浅色 VS Code Light+ 同源；**零运行时依赖**，codemirror 系对象由调用方注入。kafka CodeEditor 因 CSS 变量驱动无法 import 色值，其 `--cm-*` 暗色块按 `dark` 调色板镜像（各插件 `editorTheme.spec.ts` 源码断言防漂移） | ssh / files（TextPreview 追加在 basicSetup 后，各带薄 spec）；kafka（CSS 镜像 + 薄 spec） |
 | `themeSync.ts` | 宿主主题令牌 → 插件 CSS 变量桥（`themeBridgeCss` / `installHostThemeBridge`）：把 `--background` 等插件变量声明为宿主 `--color-*`/`--radius-*`/`--font-*` 令牌的引用，首绘即命中宿主主题、主题变化经 SDK 令牌更新自动跟随；含 `data-dbx-theme` color-scheme 同步。宿主无令牌时回退暗色规范值（optional 降级）。另下发**语义状态色** `--success`/`--success-bg`/`--warning`/`--warning-bg`（跟随宿主 `--color-success*`/`--color-warning*`，缺失时按宿主明暗规范值回退）与**模态遮罩** `--overlay`（亮色黑 40%、暗色背景 mix）。明暗分支统一双属性匹配 `data-dbx-theme`（宿主 SDK）+ `data-theme`（插件 applyAppearance），谁先到都生效；状态徽章/横幅一律引用语义令牌，禁止散装 hex（#10b981/#22c55e/#f97316/#d97706 等） | ssh / ldap / files / kafka（`main.ts` 挂载前 `installHostThemeBridge()`，各带薄 spec） |
-| `pluginStorage.ts` | 工作台 UI 持久化单点适配（`createPluginKvStore`）：封装宿主 `window.dbxPlugin.storage`（Host API 1.2，`capabilities.storage` 探测 + manifest `host.storage` 权限），对调用点暴露同步 `getItem/setItem/removeItem`（实现为启动水合 + 写穿缓存）；通道降级 宿主桥 → guarded localStorage（web 直连/dev host）→ 内存；宿主档水合时对 localStorage 旧键一次性惰性搬家。只存非敏感 UI 状态（宿主端单值 256 KiB / 总量 1 MiB），凭据仍走连接表单 `binding:"secret"`，大数据归 sidecar `DBX_PLUGIN_DATA_DIR` | 本插件（键集合显式声明建 store；`main.ts` 挂载前 `await ready`；sidecar 权威数据的 web 缓存键不迁；带薄 spec） |
+| `pluginStorage.ts` | 工作台 UI 持久化单点适配（`createPluginKvStore`）：封装宿主 `window.dbxPlugin.storage`（Host API 1.2，`capabilities.storage` 探测 + manifest `host.storage` 权限），对调用点暴露同步 `getItem/setItem/removeItem`（实现为启动水合 + 写穿缓存）；通道降级 宿主桥 → guarded localStorage（web 直连/dev host）→ 内存；宿主档水合时对 localStorage 旧键一次性惰性搬家。只存非敏感 UI 状态（宿主端单值 256 KiB / 总量 1 MiB），凭据仍走连接表单 `binding:"secret"`，大数据归 sidecar `DBX_PLUGIN_DATA_DIR` | ssh / ldap / files / kafka（键集合显式声明建 store；`main.ts` 挂载前 `await ready`；sidecar 权威数据的 web 缓存键不迁；各带薄 spec） |
+| `hostThemeRuntime.ts` | 宿主环境订阅与外观应用单点运行时（REVIEW X-P2/P3/P4 收敛）：① `applyAppearanceColorVars(root, colors)`——颜色变量 → 宿主令牌探测/回退循环（kafka"先探测宿主令牌再移除内联"策略为准，令牌缺失才 inline 规范色板，appearance 事件后持续跟随宿主主题）；② `subscribeHostEnvironment(api, handlers, { themeChannel })`——env（locale/theme）+ context（`onContext` ?? 旧 `onContextChange` 回退）+ appearance（`onAppearanceChange` ?? theme 通道，两套不同时挂）归一订阅，聚合退订；真桥无 `onLocaleChange`/`onContextChange` 幽灵 API。后端事件不经此，插件保留自身 `onEvent(handleEvent)` 订阅 | ssh / ldap / files / kafka（App.vue initialize 接入；`applyAppearance` 内替换颜色循环；各带薄 spec；files 经 `onEnv` 保留 api.locale 权威源语义） |
 
 ## MCP 两阶段/digest/cursor 验收用例清单（设计 §7，防形状漂移）
 

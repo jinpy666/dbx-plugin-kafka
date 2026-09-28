@@ -13,6 +13,7 @@ import { friendlyKafkaError } from "./lib/kafkaErrors";
 import { decideModalKeydown, focusableElements } from "./lib/modalBehavior";
 import { parseAuditEvent, pushAuditItem, type AuditFeedItem } from "./lib/auditFeed";
 import { useUiIntent, type UiIntentOutcome } from "../../shared/frontend/uiIntent";
+import { applyAppearanceColorVars, subscribeHostEnvironment } from "../../shared/frontend/hostThemeRuntime";
 import TopicTree from "./components/TopicTree.vue";
 import MessagesPanel from "./components/MessagesPanel.vue";
 import StreamPanel from "./components/StreamPanel.vue";
@@ -176,9 +177,8 @@ const auditItems = ref<AuditFeedItem[]>([]);
 let auditSeq = 0;
 
 let noticeTimer = 0;
-const unsubscribeAppearance: Array<() => void> = [];
-const unsubscribeLocale: Array<() => void> = [];
-const unsubscribeContext: Array<() => void> = [];
+// X-P2/P3/P4 收敛：宿主环境订阅聚合句柄（shared/frontend/hostThemeRuntime）。
+const unsubscribeEnvironment: Array<() => void> = [];
 const unsubscribeEvent: Array<() => void> = [];
 
 const connectionId = computed(() => String(hostContext.value.connectionId || ""));
@@ -228,22 +228,9 @@ const toolbarStyle = computed(() => {
 });
 
 // 颜色变量 → 宿主令牌名。宿主在插件根节点维护了令牌的字段交给 themeSync 桥
-// （var(--color-*) 动态跟随宿主令牌更新）；inline 写入会以更高优先级永久冻结
-// 桥的引用，宿主后续令牌翻转不再生效（issue #25：暗色宿主下左栏/表格文字
-// 停留在错误快照）。令牌缺失（Host API 1.0 / mock 缺省）才 inline 写规范色板，
-// 覆盖桥的暗色回退；以文档实际令牌探测为准，appearance 消息带色但无令牌的
-// 部分下发同样走 inline，不出现拼色。
-const APPEARANCE_COLOR_VARS = [
-  ["--background", "--color-background", "background"],
-  ["--foreground", "--color-foreground", "foreground"],
-  ["--muted", "--color-muted", "muted"],
-  ["--muted-foreground", "--color-muted-foreground", "mutedForeground"],
-  ["--accent", "--color-accent", "accent"],
-  ["--accent-foreground", "--color-accent-foreground", "accentForeground"],
-  ["--border", "--color-border", "border"],
-  ["--destructive", "--color-destructive", "destructive"],
-] as const;
-
+// 颜色变量 → 宿主令牌名探测/回退循环收敛到 shared 单点（X-P4，本策略以
+// kafka 最初实现为准）；inline 写入会以更高优先级永久冻结 themeSync 桥的
+// var() 引用（issue #25：暗色宿主下左栏/表格文字停留在错误快照）。
 function applyAppearance(next?: DbxPluginAppearanceInput | null) {
   // 宿主可能缺字段（1.0 部分下发、1.1 theme 通道只带颜色令牌），按 DBX 规范色板补齐。
   const resolved = resolveAppearance(next);
@@ -251,11 +238,7 @@ function applyAppearance(next?: DbxPluginAppearanceInput | null) {
   const root = document.documentElement;
   root.dataset.theme = resolved.colorScheme;
   root.style.colorScheme = resolved.colorScheme;
-  const tokens = getComputedStyle(root);
-  for (const [name, token, key] of APPEARANCE_COLOR_VARS) {
-    if (tokens.getPropertyValue(token).trim()) root.style.removeProperty(name);
-    else root.style.setProperty(name, resolved.colors[key]);
-  }
+  applyAppearanceColorVars(root, resolved.colors);
   root.style.setProperty("--popover", DBX_POPOVER[resolved.colorScheme]);
   // 字体不在此内联回写：main.ts 安装的宿主令牌桥已把 --ui-font-family /
   // --mono-font-family 声明为宿主 --font-sans / --font-mono 的 var() 引用，
@@ -366,7 +349,10 @@ watch(activePanel, (next) => {
   if (next === "stream" && !documentHidden.value) void nextTick(flushStreamEvents);
 });
 
-function handleEvent(event: { method: string; params: Record<string, unknown> }) {
+function handleEvent(event: DbxPluginEvent) {
+  // env（locale/theme）由 shared/frontend/hostThemeRuntime 的订阅分发；
+  // 此处只做窄化排除，后端事件走下方 method 分派。
+  if (event.type === "env") return;
   if (event.method === "kafka/audit") {
     // 数据面：进入最近操作面板（denied/error 高亮）；即时反馈走横幅/通知。
     auditItems.value = pushAuditItem(auditItems.value, parseAuditEvent(event.params, auditSeq++, Date.now()));
@@ -406,14 +392,19 @@ async function initialize() {
   setWorkbenchLocale(api.locale || "zh-CN");
   if (api.appearance) applyAppearance(api.appearance);
   else if (isDbxPluginTheme(api.theme)) applyAppearance(themeToAppearance(api.theme));
-  if (api.onAppearanceChange) unsubscribeAppearance.push(api.onAppearanceChange(applyAppearance));
-  // appearance 契约缺失（当前 1.1 桥只推 theme）时订阅 env 主题推送，两套不同时挂。
-  else unsubscribeAppearance.push(onHostThemeChange((theme) => applyAppearance(themeToAppearance(theme))));
-  if (api.onLocaleChange) unsubscribeLocale.push(api.onLocaleChange((next) => setWorkbenchLocale(next || "zh-CN")));
-  if (api.onContextChange) unsubscribeContext.push(api.onContextChange((context) => {
-    hostContext.value = context;
-    syncConnectionContext();
-  }));
+  // X-P2/P3/P4 收敛：env（locale/theme）+ context + appearance 订阅统一走
+  // shared/frontend/hostThemeRuntime 单点（真桥无 onLocaleChange/onContextChange
+  // 幽灵 API；onContext 旧桥回退 onContextChange；appearance 契约缺失时经
+  // theme 通道兜底，两套不同时挂）。
+  unsubscribeEnvironment.push(subscribeHostEnvironment<DbxPluginAppearance, DbxPluginTheme>(api, {
+    onLocale: (next) => setWorkbenchLocale(next || "zh-CN"),
+    onContext: (context) => {
+      hostContext.value = context;
+      syncConnectionContext();
+    },
+    onAppearance: applyAppearance,
+    onTheme: (theme) => applyAppearance(themeToAppearance(theme)),
+  }, { themeChannel: onHostThemeChange }));
   if (api.onEvent) unsubscribeEvent.push(api.onEvent(handleEvent));
   if (!connectionId.value) throw new Error(t("connectionMissing"));
   syncConnectionContext();
@@ -449,7 +440,7 @@ onBeforeUnmount(() => {
   window.removeEventListener("keydown", onConnectionsKeydown);
   window.clearTimeout(noticeTimer);
   uiIntent.stop();
-  for (const dispose of [...unsubscribeAppearance, ...unsubscribeLocale, ...unsubscribeContext, ...unsubscribeEvent]) dispose();
+  for (const dispose of [...unsubscribeEnvironment, ...unsubscribeEvent]) dispose();
 });
 </script>
 

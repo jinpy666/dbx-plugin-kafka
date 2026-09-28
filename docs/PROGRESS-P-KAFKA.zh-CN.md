@@ -1772,3 +1772,33 @@ MCP 专项收口轮：第七轮代码之后对在跑 dev 集群（127.0.0.1:9092
   一度 30/35）。统一改为 localStorage 兜底（键名不变；字符串值原样、对象
   JSON 编码；opaque origin 不可用时退化内存），dev/`?mock=1` 恢复刷新持久化，
   walkthrough 断言无需改动；修正后 本插件 vitest 40 文件 345 用例复验全绿。
+
+## 2026-09-29 评审跨插件项修复 + hostThemeRuntime 单点收敛（前端批次）
+
+### 做了什么
+
+- **X-P2/P3 幽灵 API 清理**：initialize 的 onLocaleChange/onContextChange
+  订阅替换；handleEvent 补 env 窄化守卫；env.d.ts 对齐真桥（backend/env
+  联合类型、onContext + legacy onContextChange、删 onLocaleChange）；
+  mockDbxHost 裁掉幽灵 API，onContext 注册不立即回调（镜像真桥）。
+- **X-P4 appearance**：applyAppearance 保留 kafka 首创的"探测宿主令牌再
+  移除内联"策略，循环体上收 `shared/frontend/hostThemeRuntime.ts` 单点。
+- **hostThemeRuntime 接入**：`subscribeHostEnvironment` 统一 env + context +
+  appearance 订阅（appearance 缺失时 themeChannel 兜底，两套不同时挂）。
+  新增薄 spec `lib/hostThemeRuntime.spec.ts`。
+- 2026-09-28 批次（同日早前）：env 分支 + onContext 兼容行 + mock 裁剪 +
+  env.d.ts 对齐 + build.mjs `<!--` 转义回移（X-M8）。
+
+### 结果
+
+- 前端 typecheck 全绿；**42 文件 / 370 用例全绿**（与并行会话的
+  hasCommitted 结果级字段重构、schema fixture 修复合流后）；
+  build 正常。
+
+### 边界与剩余风险
+
+- 未动 host/；未提交未 push；manifest 版本未 bump。
+- 真机复验：宿主切语言跟随（此前"一半切了一半没切"的 kafka 侧）、
+  明暗主题切换跟随。
+- 协作记录：本轮与另一并行会话同仓工作（其负责评审 M 系列/下载桥自愈），
+  双方改动已在工作区合流并全量验证。
