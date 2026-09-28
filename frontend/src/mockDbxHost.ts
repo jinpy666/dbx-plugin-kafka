@@ -482,7 +482,7 @@ const gluePaymentSubject: SchemaSubjectFixture = {
 gluePaymentSubject.versions.push(makeSchemaVersion(gluePaymentSubject, "json", userSchemaV1));
 schemaSubjects.set(gluePaymentSubject.subject, gluePaymentSubject);
 
-let globalCompatibility = { level: "BACKWARD", scope: "GLOBAL" };
+let globalCompatibility = { level: "BACKWARD", scope: "global" };
 
 /** fixture 级版本 diff：pretty JSON 行集合对比 → hunks（与后端形状一致）。 */
 function diffSchemaVersions(subject: SchemaSubjectFixture, fromVersion: number, toVersion: number) {
@@ -508,7 +508,18 @@ function diffSchemaVersions(subject: SchemaSubjectFixture, fromVersion: number, 
       if (!already) hunks.push({ op: "add", path: `line ${index + 1}`, after: line.trim() });
     }
   });
-  const summary = `${subject.subject}: +${hunks.filter((hunk) => hunk.op === "add").length} -${hunks.filter((hunk) => hunk.op === "remove").length} ~${hunks.filter((hunk) => hunk.op === "modify").length}`;
+  // summary 是结构化对象，与后端 SchemaDiffSummary 对齐（评审 M-3）：
+  // added/removed 取 hunks 计数，unchanged 取两侧共有行数。
+  const added = hunks.filter((hunk) => hunk.op === "add").length;
+  const removed = hunks.filter((hunk) => hunk.op === "remove").length;
+  const unchanged = beforeLines.filter((line) => afterLines.includes(line)).length;
+  const summary = {
+    added,
+    removed,
+    unchanged,
+    beforeLines: beforeLines.length,
+    afterLines: afterLines.length,
+  };
   return { hunks, summary };
 }
 
@@ -838,6 +849,7 @@ const invoke: DbxPluginApi["invoke"] = async <T = unknown>(method: string, rawPa
     const group = groups.get(String(input.group ?? ""));
     const rows: Array<Record<string, unknown>> = [];
     let totalLag = 0;
+    let hasCommitted = false;
     if (group) {
       for (const [topicName, partitions] of group.committed) {
         const topic = topics.get(topicName);
@@ -846,6 +858,7 @@ const invoke: DbxPluginApi["invoke"] = async <T = unknown>(method: string, rawPa
           const endOffset = partition.length;
           const lag = committedOffset === undefined ? endOffset : Math.max(0, endOffset - committedOffset);
           totalLag += lag;
+          if (committedOffset !== undefined) hasCommitted = true;
           rows.push({
             topic: topicName,
             partition: index,
@@ -853,12 +866,12 @@ const invoke: DbxPluginApi["invoke"] = async <T = unknown>(method: string, rawPa
             endOffset,
             committedOffset: committedOffset ?? null,
             lag,
-            hasCommitted: committedOffset !== undefined,
           });
         });
       }
     }
-    result = { rows, totalLag };
+    // hasCommitted 是结果级字段（组从未提交过 offset 时 false，评审 M-2）。
+    result = { rows, totalLag, hasCommitted };
   } else if (method === "kafka/groups/delete") {
     const group = String(input.group ?? "");
     guardWrite("groups/delete", group, { critical: true });
@@ -905,13 +918,17 @@ const invoke: DbxPluginApi["invoke"] = async <T = unknown>(method: string, rawPa
   } else if (method === "kafka/acls/delete") {
     const filter_ = (input.filter ?? {}) as Record<string, string>;
     guardWrite("acls/delete", JSON.stringify(filter_), { critical: true });
-    const before = acls.length;
+    // matched 回显逐条删除结果（与后端 ACLsDeleteResult 对齐，评审 M-4）。
+    const matched: Array<Record<string, string>> = [];
     for (let index = acls.length - 1; index >= 0; index -= 1) {
       const acl = acls[index] as unknown as Record<string, string>;
       const matches = Object.entries(filter_).every(([key, value]) => !value || acl[key] === value || value === "ANY");
-      if (matches) acls.splice(index, 1);
+      if (matches) {
+        acls.splice(index, 1);
+        matched.unshift(acl);
+      }
     }
-    result = { matched: before - acls.length };
+    result = { matched };
   } else if (method === "kafka/messages/produce") {
     const topicName = String(input.topic ?? "");
     const topic = requireTopic(topicName);
@@ -1088,7 +1105,7 @@ const invoke: DbxPluginApi["invoke"] = async <T = unknown>(method: string, rawPa
   } else if (method === "kafka/schema/compatibility/get") {
     const subjectName = typeof input.subject === "string" ? String(input.subject) : "";
     const subject = subjectName ? findSubject(subjectName, resolveProvider(input)) : undefined;
-    result = subject ? { level: subject.compatibilityLevel, scope: "SUBJECT" } : { ...globalCompatibility };
+    result = subject ? { level: subject.compatibilityLevel, scope: "subject" } : { ...globalCompatibility };
   } else if (method === "kafka/schema/compatibility/set") {
     guardWrite("schema/compatibility/set", String(input.subject ?? "(global)"));
     const level = String(input.level ?? "NONE");
@@ -1098,9 +1115,10 @@ const invoke: DbxPluginApi["invoke"] = async <T = unknown>(method: string, rawPa
       if (!subject) throw new Error("schema subject not found (fixture)");
       subject.compatibilityLevel = level;
     } else {
-      globalCompatibility = { level, scope: "GLOBAL" };
+      globalCompatibility = { level, scope: "global" };
     }
-    result = { level, scope: subjectName ? "SUBJECT" : "GLOBAL" };
+    // scope 小写对齐后端 compatibilityScope()（评审 L-6）。
+    result = { level, scope: subjectName ? "subject" : "global" };
   } else if (method === "kafka/schema/compatibility/check") {
     const subject = findSubject(String(input.subject ?? ""), resolveProvider(input));
     if (!subject) throw new Error("schema subject not found (fixture)");
@@ -1196,10 +1214,10 @@ window.dbxPlugin = {
     listener(appearance);
     return () => appearanceListeners.delete(listener);
   },
-  onLocaleChange: () => () => undefined,
-  onContextChange: (listener) => {
+  // 镜像真桥 API 面（X-P5 裁剪幽灵 API）：真桥只有 onContext（注册不立即回调，
+  // 初始 context 经 api.ready / host.getContext）；locale 经 onEvent 的 env 推送。
+  onContext: (listener) => {
     contextListeners.add(listener);
-    listener(context);
     return () => contextListeners.delete(listener);
   },
   decodeBase64: (value) => Uint8Array.from(atob(value), (character) => character.charCodeAt(0)),

@@ -578,15 +578,17 @@ func (b *confluentBackend) listSubjects(ctx context.Context) ([]SubjectInfo, err
 	}
 	// 逐条最新版补 format/latestVersion；兼容级别逐条查（404 = 未覆盖，
 	// 继承全局，省略）。有界并发（评审 L-1）：此前串行 2×N 个 REST，
-	// 500 subject = 1001 次顺序往返，大 registry 必然超时截断。
+	// 500 subject = 1001 次顺序往返，大 registry 必然超时截断。信号量在
+	// 循环内先取后 spawn（2026-09-28 评审）：goroutine 内取会使瞬时
+	// goroutine 数等于 subject 数，数万 subject 的 registry 仍有尖峰。
 	out := make([]SubjectInfo, len(subjects))
 	sem := make(chan struct{}, schemaSubjectsConcurrency)
 	var wg sync.WaitGroup
 	for i, subject := range subjects {
+		sem <- struct{}{}
 		wg.Add(1)
 		go func(i int, subject string) {
 			defer wg.Done()
-			sem <- struct{}{}
 			defer func() { <-sem }()
 			item := SubjectInfo{Subject: subject, Formats: []string{}}
 			if meta, err := b.client.getSchema(ctx, subject, 0); err == nil {
@@ -1647,9 +1649,10 @@ type schemaDiffOp struct {
 const schemaSubjectsConcurrency = 8
 
 // schemaDiffMaxLines 逐行 diff 输入上限（每侧）：LCS DP 矩阵 O(n×m)，而
-// 输入来自远端 SR 响应（单响应体上限 4MB），20k×20k 行即 ~80GB 内存——
-// 超限拒绝（评审 M-4）。
-const schemaDiffMaxLines = 20000
+// 输入来自远端 SR 响应（单响应体上限 4MB）——2000×2000 行 × 8B ≈ 32MB
+// （长驻 sidecar 可承受；20000 时为 20000² × 8B ≈ 3.2GB，并发 compare 即
+// OOM，评审 M-6）。超限拒绝；常规 schema（avro/json <500 行）远低于此。
+const schemaDiffMaxLines = 2000
 
 // schemaTextDiff 逐行 LCS diff，输出语义 hunks（相邻 remove/add 归并为
 // modify 块）与统计 summary；任一侧行数超 schemaDiffMaxLines 报业务错。

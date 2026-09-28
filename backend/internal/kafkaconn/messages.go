@@ -505,9 +505,9 @@ func (s *Service) consumeMessages(ctx context.Context, params ConsumeParams) (co
 		return result, err
 	}
 	// 消费 client 获取：池优先（consume_pool.go，消除冷启动握手/元数据开销）；
-	// 不适用（group/精确起点策略）、未命中或占用中 → per-request 新建。
+	// 不适用（group/精确起点）、未命中或占用中 → per-request 新建。
 	// 池条目所有权移交池，closeClient 变 no-op，统一走 release。
-	reuseOK, resetAtStart := consumeReusePolicy(params.OffsetStrategy, groupID)
+	reuseOK, resetAtStart := consumeReuseEligible(params.OffsetStrategy, groupID, partitionOffsets)
 	var signature string
 	var pooled *consumePoolEntry
 	var observed map[int32]struct{}
@@ -579,6 +579,11 @@ func (s *Service) consumeMessages(ctx context.Context, params ConsumeParams) (co
 	// 预分配按 min(limit, maxScan) 收敛：留存条数同时受两者约束，不再
 	// 按未上界的入参做虚拟预留。
 	messages := make([]ConsumedMessage, 0, min(limit, maxScan))
+	// digest 聚合路径（RetentionByteBudget>0）的留存另有字节预算兜底：
+	// 命中计数不吃 limit 硬钳位（否则 maxScanRecords 超过钳位时扫描在
+	// 1 万命中处提前终止，聚合分布只覆盖子集，调大扫描上限无效——评审
+	// M-1）；预分配仍按钳位锚定，追加交给 append 自然扩容。
+	limit = consumeEffectiveLimit(limit, maxScan, params.RetentionByteBudget)
 	nextPartitionOffsets := map[int32]int64{}
 	retention := consumeRetentionTracker{budget: params.RetentionByteBudget}
 	scanned := 0
@@ -1823,6 +1828,17 @@ func clampConsumeLimit(limit int) int {
 		return 100
 	}
 	return min(limit, consumeLimitHardCap)
+}
+
+// consumeEffectiveLimit 扫描循环的命中上界：digest 聚合路径
+// （retentionBudget>0）的留存由 RetentionByteBudget 字节预算兜底，命中
+// 计数不吃 limit 硬钳位（否则 maxScanRecords 超过钳位时扫描提前终止，
+// 聚合分布只覆盖子集）；扫描面仍受 maxScan 上界。
+func consumeEffectiveLimit(limit, maxScan, retentionBudget int) int {
+	if retentionBudget > 0 {
+		return max(limit, maxScan)
+	}
+	return limit
 }
 
 // consumeMaxScanRecords 扫描上限（默认 max(1000, limit×10)，§5.3；硬上限

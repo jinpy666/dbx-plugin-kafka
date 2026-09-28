@@ -122,14 +122,20 @@ describe("row mappers", () => {
 
   it("marks uncommitted offset rows and null lag", () => {
     setWorkbenchLocale("en");
-    const rows = toGroupOffsetRows([
-      { topic: "t", partition: 0, hasCommitted: false, lag: undefined },
-      { topic: "t", partition: 1, committedOffset: 4, lag: 2 },
-    ]);
+    // hasCommitted 是结果级字段（评审 M-2）：false 时未提交行显示「从未提交」。
+    const rows = toGroupOffsetRows(
+      [
+        { topic: "t", partition: 0, lag: undefined },
+        { topic: "t", partition: 1, committedOffset: 4, lag: 2 },
+      ],
+      false,
+    );
     expect(rows[0].committedText).toContain("no committed data");
     expect(rows[0].lag).toBeNull();
     expect(rows[1].lag).toBe(2);
-    expect(toLagRows(rows.map((row) => row.raw))[0].id).toBe("t:0");
+    // 结果级 true（或缺省）时未提交行回退「—」。
+    expect(toGroupOffsetRows([{ topic: "t", partition: 0 }])[0].committedText).toBe("—");
+    expect(toLagRows(rows.map((row) => row.raw), false)[0].id).toBe("t:0");
   });
 
   it("maps partitions health flag and internal topics", () => {

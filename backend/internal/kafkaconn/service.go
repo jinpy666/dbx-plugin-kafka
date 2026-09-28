@@ -92,6 +92,8 @@ func (s *Service) Connect(params *lifecycle.Params) error {
 		secrets: secrets,
 		target:  connTarget{Host: params.Runtime.Host, Port: params.Runtime.Port, Proxy: params.Runtime.Proxy},
 		status:  "idle",
+		// statuses 契约字段（评审 L-4）：此前恒 0，前端时间线无从展示。
+		connectedAt: time.Now().UnixMilli(),
 	}
 
 	s.mu.Lock()

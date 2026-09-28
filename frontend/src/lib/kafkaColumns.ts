@@ -202,18 +202,26 @@ export function toGroupRows(groups: KafkaGroup[]): GroupRow[] {
   }));
 }
 
-export function toGroupOffsetRows(rows: GroupOffsetRow[]): GroupOffsetVm[] {
+// hasCommitted 为结果级字段（评审 M-2）：组从未提交过 offset 时为 false，
+// 未提交行的 committedText 显示「从未提交」而非「—」。
+export function toGroupOffsetRows(rows: GroupOffsetRow[], hasCommitted = true): GroupOffsetVm[] {
   return rows.map((row) => ({
     id: `${row.topic}:${row.partition}`,
     topic: row.topic,
     partition: row.partition,
     startOffset: row.startOffset === undefined || row.startOffset === null ? "—" : String(row.startOffset),
     endOffset: row.endOffset === undefined || row.endOffset === null ? "—" : String(row.endOffset),
-    committedText:
-      row.hasCommitted === false ? t("groups.hasCommittedFalse") : row.committedOffset === undefined || row.committedOffset === null ? "—" : String(row.committedOffset),
+    committedText: groupOffsetCommittedText(row, hasCommitted),
     lag: row.lag === undefined || row.lag === null ? null : Number(row.lag),
     raw: row,
   }));
+}
+
+function groupOffsetCommittedText(row: GroupOffsetRow, hasCommitted: boolean): string {
+  if (row.committedOffset === undefined || row.committedOffset === null) {
+    return hasCommitted ? "—" : t("groups.hasCommittedFalse");
+  }
+  return String(row.committedOffset);
 }
 
 export function toMemberRows(members: GroupMember[]): MemberVm[] {
@@ -290,12 +298,12 @@ export function toSchemaVersionRows(rows: SchemaVersionRow[]): SchemaVersionVm[]
   return rows.map((row) => ({ version: row.version, id: row.id, format: row.format, raw: row }));
 }
 
-export function toLagRows(rows: GroupOffsetRow[]): LagVm[] {
+export function toLagRows(rows: GroupOffsetRow[], hasCommitted = true): LagVm[] {
   return rows.map((row) => ({
     id: `${row.topic}:${row.partition}`,
     topic: row.topic,
     partition: row.partition,
-    committedText: row.hasCommitted === false ? t("groups.hasCommittedFalse") : row.committedOffset === undefined || row.committedOffset === null ? "—" : String(row.committedOffset),
+    committedText: groupOffsetCommittedText(row, hasCommitted),
     endOffset: row.endOffset === undefined || row.endOffset === null ? "—" : String(row.endOffset),
     lag: row.lag === undefined || row.lag === null ? null : Number(row.lag),
     raw: row,

@@ -42,7 +42,7 @@ const breached = ref(false);
 const plans = ref<Array<{ id: string; name: string }>>([]);
 const planName = ref("");
 
-const lagGridRows = computed(() => toLagRows(lagRows.value));
+const lagGridRows = computed(() => toLagRows(lagRows.value, hasCommitted.value));
 const lagGridCols = computed(() => lagColumns() as ColDef<LagVm>[]);
 
 const lagRowClassRules = computed<GridOptions["rowClassRules"]>(() => ({
@@ -104,7 +104,8 @@ async function sample() {
     const rows = response.rows ?? [];
     lagRows.value = rows;
     totalLag.value = typeof response.totalLag === "number" ? response.totalLag : sumLag(rows);
-    hasCommitted.value = rows.some((row) => row.hasCommitted !== false);
+    // hasCommitted 是结果级字段（组从未提交过 offset 时 false，评审 M-2）。
+    hasCommitted.value = response.hasCommitted !== false;
     sampleCount.value += 1;
     history.value = [...history.value, { at: Date.now(), lag: totalLag.value }].slice(-HISTORY_MAX);
     const limit = Number(threshold.value);

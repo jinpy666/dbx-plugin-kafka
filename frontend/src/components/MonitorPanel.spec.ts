@@ -65,9 +65,10 @@ function installBridge(routes: Record<string, unknown>) {
 
 const groups = [{ group: "billing-consumer", state: "Stable", coordinator: 1 }];
 
+// hasCommitted 是结果级字段（评审 M-2），行上不再携带。
 const lagRows: GroupOffsetRow[] = [
-  { topic: "order-events", partition: 0, endOffset: 400, committedOffset: 100, lag: 300, hasCommitted: true },
-  { topic: "order-events", partition: 1, endOffset: 200, committedOffset: 0, lag: 200, hasCommitted: true },
+  { topic: "order-events", partition: 0, endOffset: 400, committedOffset: 100, lag: 300 },
+  { topic: "order-events", partition: 1, endOffset: 200, committedOffset: 0, lag: 200 },
 ];
 
 function mountPanel() {
@@ -108,7 +109,7 @@ describe("MonitorPanel", () => {
     installBridge({
       "kafka/groups/list": { groups },
       "kafka/presets/list": { presets: [] },
-      "kafka/groups/offsets/list": { rows: lagRows, totalLag: 500 },
+      "kafka/groups/offsets/list": { rows: lagRows, totalLag: 500, hasCommitted: true },
     });
     const wrapper = mountPanel();
     await flushPromises();
@@ -135,7 +136,7 @@ describe("MonitorPanel", () => {
     installBridge({
       "kafka/groups/list": { groups },
       "kafka/presets/list": { presets: [] },
-      "kafka/groups/offsets/list": { rows: [], totalLag: 0 },
+      "kafka/groups/offsets/list": { rows: [], totalLag: 0, hasCommitted: true },
     });
     const wrapper = mountPanel();
     await flushPromises();
@@ -171,7 +172,7 @@ describe("MonitorPanel", () => {
     installBridge({
       "kafka/groups/list": { groups },
       "kafka/presets/list": { presets: [] },
-      "kafka/groups/offsets/list": () => lags.shift() ?? { rows: [], totalLag: 0 },
+      "kafka/groups/offsets/list": () => lags.shift() ?? { rows: [], totalLag: 0, hasCommitted: true },
     });
     const wrapper = mountPanel();
     await flushPromises();

@@ -188,7 +188,15 @@ export interface GroupOffsetRow {
   endOffset?: number;
   committedOffset?: number | null;
   lag?: number;
-  hasCommitted?: boolean;
+}
+
+// 与后端 GroupOffsetsListResult 对齐（kafka/groups/offsets/list）：
+// hasCommitted 是结果级字段（组从未提交过 offset 时 false），不在行上
+//（2026-09-28 评审 M-2：此前声明在行级，真实后端下「从未提交」警示失效）。
+export interface GroupOffsetsList {
+  rows: GroupOffsetRow[];
+  totalLag?: number;
+  hasCommitted: boolean;
 }
 
 export interface KafkaAcl {
@@ -199,6 +207,19 @@ export interface KafkaAcl {
   host?: string;
   operation: string;
   permission: string;
+}
+
+// acls/delete 回显的逐条删除结果（与后端 ACLBinding 对齐；error 非空 =
+// 该条删除失败，计数时剔除，评审 M-4）。
+export interface AclDeleteMatch {
+  resourceType: string;
+  resourceName: string;
+  patternType?: string;
+  principal: string;
+  host?: string;
+  operation: string;
+  permission: string;
+  error?: string;
 }
 
 export interface AclFilter {
@@ -317,9 +338,20 @@ export interface SchemaDiffHunk {
   after?: string;
 }
 
+// 与后端 SchemaDiffSummary 对齐（kafka/schema/versions/compare）：summary
+// 是结构化对象而非字符串（2026-09-28 评审 M-3：此前声明为 string，真实
+// 后端下 diff 弹窗渲染出 "[object Object]"）。
+export interface SchemaDiffSummary {
+  added: number;
+  removed: number;
+  unchanged: number;
+  beforeLines: number;
+  afterLines: number;
+}
+
 export interface SchemaDiff {
   hunks: SchemaDiffHunk[];
-  summary: string;
+  summary: SchemaDiffSummary;
 }
 
 export interface SchemaCompatibility {
@@ -436,7 +468,7 @@ export const kafkaApi = {
     return callKafka<{ members: GroupMember[] }>("kafka/groups/describe", { group });
   },
   groupsOffsetsList(group: string, topics?: string[]) {
-    return callKafka<{ rows: GroupOffsetRow[]; totalLag?: number }>(
+    return callKafka<GroupOffsetsList>(
       "kafka/groups/offsets/list",
       topics?.length ? { group, topics } : { group },
     );
@@ -465,7 +497,9 @@ export const kafkaApi = {
     return callKafka<{ success: boolean }>("kafka/acls/create", { acl });
   },
   aclsDelete(filter: AclFilter) {
-    return callKafka<{ matched: number }>("kafka/acls/delete", { filter });
+    // matched 是逐条删除结果数组而非计数（与后端 ACLsDeleteResult 对齐，
+    // 评审 M-4：此前声明为 number，真实后端下删除提示计数错误）。
+    return callKafka<{ matched: AclDeleteMatch[] }>("kafka/acls/delete", { filter });
   },
 
   // messages

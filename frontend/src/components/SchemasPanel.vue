@@ -153,6 +153,14 @@ const diffTo = ref("");
 const diff = ref<SchemaDiff | null>(null);
 const diffBusy = ref(false);
 
+// summary 是结构化对象（评审 M-3）：拼装紧凑统计文案（语言中立，与
+// 后端 added/removed/unchanged 字段一一对应）。
+const diffSummaryText = computed(() => {
+  const summary = diff.value?.summary;
+  if (!summary || typeof summary !== "object") return "";
+  return `+${summary.added ?? 0} -${summary.removed ?? 0} ~${summary.unchanged ?? 0}`;
+});
+
 const registerOpen = ref(false);
 const registerSubject = ref("");
 const registerFormat = ref<SchemaFormat>("avro");
@@ -579,7 +587,8 @@ onMounted(async () => {
 
     <div class="kafka-form" style="border-bottom: 1px solid var(--border)">
       <label class="field">
-        <span>{{ t("schemas.compatibility") }} ({{ compatScope || "GLOBAL" }})</span>
+        <!-- 后端 scope 契约为小写（global/subject）；展示层统一大写，不依赖来源大小写 -->
+        <span>{{ t("schemas.compatibility") }} ({{ (compatScope || "GLOBAL").toUpperCase() }})</span>
         <select v-model="compatChoice" :disabled="!canWrite || busy">
           <option v-for="level in compatibilityLevels" :key="level" :value="level">{{ level }}</option>
         </select>
@@ -689,7 +698,7 @@ onMounted(async () => {
       <div v-if="diff" class="schema-diff">
         <p class="subpanel-title">
           {{ t("schemas.diffTitle") }} · v{{ diffFrom }} → v{{ diffTo }}
-          <span class="badge">{{ t("schemas.diffSummary") }}: {{ diff.summary }}</span>
+          <span class="badge">{{ t("schemas.diffSummary") }}: {{ diffSummaryText }}</span>
         </p>
         <p v-if="!diff.hunks || diff.hunks.length === 0" class="hint" style="padding: 0 8px">{{ t("schemas.diffNoChange") }}</p>
         <div v-for="(hunk, index) in diff.hunks" :key="index" class="diff-hunk">

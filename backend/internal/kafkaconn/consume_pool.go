@@ -78,6 +78,18 @@ func consumeReusePolicy(offsetStrategy, groupID string) (bool, bool) {
 	}
 }
 
+// consumeReuseEligible 复用资格总门（策略 + 精确起点互斥）。带
+// partitionOffsets 的消费走精确 seek（buildConsumeOpts usesExactOffsets），
+// 与池互斥：池签名不含 offsets，reset 也只回分区边界——复用会静默丢弃
+// 用户请求的起点，且精确-offset client 一旦入池会污染后续同形状请求
+// （评审 H-1，2026-09-28）。
+func consumeReuseEligible(offsetStrategy, groupID string, partitionOffsets map[int32]int64) (bool, bool) {
+	if len(partitionOffsets) > 0 {
+		return false, false
+	}
+	return consumeReusePolicy(offsetStrategy, groupID)
+}
+
 // consumeClientSignature 消费形状签名（不含连接配置——断连即清池）。
 // 仅对 reusable 输入有意义（timestamp/committed/offset 不入池）。
 func consumeClientSignature(topic, offsetStrategy string, partitions []int32, isolationLevel string) string {

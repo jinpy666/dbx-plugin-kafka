@@ -180,10 +180,11 @@ describe("GroupsPanel", () => {
     expect(empties.map((node) => node.text())).toContain(t("groups.noMembers"));
   });
 
-  it("marks hasCommitted=false rows with warn badges", async () => {
+  it("marks result-level hasCommitted=false with warn badges", async () => {
+    // hasCommitted 是结果级字段（评审 M-2）：组从未提交时 false。
     installBridge({
       "kafka/groups/list": { groups },
-      "kafka/groups/offsets/list": { rows: [{ topic: "orders", partition: 0, endOffset: 10, hasCommitted: false }] },
+      "kafka/groups/offsets/list": { rows: [{ topic: "orders", partition: 0, endOffset: 10 }], hasCommitted: false },
       "kafka/groups/describe": { members: [] },
     });
     const wrapper = mountPanel();
@@ -191,6 +192,22 @@ describe("GroupsPanel", () => {
     await selectFirstGroup(wrapper);
     expect(wrapper.text()).toContain(t("groups.hasCommittedFalse"));
     expect(wrapper.text()).toContain(t("groups.noCommitted"));
+  });
+
+  it("keeps hasCommitted=true (no warn badge) when result-level flag is true", async () => {
+    installBridge({
+      "kafka/groups/list": { groups },
+      "kafka/groups/offsets/list": {
+        rows: [{ topic: "orders", partition: 0, endOffset: 10, committedOffset: 5, lag: 5 }],
+        totalLag: 5,
+        hasCommitted: true,
+      },
+      "kafka/groups/describe": { members: [] },
+    });
+    const wrapper = mountPanel();
+    await flushPromises();
+    await selectFirstGroup(wrapper);
+    expect(wrapper.text()).not.toContain(t("groups.hasCommittedFalse"));
   });
 
   it("reset dialog: timestamp strategy validation and successful submit", async () => {

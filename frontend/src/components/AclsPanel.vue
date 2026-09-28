@@ -109,7 +109,10 @@ async function submitDelete() {
   busy.value = true;
   try {
     const response = await kafkaApi.aclsDelete(cleanFilter(filter.value));
-    emit("notify", t("acls.deleted", { count: response.matched ?? 0 }));
+    // matched 是逐条删除结果数组（评审 M-4）：计数取无 error 的成功条数。
+    const matched = Array.isArray(response.matched) ? response.matched : [];
+    const deleted = matched.filter((binding) => !binding.error).length;
+    emit("notify", t("acls.deleted", { count: deleted }));
     deleteOpen.value = false;
     await load();
   } catch (cause) {

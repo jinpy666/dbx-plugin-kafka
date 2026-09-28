@@ -49,7 +49,7 @@ const busy = ref(false);
 
 const groupGridRows = computed(() => toGroupRows(groups.value));
 const groupGridCols = computed(() => groupColumns() as ColDef<GroupRow>[]);
-const offsetGridRows = computed(() => toGroupOffsetRows(offsetRows.value));
+const offsetGridRows = computed(() => toGroupOffsetRows(offsetRows.value, hasCommitted.value));
 const offsetGridCols = computed(() => groupOffsetColumns() as ColDef<GroupOffsetVm>[]);
 const memberGridRows = computed(() => toMemberRows(members.value));
 const memberGridCols = computed(() => memberColumns() as ColDef<MemberVm>[]);
@@ -119,7 +119,8 @@ async function loadGroupDetail(group: KafkaGroup) {
     if (seq !== detailSeq) return;
     offsetRows.value = offsets.rows ?? [];
     totalLag.value = typeof offsets.totalLag === "number" ? offsets.totalLag : sumLag(offsetRows.value);
-    hasCommitted.value = offsetRows.value.some((row) => row.hasCommitted !== false);
+    // hasCommitted 是结果级字段（组从未提交过 offset 时 false，评审 M-2）。
+    hasCommitted.value = offsets.hasCommitted !== false;
     const described = await kafkaApi.groupsDescribe(group.group);
     if (seq !== detailSeq) return;
     members.value = described.members ?? [];

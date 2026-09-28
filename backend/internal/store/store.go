@@ -26,6 +26,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -41,6 +42,11 @@ const EnvDataRoot = "DBX_DATA_DIR"
 // Store 绑定一个数据目录。
 type Store struct {
 	dir string
+	// auditMu 串行化审计追加（2026-09-28 评审 L-2）：内核对 O_APPEND 单次
+	// write 的原子性不能覆盖 Go os.File.Write 短写重试的间隙——两次 syscall
+	// 之间其他 goroutine 的行可插入，撕裂 JSONL 行。进程内加锁消除该窗口；
+	// 跨进程写者仍靠 O_APPEND。
+	auditMu sync.Mutex
 }
 
 // resolveDataDir 解析插件数据目录，按顺序取第一个可用项
@@ -197,8 +203,9 @@ type AuditRecord struct {
 }
 
 // AppendAudit 追加一条审计记录；rec.Time 为空时取当前时间（RFC3339）。
-// append-only：每次独立 open + 单次 O_APPEND write + close，内核保证单条
-// write 不与其他写者撕裂（并发写者间行序不定；进程内不额外加锁）。
+// append-only：每次独立 open + 单次 O_APPEND write + close；进程内以
+// auditMu 串行化（短写重试的 syscall 间隙可能被其他 goroutine 插行撕裂，
+// 评审 L-2），并发写者间行序不定但单行完整。
 func (s *Store) AppendAudit(rec AuditRecord) error {
 	if strings.TrimSpace(rec.Time) == "" {
 		rec.Time = time.Now().Format(time.RFC3339)
@@ -211,6 +218,8 @@ func (s *Store) AppendAudit(rec AuditRecord) error {
 		return fmt.Errorf("store: encode audit record: %w", err)
 	}
 	path := filepath.Join(s.dir, "audit.jsonl")
+	s.auditMu.Lock()
+	defer s.auditMu.Unlock()
 	file, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
 	if err != nil {
 		return fmt.Errorf("store: open audit.jsonl: %w", err)

@@ -162,7 +162,8 @@ describe("AclsPanel", () => {
   });
 
   it("shows the filter JSON in the delete dialog and submits deletion", async () => {
-    installBridge({ "kafka/acls/list": { acls: [acl] }, "kafka/acls/delete": { matched: 1 } });
+    // matched 是逐条删除结果数组（评审 M-4），面板计数取无 error 的条数。
+    installBridge({ "kafka/acls/list": { acls: [acl] }, "kafka/acls/delete": { matched: [acl] } });
     const wrapper = mountPanel();
     await flushPromises();
     await queryByResourceName(wrapper, "order-events");

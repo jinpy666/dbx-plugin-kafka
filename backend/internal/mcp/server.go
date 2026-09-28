@@ -748,9 +748,17 @@ func (s *Server) messagesProduce(args map[string]any) (map[string]any, error) {
 			if len(name) > mcpHeaderKeyMaxBytes {
 				return nil, fmt.Errorf("header name exceeds %d bytes (got %d bytes)", mcpHeaderKeyMaxBytes, len(name))
 			}
-			switch raw.(type) {
-			case string, float64, bool, nil:
-				req.Headers[name] = fmt.Sprintf("%v", raw)
+			switch v := raw.(type) {
+			case string:
+				req.Headers[name] = v
+			case float64:
+				req.Headers[name] = fmt.Sprintf("%v", v)
+			case bool:
+				req.Headers[name] = fmt.Sprintf("%v", v)
+			case nil:
+				// JSON null = 空值头（评审 L-5）：此前 fmt.Sprintf("%v", nil)
+				// 落盘为字面 "<nil>" 字符串；Kafka 空值头合法，映射空串。
+				req.Headers[name] = ""
 			default:
 				return nil, fmt.Errorf("headers[%q] must be a scalar value (string/number/boolean, got %v)", name, raw)
 			}

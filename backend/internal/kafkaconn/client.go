@@ -323,11 +323,17 @@ func contextDialer(dialer xproxy.Dialer) func(context.Context, string, string) (
 			err  error
 		}
 		results := make(chan result, 1)
+		// 取消竞态（评审 M-5）：Dial 返回时 ctx 已取消，dial goroutine 的
+		// select 两分支同 ready 随机命中——命中发送分支时结果滞留缓冲无人
+		// 接收，conn 永不 Close。closedByDial 握手让父侧兜底接管：两分支
+		// 恰有一个发生，conn 恰被关闭一次，且无 goroutine 滞留。
+		closedByDial := make(chan struct{})
 		go func() {
 			conn, err := dialer.Dial(network, address)
 			select {
 			case results <- result{conn: conn, err: err}:
 			case <-ctx.Done():
+				close(closedByDial)
 				if conn != nil {
 					_ = conn.Close()
 				}
@@ -337,6 +343,17 @@ func contextDialer(dialer xproxy.Dialer) func(context.Context, string, string) (
 		case result := <-results:
 			return result.conn, result.err
 		case <-ctx.Done():
+			// 兜底回收放 goroutine：legacy dialer 不感知 ctx（本适配器
+			// 存在的原因），父侧必须立即返回，不能同步等 Dial 结束。
+			go func() {
+				select {
+				case result := <-results:
+					if result.conn != nil {
+						_ = result.conn.Close()
+					}
+				case <-closedByDial:
+				}
+			}()
 			return nil, ctx.Err()
 		}
 	}

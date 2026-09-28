@@ -652,6 +652,21 @@ func (s *StdioServer) pooledConnectionID(inline inlineConn) (string, error) {
 		s.mu.Unlock()
 		return id, nil
 	}
+	// 先 Connect 后发布（2026-09-28 评审 M-7）：此前先登记池项再 Connect，
+	// 并发同参数的第二调用会命中未完成注册的 id 直接 Server.Call，间歇性
+	// "not connected"。Connect 幂等（同 id 重入 = 覆盖注册），重复调用
+	// 各自完成 Connect 后发布，窗口闭合；Connect 失败无需回滚（未发布）。
+	s.mu.Unlock()
+	params := inline.toLifecycle(id)
+	if err := s.svc.Connect(params); err != nil {
+		return "", err
+	}
+	s.mu.Lock()
+	if _, ok := s.hash[id]; ok {
+		// 并发同参数调用已完成发布：本侧 Connect 与其等价，直接复用。
+		s.mu.Unlock()
+		return id, nil
+	}
 	var evicted []string
 	for len(s.hash) >= inlinePoolCap {
 		oldest := s.order[0]
@@ -668,22 +683,6 @@ func (s *StdioServer) pooledConnectionID(inline inlineConn) (string, error) {
 	s.mu.Unlock()
 	for _, stale := range evicted {
 		s.svc.Disconnect(stale)
-	}
-	params := inline.toLifecycle(id)
-	if err := s.svc.Connect(params); err != nil {
-		// 注册失败不残留池项（下次同参数调用重试）；order 同步剔除
-		//（评审 L-1）：残留会让后续淘汰弹到陈旧项时多逐出一个真实连接。
-		s.mu.Lock()
-		delete(s.hash, id)
-		delete(s.ids, id)
-		for index, existing := range s.order {
-			if existing == id {
-				s.order = append(s.order[:index], s.order[index+1:]...)
-				break
-			}
-		}
-		s.mu.Unlock()
-		return "", err
 	}
 	return id, nil
 }

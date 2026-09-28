@@ -386,3 +386,50 @@ func TestConsumeLimitAndScanCaps(t *testing.T) {
 		t.Errorf("small default maxScan = %d, want 1000", got)
 	}
 }
+
+// 池复用资格与精确起点互斥（评审 H-1，2026-09-28）：带 partitionOffsets
+// 的消费走精确 seek，池签名不含 offsets、reset 只回分区边界——复用会静默
+// 丢弃用户请求的起点，精确-offset client 入池还会污染后续同形状请求。
+func TestConsumeReuseEligibleExcludesExactOffsets(t *testing.T) {
+	offsets := map[int32]int64{0: 500}
+
+	// 带 partitionOffsets：无论策略如何一律不入池。
+	for _, strategy := range []string{"", "default", "earliest", "latest"} {
+		if ok, _ := consumeReuseEligible(strategy, "", offsets); ok {
+			t.Errorf("strategy %q with partitionOffsets must not reuse pool", strategy)
+		}
+	}
+	// 无 partitionOffsets：策略门保持原语义。
+	if ok, atStart := consumeReuseEligible("", "", nil); !ok || !atStart {
+		t.Errorf("default strategy should reuse at start, got ok=%v atStart=%v", ok, atStart)
+	}
+	if ok, atStart := consumeReuseEligible("latest", "", nil); !ok || atStart {
+		t.Errorf("latest strategy should reuse at end, got ok=%v atStart=%v", ok, atStart)
+	}
+	if ok, _ := consumeReuseEligible("", "g1", nil); ok {
+		t.Error("group mode must not reuse pool")
+	}
+	if ok, _ := consumeReuseEligible("offset", "", nil); ok {
+		t.Error("offset strategy must not reuse pool")
+	}
+}
+
+// digest 聚合上界（评审 M-1，2026-09-28）：留存预算路径不吃 limit 硬钳位，
+// 否则 maxScanRecords 超过 1 万时扫描在钳位处提前终止，聚合分布只覆盖子集。
+func TestConsumeEffectiveLimitDigestBypass(t *testing.T) {
+	limit := clampConsumeLimit(100_000) // digest 把 Limit 设为 maxScanRecords
+	maxScan := consumeMaxScanRecords(limit, 100_000)
+	if maxScan != 100_000 {
+		t.Fatalf("maxScan = %d, want 100000", maxScan)
+	}
+	if got := consumeEffectiveLimit(limit, maxScan, 0); got != consumeLimitHardCap {
+		t.Errorf("non-digest effective limit = %d, want %d", got, consumeLimitHardCap)
+	}
+	if got := consumeEffectiveLimit(limit, maxScan, 64<<20); got != maxScan {
+		t.Errorf("digest effective limit = %d, want maxScan %d", got, maxScan)
+	}
+	// maxScan 小于钳位时 digest 也取较大者，语义一致。
+	if got := consumeEffectiveLimit(100, 1000, 1); got != 1000 {
+		t.Errorf("digest small-scan effective limit = %d, want 1000", got)
+	}
+}
