@@ -220,6 +220,8 @@ func (h *pluginHandler) Handle(
 		return h.messagesProduce(params)
 	case "kafka/messages/consume":
 		return h.messagesConsume(params)
+	case "kafka/messages/consume/cancel":
+		return h.messagesConsumeCancel(params)
 	case "kafka/messages/export":
 		return h.messagesExport(params)
 
@@ -593,6 +595,21 @@ func (h *pluginHandler) messagesConsume(params json.RawMessage) (any, *dbxplugin
 		return nil, bizError(err)
 	}
 	return result, nil
+}
+
+// messagesConsumeCancel 提前中断在途一次性消费（工作台停止按钮）：按
+// consumeId 触发扫描窗口取消；未知/已结束 id 返回 success=false（幂等）。
+func (h *pluginHandler) messagesConsumeCancel(params json.RawMessage) (any, *dbxpluginsdk.PluginError) {
+	var req struct {
+		ConsumeID string `json:"consumeId"`
+	}
+	if perr := decodeParams(params, &req); perr != nil {
+		return nil, perr
+	}
+	if strings.TrimSpace(req.ConsumeID) == "" {
+		return nil, dbxpluginsdk.NewError(-32602, "Missing consumeId")
+	}
+	return map[string]any{"success": h.svc.CancelConsume(req.ConsumeID)}, nil
 }
 
 func (h *pluginHandler) messagesExport(params json.RawMessage) (any, *dbxpluginsdk.PluginError) {

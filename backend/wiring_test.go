@@ -106,6 +106,8 @@ func TestHandleDispatchMatrix(t *testing.T) {
 
 		{"kafka/messages/produce", `{}`, domainGate},
 		{"kafka/messages/consume", `{}`, domainGate},
+		{"kafka/messages/consume/cancel", `{}`, domainGate},                                              // 缺 connectionId/consumeId
+		{"kafka/messages/consume/cancel", `{"connectionId":"c1","consumeId":"unknown-id"}`, 0},           // 未知 id 幂等 success:false
 		{"kafka/messages/export", `{}`, domainGate},
 
 		{"kafka/stream/start", `{}`, domainGate},

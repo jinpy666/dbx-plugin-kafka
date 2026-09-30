@@ -52,6 +52,10 @@ type Service struct {
 	// Streams 提供流式会话管理（stream.go；NewService 时初始化）。
 	Streams *StreamRegistry
 
+	// consumeCancels 在途一次性消费的取消句柄（consume_cancel.go）：工作台
+	// 停止按钮按 consumeId 提前中断扫描窗口。零值可用。
+	consumeCancels consumeCancelRegistry
+
 	// testDiagSink 覆盖 connection/test 诊断输出目标（nil → stderr；单测
 	// 注入 buffer 断言脱敏摘要）。见 diag.go。
 	testDiagSink io.Writer
