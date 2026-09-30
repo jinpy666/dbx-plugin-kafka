@@ -7,6 +7,11 @@ on:
 permissions:
   contents: write
 
+# Same tag cannot run twice concurrently; different tags are independent.
+concurrency:
+  group: release-kafka-${{ github.event.release.tag_name }}
+  cancel-in-progress: false
+
 env:
   PLUGIN_CLI_VERSION: "0.1.3"
   # Windows runners default python stdout to cp1252; UTF-8 mode is a no-op
@@ -68,10 +73,39 @@ jobs:
           fi
           (cd backend && go vet ./... && go test ./...)
 
+  # Build the target-independent UI once; every platform job below unpacks it
+  # as ui/ and packages it as-is (DBX_PREBUILT_UI) instead of rerunning the
+  # frontend three-step 5x. Typecheck/test stay in the validate gate above.
+  frontend:
+    if: startsWith(github.event.release.tag_name, 'kafka-v')
+    name: Build release frontend
+    needs: validate
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+      - uses: pnpm/action-setup@v6
+        with:
+          version: 11.24.0
+      - uses: actions/setup-node@v7
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+          cache-dependency-path: frontend/pnpm-lock.yaml
+      - run: pnpm --dir frontend install --frozen-lockfile
+      - run: pnpm --dir frontend build
+      - name: Upload prebuilt UI
+        uses: actions/upload-artifact@v7
+        with:
+          name: frontend-ui-kafka
+          path: ui/**
+          if-no-files-found: error
+          retention-days: 1
+
   build:
     if: startsWith(github.event.release.tag_name, 'kafka-v')
     name: Build ${{ matrix.target }}
-    needs: validate
+    needs: [validate, frontend]
     timeout-minutes: 30
     strategy:
       fail-fast: false
@@ -98,25 +132,27 @@ jobs:
         shell: bash
     steps:
       - uses: actions/checkout@v7
-      - uses: pnpm/action-setup@v6
-        with:
-          version: 11.24.0
       - uses: actions/setup-node@v7
         with:
-          node-version: "22"
-          cache: pnpm
-          cache-dependency-path: frontend/pnpm-lock.yaml
+          node-version-file: .nvmrc
       - uses: actions/setup-go@v7
         with:
           go-version: 1.26.x
           cache-dependency-path: backend/go.sum
       - name: Pre-download Go modules
         run: (cd backend && go mod download)
-      - run: pnpm --dir frontend install --frozen-lockfile
+      # ui/index.html 由 frontend job 一次构建后经 artifact 下发，打包直接用
+      # （已脱库，见 .gitignore /ui/）。
+      - name: Download prebuilt UI
+        uses: actions/download-artifact@v8
+        with:
+          name: frontend-ui-kafka
+          path: ui
       - run: npm install --global "@dbx-app/plugin-cli@${PLUGIN_CLI_VERSION}"
       - name: Build and package release candidate
         env:
           DBX_PLUGIN_TARGET: ${{ matrix.target }}
+          DBX_PREBUILT_UI: "1"
           NO_COLOR: "1"
         run: bash scripts/build.sh
       - uses: actions/upload-artifact@v7

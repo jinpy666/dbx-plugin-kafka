@@ -1802,3 +1802,25 @@ MCP 专项收口轮：第七轮代码之后对在跑 dev 集群（127.0.0.1:9092
   明暗主题切换跟随。
 - 协作记录：本轮与另一并行会话同仓工作（其负责评审 M 系列/下载桥自愈），
   双方改动已在工作区合流并全量验证。
+
+## CI 提速：候选/发布前端三件套 ×5 去重 + Node pin 单一真源（2026-10-01）
+
+改动（本仓 `.github/workflows/`、`scripts/build.sh`、`scripts/test.sh`、新增 `.nvmrc`）：
+
+- **前端三件套去重**：ci candidate 与 release build 原每平台各跑一遍
+  typecheck+test+build（build.sh 未设 DBX_PREBUILT_UI，×5）。现在 frontend
+  job 构建一次并上传 `frontend-ui-kafka` artifact，矩阵 job 下载到 `ui/`
+  后以 `DBX_PREBUILT_UI=1 bash scripts/build.sh` 打包。release 新增
+  frontend job 承接 install+build；validate job 的 typecheck/test 门禁
+  （防 tag 未过 CI）原样保留。
+- **Node 版本单一真源**：新增 `.nvmrc`（22.21.0），CI `setup-node` 改
+  `node-version-file`；build.sh/test.sh 硬编码 `v22.21.0`/`v22*` glob 改读
+  `.nvmrc`（精确命中，缺失回退最新 v22；`tr` 写法 BSD/GNU 通用）。
+- **pnpm install 加固**（build.sh/test.sh）：补 lockfile 新鲜度检查 +
+  `--frozen-lockfile`（原裸 `pnpm install` 可漂移），对齐 ssh/files 同款。
+- **小修**：ci.yml integration 步名末尾多余逗号移除。
+
+验证：actionlint 结构校验全绿；`bash -n` 全过；本地
+`DBX_PREBUILT_UI=1 bash scripts/build.sh` 实跑通过——前端跳过、go build +
+打包产出 `io.dbx.kafka-0.1.52-darwin-arm64.dbxp` 与 artifact.json 完整、
+旧版本 dist 清理正常。剩余风险：GitHub runner 真跑待推送观察。

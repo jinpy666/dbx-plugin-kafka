@@ -35,7 +35,7 @@ jobs:
           python-version: "3.x"
       - uses: actions/setup-node@v7
         with:
-          node-version: "22"
+          node-version-file: .nvmrc
       - run: python3 scripts/validate_repo.py
       - run: node scripts/connection-forms/verify.mjs kafka
 
@@ -51,13 +51,24 @@ jobs:
       # setup-node 的 pnpm 缓存需要 pnpm 已在 PATH 中，故置于 pnpm/action-setup 之后
       - uses: actions/setup-node@v7
         with:
-          node-version: "22"
+          node-version-file: .nvmrc
           cache: pnpm
           cache-dependency-path: frontend/pnpm-lock.yaml
       - run: pnpm --dir frontend install --frozen-lockfile
       - run: pnpm --dir frontend typecheck
       - run: pnpm --dir frontend test
       - run: pnpm --dir frontend build
+      # UI 构建一次：candidate 矩阵 job 取 artifact 直接打包（DBX_PREBUILT_UI），
+      # 不再每个平台重复三件套。
+      - name: Upload prebuilt UI
+        uses: actions/upload-artifact@v7
+        with:
+          name: frontend-ui-kafka
+          # Glob pins the artifact root at ui/ so packaging jobs unpack it
+          # straight as ui/index.html.
+          path: ui/**
+          if-no-files-found: error
+          retention-days: 3
       # ui/index.html 已脱库：发布与候选打包各自现构建前端，PR 不再被
       # 「integrator 忘了重新生成 ui/」卡红（原 freshness 门已移除）。
       # Headless Chrome walkthrough against the mock host (mounts the app,
@@ -111,7 +122,7 @@ jobs:
       # into FAIL; env-gated scenarios (AWS Glue S12, OAUTHBEARER S15) still
       # SKIP without their credentials, by design. SASL credentials for S16
       # are throwaway values exported by the orchestrator.
-      - name: Run Kafka container smoke (S1-S17 + MCP K1-K19),
+      - name: Run Kafka container smoke (S1-S17 + MCP K1-K19)
         env:
           KAFKA_TEST_REQUIRE: "1"
           PYTHONUTF8: "1"
@@ -151,14 +162,9 @@ jobs:
         shell: bash
     steps:
       - uses: actions/checkout@v7
-      - uses: pnpm/action-setup@v6
-        with:
-          version: 11.24.0
       - uses: actions/setup-node@v7
         with:
-          node-version: "22"
-          cache: pnpm
-          cache-dependency-path: frontend/pnpm-lock.yaml
+          node-version-file: .nvmrc
       - uses: actions/setup-go@v7
         with:
           go-version: 1.26.x
@@ -167,17 +173,23 @@ jobs:
       # CLI's own rebuild of the sidecar both run offline-fast.
       - name: Pre-download Go modules
         run: (cd backend && go mod download)
-      - run: pnpm --dir frontend install --frozen-lockfile
+      # UI 三件套由 frontend job 构建一次，矩阵 job 取 artifact 直接打包。
+      - name: Download prebuilt UI
+        uses: actions/download-artifact@v8
+        with:
+          name: frontend-ui-kafka
+          path: ui
       # Install the CLI before build.sh: its packaging step calls the native
       # plugin-cli directly (resolve_native_plugin_cli).
       - run: npm install --global "@dbx-app/plugin-cli@${PLUGIN_CLI_VERSION}"
-      # build.sh runs the frontend three-step, builds the sidecar into
-      # backend/bin (local smoke target) and packages the .dbxp via the native
-      # plugin-cli for the running platform, with DBX_PLUGIN_TARGET steering
-      # the cross-compile.
+      # build.sh builds the sidecar into backend/bin (local smoke target) and
+      # packages the .dbxp via the native plugin-cli for the running platform,
+      # with DBX_PLUGIN_TARGET steering the cross-compile; DBX_PREBUILT_UI
+      # skips the frontend three-step (built once by the frontend job).
       - name: Build and package candidate
         env:
           DBX_PLUGIN_TARGET: ${{ matrix.target }}
+          DBX_PREBUILT_UI: "1"
           NO_COLOR: "1"
         run: bash scripts/build.sh
       - name: Offline MCP smoke

@@ -8,7 +8,12 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 if ! command -v pnpm >/dev/null; then
-  export PATH="$HOME/Library/pnpm:$HOME/.nvm/versions/node/v22.21.0/bin:$PATH"
+  # Node 版本单一真源是仓库根 .nvmrc（CI setup-node node-version-file 同源）；
+  # 精确版本缺失时回退 nvm 里最新的 v22。
+  NODE_VER="$(head -n1 .nvmrc 2>/dev/null | tr -d 'vV\n ')"
+  NODE_BIN="$(ls -d "$HOME/.nvm/versions/node/v${NODE_VER:-22.21.0}"/bin 2>/dev/null \
+    || ls -d "$HOME"/.nvm/versions/node/v22*/bin 2>/dev/null | sort -V | tail -1 || true)"
+  export PATH="$HOME/Library/pnpm:${NODE_BIN:+$NODE_BIN:}$PATH"
 fi
 
 # Release CI builds the target-independent UI once per plugin and stages ui/
@@ -22,8 +27,10 @@ if [ "${DBX_PREBUILT_UI:-0}" = "1" ]; then
   echo "==> frontend: skipped (prebuilt ui/ staged by CI)"
 else
   echo "==> frontend: install + typecheck + test + build"
-  if [ ! -d frontend/node_modules ]; then
-    pnpm --dir frontend install
+  # node_modules 已是最新（lockfile 未再变动）时跳过 install；--frozen-lockfile
+  # 保证安装严格对齐仓内 lockfile（与 ssh/files 同款检查）。
+  if [ ! -d frontend/node_modules ] || [ frontend/pnpm-lock.yaml -nt frontend/node_modules ]; then
+    pnpm --dir frontend install --frozen-lockfile
   fi
   pnpm --dir frontend typecheck
   pnpm --dir frontend test

@@ -12,13 +12,20 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 if ! command -v pnpm >/dev/null 2>&1; then
-  NODE_BIN="$(ls -d "$HOME"/.nvm/versions/node/v22*/bin 2>/dev/null | sort -V | tail -1 || true)"
+  # Node 版本单一真源是仓库根 .nvmrc（CI setup-node node-version-file 同源）；
+  # 精确版本缺失时回退 nvm 里最新的 v22。
+  NODE_VER="$(head -n1 .nvmrc 2>/dev/null | tr -d 'vV\n ')"
+  NODE_BIN="$(ls -d "$HOME/.nvm/versions/node/v${NODE_VER:-22.21.0}"/bin 2>/dev/null \
+    || ls -d "$HOME"/.nvm/versions/node/v22*/bin 2>/dev/null | sort -V | tail -1 || true)"
   export PATH="$HOME/Library/pnpm:${NODE_BIN:+$NODE_BIN:}$PATH"
 fi
 
 echo "==> frontend typecheck + tests + build"
 node scripts/connection-forms/verify.mjs kafka
-[ -d frontend/node_modules ] || pnpm --dir frontend install
+# --frozen-lockfile 保证安装严格对齐仓内 lockfile；lockfile 有变动时重装。
+if [ ! -d frontend/node_modules ] || [ frontend/pnpm-lock.yaml -nt frontend/node_modules ]; then
+  pnpm --dir frontend install --frozen-lockfile
+fi
 pnpm --dir frontend typecheck
 pnpm --dir frontend test
 pnpm --dir frontend build
