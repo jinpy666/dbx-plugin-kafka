@@ -7,7 +7,7 @@
 // 布局压缩（R 路）：有结果后表单默认收起为一行摘要 chips 条（开合记忆
 // dbx.kafka.ui.msgFormOpen），结果表格吃满剩余高度；大数据量防护见各标注。
 import { nextTick, ref, watch } from "vue";
-import { ChevronDown, ChevronsDown, Download, Play, Plus, Save, SlidersHorizontal, Trash2, X } from "@lucide/vue";
+import { ChevronDown, ChevronsDown, Download, Play, Plus, RotateCcw, Save, SlidersHorizontal, Trash2, X } from "@lucide/vue";
 import { messageFullValueText } from "../lib/messageCodec";
 import { useModalBehavior } from "../lib/modalBehavior";
 import DbxAgGrid from "./DbxAgGrid.vue";
@@ -18,7 +18,7 @@ import { messageCellCopyText, MINIMAL_MESSAGE_FIELDS } from "../lib/kafkaColumns
 import { serializeMessagesToCsv, serializeMessagesToJson, serializeMessagesToTsv } from "../lib/messageExport";
 import { saveTextFile, type SaveFileOutcome } from "../lib/download";
 import { copyTextToClipboard } from "../lib/uiHelpers";
-import { nowDatetimeLocal, validateConsumeForm } from "../lib/consumeForm";
+import { validateConsumeForm } from "../lib/consumeForm";
 import { positiveInt, useConsumeForm } from "../composables/useConsumeForm";
 import { useConsumeResults } from "../composables/useConsumeResults";
 import { t } from "../lib/i18n";
@@ -90,10 +90,16 @@ const {
   tsToInvalid,
   toggleTsMode,
   setNow,
+  offsetTimeMode,
+  offsetTimeInvalid,
+  toggleOffsetTimeMode,
+  setOffsetTimeNow,
+  setOffsetTimeValue,
   fieldFilterIssueKey,
   fieldFilterIssueText,
   addFieldFilter,
   removeFieldFilter,
+  resetForm,
   schemaEnabled,
   schemaSubjects,
   schemaSubject,
@@ -117,6 +123,13 @@ const {
 const consuming = ref(false);
 // 消费表单校验问题（i18n 文案；runConsume / applyIntentConsume 两处写入）。
 const formIssues = ref<string[]>([]);
+
+/** 条件重置：表单字段回默认 + 清除校验错误横幅 + 轻通知（布局开合态不动）。 */
+function onResetForm() {
+  resetForm();
+  formIssues.value = [];
+  emit("notify", t("messages.uiFiltersReset"));
+}
 
 // 条件抽屉弹层行为（P1-5 家族收口补漏）：Esc 关闭 + Tab 焦点陷阱 + 打开聚焦
 // 首控件 + 关闭归还「条件」触发钮——与其余 13 处弹层同一 useModalBehavior；
@@ -255,6 +268,10 @@ async function applyIntentConsume(params: Record<string, unknown>): Promise<UiIn
   if (consuming.value) {
     return { status: "rejected", reason: t("intent.consumeInProgress") };
   }
+  // 先展开条件抽屉再填充：MCP 检索的「填条件」必须看得见（此前填充发生在
+  // 收起的抽屉里，结果落地前 UI 毫无动静）；被拒时条件留在表单 + 校验错误
+  // 可见（可视可撤销），成功后仍走既有的收起抽屉展示结果。
+  formOpen.value = true;
   const topic = String(params.topic ?? "").trim();
   if (!topic && !props.topic) {
     // 键挂 stream 命名空间（messages.* 无此键，七语齐备；P2-12 同款对齐范式）。
@@ -264,7 +281,7 @@ async function applyIntentConsume(params: Record<string, unknown>): Promise<UiIn
   if (strategy) offsetStrategy.value = strategy;
   if (params.limit !== undefined && params.limit !== null) limit.value = String(params.limit);
   if (params.groupId !== undefined) groupId.value = String(params.groupId ?? "");
-  if (params.offsetTime !== undefined) offsetTimeText.value = String(params.offsetTime ?? "");
+  if (params.offsetTime !== undefined) setOffsetTimeValue(String(params.offsetTime ?? ""));
   if (Array.isArray(params.partitions)) partitionsText.value = (params.partitions as unknown[]).join(",");
   if (params.filter !== undefined) filterText.value = String(params.filter ?? "");
   if (params.keyFilter !== undefined) keyFilterText.value = String(params.keyFilter ?? "");
@@ -476,6 +493,7 @@ watch(() => props.topic, () => void loadPresets(), { immediate: true });
           <span>{{ t("messages.uiGroupPosition") }}</span>
         </button>
         <div v-if="openGroups.locate" class="filter-group-body">
+          <p class="hint">{{ t("messages.uiPositionHint") }}</p>
           <div class="group-grid">
             <label class="field">
               <span>{{ t("messages.offsetStrategy") }}</span>
@@ -488,12 +506,29 @@ watch(() => props.topic, () => void loadPresets(), { immediate: true });
                 <option value="offset">{{ t("messages.strategyOffset") }}</option>
               </select>
             </label>
-            <label v-if="offsetStrategy === 'timestamp'" class="field">
-              <span>{{ t("messages.offsetTime") }} ({{ t("messages.offsetTimeHint") }})</span>
+            <label v-if="offsetStrategy === 'timestamp'" class="field" :class="{ 'is-invalid': offsetTimeInvalid }">
+              <span>{{ t("messages.offsetTime") }} · {{ offsetTimeMode === "datetime" ? t("messages.timeModeDatetime") : t("messages.timeModeUnix") }}</span>
               <div class="time-input-row">
-                <input v-model="offsetTimeText" type="text" placeholder="2026-09-05T08:30" spellcheck="false" />
-                <button class="mini-button" type="button" :title="t('messages.uiTimeNow')" @click="offsetTimeText = nowDatetimeLocal()">
+                <input
+                  v-if="offsetTimeMode === 'datetime'"
+                  v-model="offsetTimeText"
+                  type="datetime-local"
+                  step="1"
+                  spellcheck="false"
+                />
+                <input
+                  v-else
+                  v-model="offsetTimeText"
+                  type="text"
+                  inputmode="numeric"
+                  placeholder="1700000000000"
+                  spellcheck="false"
+                />
+                <button class="mini-button" type="button" :title="t('messages.uiTimeNow')" @click="setOffsetTimeNow">
                   {{ t("messages.uiTimeNow") }}
+                </button>
+                <button class="mini-button" type="button" :title="t('messages.uiTimeModeSwitch')" @click="toggleOffsetTimeMode">
+                  {{ offsetTimeMode === "datetime" ? t("messages.timeModeUnix") : t("messages.timeModeDatetime") }}
                 </button>
               </div>
             </label>
@@ -528,6 +563,7 @@ watch(() => props.topic, () => void loadPresets(), { immediate: true });
           <span v-if="tsRangeReversed" class="group-summary form-error">{{ t("messages.uiTimeRangeInvalid") }}</span>
         </button>
         <div v-if="openGroups.timeRange" class="filter-group-body">
+          <p class="hint">{{ t("messages.uiTimeRangeHint") }}</p>
           <div class="group-grid">
             <label class="field" :class="{ 'is-invalid': tsFromInvalid }">
               <span>{{ t("messages.tsFrom") }} · {{ tsMode === "datetime" ? t("messages.timeModeDatetime") : t("messages.timeModeUnix") }}</span>
@@ -766,6 +802,9 @@ watch(() => props.topic, () => void loadPresets(), { immediate: true });
         </button>
       </div>
       <span class="footer-spacer" />
+      <button class="toolbar-button" type="button" :title="t('messages.uiResetFilters')" data-testid="filters-reset" @click="onResetForm">
+        <RotateCcw aria-hidden="true" /><span>{{ t("messages.uiResetFilters") }}</span>
+      </button>
       <button class="toolbar-button" type="button" @click="toggleFormOpen">{{ t("messages.uiHideFilters") }}</button>
       <button class="primary-button primary-button--lg" type="button" :disabled="consuming || !topic || tsRangeReversed" @click="runConsume()">
         <Play aria-hidden="true" />{{ consuming ? t("messages.running") : t("messages.run") }}
@@ -782,7 +821,17 @@ watch(() => props.topic, () => void loadPresets(), { immediate: true });
       <span>
         {{ t("messages.scanned", { count: result.scanned }) }} · {{ t("messages.matched", { count: result.matched }) }}
         <span v-if="result.limited" class="badge badge-warn">{{ t("messages.limited") }}</span>
-        <span v-if="result.hasMore" class="badge badge-warn">{{ t("messages.hasMore") }}</span>
+        <!-- 超时可见（timedOut）：hasMore 此时可能是「窗口到点」而非「还有更多」，
+             误导性「调大上限」徽标由超时徽标取代；空态同步给超时文案。 -->
+        <span v-if="result.timedOut" class="badge badge-warn" data-testid="timedout-badge">{{ t("messages.uiTimedOut") }}</span>
+        <span v-else-if="result.hasMore" class="badge badge-warn">{{ t("messages.hasMore") }}</span>
+        <!-- 留存预算截断（retentionTruncated）：matched 计数完整但列表为预算内子集。 -->
+        <span
+          v-if="result.retentionTruncated"
+          class="badge badge-warn"
+          data-testid="retention-badge"
+          :title="t('messages.uiRetentionCapped', { matched: result.matched, shown: result.messages.length })"
+        >{{ t("messages.uiRetentionBadge") }}</span>
         <span v-if="rowsDropped > 0" class="badge badge-warn" :title="t('messages.uiRowsCapped', { shown: messageRows.length, total: rowsTotal })">
           {{ t("messages.uiRowsCapped", { shown: messageRows.length, total: rowsTotal }) }}
         </span>
@@ -830,7 +879,9 @@ watch(() => props.topic, () => void loadPresets(), { immediate: true });
     </div>
 
     <div v-if="result" class="grid-box grid-box--fill">
-      <p v-if="result.messages.length === 0" class="empty compact">{{ t("messages.noMessages") }}</p>
+      <p v-if="result.messages.length === 0" class="empty compact" data-testid="empty-hint">
+        {{ result.timedOut ? t("messages.uiTimedOut") : t("messages.noMessages") }}
+      </p>
       <DbxAgGrid
         v-else
         ref="messagesGrid"

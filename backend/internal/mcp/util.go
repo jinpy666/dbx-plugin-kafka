@@ -76,6 +76,17 @@ func coerceInt64(raw any) (int64, bool) {
 	}
 }
 
+// coerceInt32 coerceInt 的 int32 版（partition 等窄字段）：4294967301 直接
+// int32 截断会静默折成 5、2147483648 折成负数——打到错误分区的语义破坏必须
+// 显式报错（评审 M-4；与 parsePartitionOffsets 的 ParseInt(…,32) 同口径）。
+func coerceInt32(raw any) (int32, bool) {
+	value, ok := coerceInt64(raw)
+	if !ok || value < math.MinInt32 || value > math.MaxInt32 {
+		return 0, false
+	}
+	return int32(value), true
+}
+
 // coerceBool 布尔参数宽容解析：bool、字符串 "true"/"false"/"1"/"0"/
 // "yes"/"no"/"on"/"off"（大小写不敏感；变体面与 ssh arg_bool 同族一致）；
 // 其余返回 (false,false)。
@@ -109,12 +120,18 @@ func boolArg(raw any) bool {
 }
 
 // offsetArg 读取分页 offset：字段缺失 = -1（续读会话内游标）；显式给出
-// （含 0）时按调用方指定的起点。
-func offsetArg(args map[string]any) int {
-	if _, present := args["offset"]; !present {
-		return -1
+// （含 0）时按调用方指定的起点。present-but-非法（非整数/负数）报错——
+// 静默折 0 会让翻页悄悄回到开头（评审 M-5，「绝不静默折算」红线）。
+func offsetArg(args map[string]any) (int, error) {
+	raw, present := args["offset"]
+	if !present || raw == nil {
+		return -1, nil
 	}
-	return intArg(args["offset"])
+	value, ok := coerceInt(raw)
+	if !ok || value < 0 {
+		return 0, fmt.Errorf("offset must be a non-negative integer (got %v)", raw)
+	}
+	return value, nil
 }
 
 // stringSlice 读取字符串数组参数。
@@ -140,11 +157,12 @@ func clampStrings(names []string, limit int) []string {
 	return names[:limit]
 }
 
-// payloadSize 序列化体积（响应上限判定用）。
+// payloadSize 序列化体积（响应上限判定用）。序列化失败返回 MaxInt 按
+// 超限走截断路径（评审 L：返回 0 会恒放行、绕过截断上限）。
 func payloadSize(value any) int {
 	data, err := json.Marshal(value)
 	if err != nil {
-		return 0
+		return math.MaxInt
 	}
 	return len(data)
 }

@@ -67,14 +67,14 @@ describe("useConsumeForm 纯解析函数", () => {
 });
 
 describe("buildParams", () => {
-  it("默认参数：recent / limit 100 / timeout 5000 / maxScan 10000", () => {
+  it("默认参数：recent / limit 100 / timeout 15000 / maxScan 10000", () => {
     const form = makeForm();
     expect(form.buildParams()).toEqual({
       topic: "order-events",
       offsetStrategy: "recent",
       isolationLevel: "read_uncommitted",
       limit: 100,
-      timeoutMs: 5000,
+      timeoutMs: 15000,
       maxScanRecords: 10000,
       decode: "none",
       decompression: "none",
@@ -226,6 +226,24 @@ describe("摘要条与 chips", () => {
     expect(form.filterCount.value).toBe(1);
   });
 
+  it("filterCount 纳入时间/offset 范围（对齐后端 hasConsumeFilter，commit 冲突前端可见）", () => {
+    const form = makeForm();
+    form.timestampFrom.value = "2026-01-02T03:04";
+    expect(form.filterCount.value).toBe(1);
+    expect(form.hasFilters.value).toBe(true);
+    form.offsetTo.value = "2";
+    expect(form.filterCount.value).toBe(2);
+    // 非法/草稿输入不计（timestampTo 不可解析、offsetFrom 非数字）
+    form.timestampTo.value = "draft";
+    form.offsetFrom.value = "abc";
+    expect(form.filterCount.value).toBe(2);
+    // 仅范围时 matchMode 不上送（matchMode 只作用于文本/字段匹配通道）
+    const params = form.buildParams();
+    expect(params.timestampFrom).toBeDefined();
+    expect(params.offsetTo).toBe(2);
+    expect(params).not.toHaveProperty("matchMode");
+  });
+
   it("互斥 computed：commit 禁过滤、partitions 禁 groupId", () => {
     const form = makeForm();
     expect(form.filtersDisabled.value).toBe(false);
@@ -288,6 +306,126 @@ describe("fieldFilters 行编辑", () => {
     form.removeFieldFilter(0);
     expect(form.fieldFilters.value).toHaveLength(1);
     expect(form.fieldFilterIssueKey(9)).toBeNull();
+  });
+});
+
+describe("时间位点双模式", () => {
+  it("toggleOffsetTimeMode：datetime→unix 换算，解析不了的原样保留；setOffsetTimeNow 按模式填", () => {
+    const form = makeForm();
+    form.offsetTimeText.value = "2026-01-02T03:04";
+    form.toggleOffsetTimeMode();
+    expect(form.offsetTimeMode.value).toBe("unix");
+    expect(form.offsetTimeText.value).toBe(String(new Date("2026-01-02T03:04:00").getTime()));
+    // 草稿不可解析：模式切换但原样保留，不打断输入
+    form.offsetTimeText.value = "draft";
+    form.toggleOffsetTimeMode();
+    expect(form.offsetTimeMode.value).toBe("datetime");
+    expect(form.offsetTimeText.value).toBe("draft");
+    form.setOffsetTimeNow();
+    expect(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}$/.test(form.offsetTimeText.value)).toBe(true);
+    form.toggleOffsetTimeMode();
+    form.setOffsetTimeNow();
+    expect(/^\d{13}$/.test(form.offsetTimeText.value)).toBe(true);
+  });
+
+  it("offsetTimeInvalid：非空不可解析才标红，unix ms 数字串合法", () => {
+    const form = makeForm();
+    expect(form.offsetTimeInvalid.value).toBe(false);
+    form.offsetTimeText.value = "garbage";
+    expect(form.offsetTimeInvalid.value).toBe(true);
+    form.offsetTimeText.value = "1700000000000";
+    expect(form.offsetTimeInvalid.value).toBe(false);
+  });
+
+  it("setOffsetTimeValue：unix 毫秒串切 unix 模式，日期串保持 datetime；resetForm 回 datetime", () => {
+    const form = makeForm();
+    form.setOffsetTimeValue("1700000000000");
+    expect(form.offsetTimeMode.value).toBe("unix");
+    form.setOffsetTimeValue("2026-01-02T03:04");
+    expect(form.offsetTimeMode.value).toBe("datetime");
+    form.toggleOffsetTimeMode();
+    expect(form.offsetTimeMode.value).toBe("unix");
+    form.resetForm();
+    expect(form.offsetTimeMode.value).toBe("datetime");
+    expect(form.offsetTimeText.value).toBe("");
+  });
+
+  it("applyPreset：unix 毫秒预设值同步 unix 模式（datetime-local 落 unix 串会显示为空）", async () => {
+    installBridge({
+      "kafka/presets/list": {
+        presets: [{ id: "p1", name: "at-ms", params: { offsetStrategy: "timestamp", offsetTime: 1700000000000 } }],
+      },
+    });
+    const form = makeForm();
+    await form.loadPresets();
+    await form.applyPreset("p1");
+    expect(form.offsetTimeText.value).toBe("1700000000000");
+    expect(form.offsetTimeMode.value).toBe("unix");
+  });
+});
+
+describe("条件重置", () => {
+  it("resetForm：全部字段回默认（含 fieldFilters 行与时间双模式），布局态与草稿不动", () => {
+    const form = makeForm();
+    form.groupId.value = "g1";
+    form.offsetStrategy.value = "timestamp";
+    form.offsetTimeText.value = "2026-01-02T03:04";
+    form.partitionsText.value = "0,1";
+    form.partitionOffsetsText.value = "0=9";
+    form.limit.value = "5";
+    form.timeoutMs.value = "1000";
+    form.maxScanRecords.value = "20";
+    form.isolationLevel.value = "read_committed";
+    form.commit.value = true;
+    form.filterText.value = "f";
+    form.keyFilterText.value = "k";
+    form.valueFilterText.value = "v";
+    form.headerFilterText.value = "h";
+    form.matchMode.value = "regex";
+    form.addFieldFilter();
+    form.timestampFrom.value = "2026-01-02T03:04";
+    form.offsetTo.value = "9";
+    form.decode.value = "base64";
+    form.decompression.value = "gzip";
+    form.schemaEnabled.value = true;
+    form.schemaSubject.value = "subj";
+    form.presetName.value = "draft";
+    form.toggleTsMode();
+    expect(form.filterCount.value).toBeGreaterThan(0);
+
+    form.resetForm();
+    expect(form.groupId.value).toBe("");
+    expect(form.offsetStrategy.value).toBe("recent");
+    expect(form.offsetTimeText.value).toBe("");
+    expect(form.partitionsText.value).toBe("");
+    expect(form.partitionOffsetsText.value).toBe("");
+    expect(form.limit.value).toBe("100");
+    expect(form.timeoutMs.value).toBe("15000");
+    expect(form.maxScanRecords.value).toBe("10000");
+    expect(form.isolationLevel.value).toBe("read_uncommitted");
+    expect(form.commit.value).toBe(false);
+    expect(form.filterText.value).toBe("");
+    expect(form.keyFilterText.value).toBe("");
+    expect(form.valueFilterText.value).toBe("");
+    expect(form.headerFilterText.value).toBe("");
+    expect(form.matchMode.value).toBe("contains");
+    expect(form.fieldFilters.value).toHaveLength(0);
+    expect(form.timestampFrom.value).toBe("");
+    expect(form.offsetTo.value).toBe("");
+    expect(form.decode.value).toBe("none");
+    expect(form.decompression.value).toBe("none");
+    expect(form.schemaEnabled.value).toBe(false);
+    expect(form.schemaSubject.value).toBe("");
+    expect(form.tsMode.value).toBe("datetime");
+    expect(form.filterCount.value).toBe(0);
+    expect(form.hasFilters.value).toBe(false);
+    // presetName 是保存草稿输入，重置不吞掉
+    expect(form.presetName.value).toBe("draft");
+    // payload 回默认形态：无过滤、无 schema
+    const params = form.buildParams();
+    expect(params.offsetStrategy).toBe("recent");
+    expect(params).not.toHaveProperty("matchMode");
+    expect(params).not.toHaveProperty("schema");
   });
 });
 

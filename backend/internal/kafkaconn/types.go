@@ -449,9 +449,13 @@ type ConnectionStatus struct {
 	Bootstrap    string `json:"bootstrap"`
 	Status       string `json:"status"` // connected | idle | error
 	ReadOnly     bool   `json:"readOnly,omitempty"`
-	ConnectedAt  int64  `json:"connectedAt,omitempty"`
-	LastUsedAt   int64  `json:"lastUsedAt,omitempty"`
-	Error        string `json:"error,omitempty"`
+	// AllowDelete 是删除类门禁在 UI 侧的呈现（profile.allow_delete 与 read_only
+	// 与门后的有效值）。不用 omitempty：false 必须显式下发，前端
+	// `allowDelete !== false` 依赖显式 false 才禁用删除（缺省=旧 sidecar 放行）。
+	AllowDelete bool   `json:"allowDelete"`
+	ConnectedAt int64  `json:"connectedAt,omitempty"`
+	LastUsedAt  int64  `json:"lastUsedAt,omitempty"`
+	Error       string `json:"error,omitempty"`
 	// ConnectionSource：bootstrap | zookeeper（Phase 2）。
 	ConnectionSource string                `json:"connectionSource,omitempty"`
 	SchemaRegistry   *SchemaRegistryStatus `json:"schemaRegistry,omitempty"`

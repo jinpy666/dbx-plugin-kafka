@@ -77,6 +77,10 @@ const maxRequestLineBytes = 16 << 20
 // 的合法并发（digest/ping/tools-list 交错远低于此）。
 const maxConcurrentRequests = 32
 
+// maxPendingLines 等槽期间积压行上限（评审 L）：超限即暂停接收分支，
+// 读入侧经 lines 缓冲自然背压，防止慢请求放大 pending 无界内存。
+const maxPendingLines = 256
+
 // StdioServer 独立 stdio 模式的 MCP 服务器：包装工具面 Server + 内联凭据
 // 连接池 + DBX 桥转发兜底。并发安全（每请求一个 goroutine）。
 type StdioServer struct {
@@ -135,10 +139,8 @@ func (s *StdioServer) Serve(in io.Reader, out io.Writer) error {
 		tooLong bool
 	}
 	lines := make(chan inbound, maxConcurrentRequests)
-	eofSeen := make(chan struct{})
 	readDone := make(chan error, 1)
 	go func() {
-		defer close(eofSeen)
 		defer close(lines)
 		for {
 			line, tooLong, err := readLineBounded(reader)
@@ -212,7 +214,14 @@ func (s *StdioServer) Serve(in io.Reader, out io.Writer) error {
 			continue
 		}
 		// 并发背压（评审 M）：在途请求收敛在 maxConcurrentRequests 内；等槽
-		// 期间新到行入积压（读入不再停摆），读侧终止可随时打断等待。
+		// 期间新到行入积压（读入不再停摆），读侧终止可随时打断等待。积压超
+		// 上限时暂停接收分支（评审 L：受控客户端可以慢请求放大 pending 至
+		// 无界内存）——读入自然背压到 lines 缓冲（32 行）。
+		if len(pending) >= maxPendingLines {
+			slots <- struct{}{}
+			spawn(request, true)
+			continue
+		}
 		select {
 		case slots <- struct{}{}:
 			spawn(request, true)

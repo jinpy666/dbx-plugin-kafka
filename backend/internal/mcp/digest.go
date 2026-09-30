@@ -93,6 +93,12 @@ func buildTimeHistogram(timestamps []int64) *TimeHistogram {
 	}
 	for _, ts := range timestamps {
 		index := int((ts - minTs) / width)
+		// 恶意 broker 的极端时间戳可令 span 超 2^63 回绕出负 span/负索引
+		//（评审 L）：双向钳位，不允许负索引 panic（虽被 dispatchSafe 兜底，
+		// 单请求 -32603 仍是可避免的可用性损失）。
+		if index < 0 {
+			index = 0
+		}
 		if index >= bucketCount {
 			index = bucketCount - 1
 		}

@@ -65,7 +65,7 @@ export interface ConsumeParams {
   topic: string;
   groupId?: string;
   offsetStrategy: OffsetStrategy;
-  offsetTime?: string | number;
+  offsetTime?: string;
   partitions?: number[];
   partitionOffsets?: Record<string, number>;
   limit?: number;
@@ -95,6 +95,10 @@ export interface ConsumeResult {
   matched: number;
   limited: boolean;
   hasMore: boolean;
+  /** 扫描窗口（timeoutMs）到点退出：hasMore 可能只是超时而非「还有更多」。 */
+  timedOut?: boolean;
+  /** 留存超后端字节预算（256MiB 兜底）：messages 为预算内子集，matched 计数完整。 */
+  retentionTruncated?: boolean;
   nextPartitionOffsets?: Record<string, number>;
 }
 
@@ -275,7 +279,8 @@ export interface KafkaConnectionStatus {
   readOnly?: boolean;
   /** 删除类操作门禁（allow_delete 表单；read_only 下后端强制无效）。旧 sidecar 可能缺省。 */
   allowDelete?: boolean;
-  lastError?: string;
+  /** 最近一次错误（后端字段名 error；旧字段名 lastError 从未由后端下发过）。 */
+  error?: string;
   /** unix 毫秒时间戳（sidecar JSON number）。 */
   lastUsedAt?: number;
   /** Schema Registry 摘要（Phase 2；旧 sidecar 可能缺省 = 未启用）。
@@ -453,7 +458,7 @@ export const kafkaApi = {
   topicsConfigAlter(topic: string, config: Record<string, string>, deleteKeys: string[] = []) {
     return callKafka<{ results: ConfigAlterResult[] }>("kafka/topics/config/alter", { topic, config, deleteKeys });
   },
-  topicsOffsetsList(topics: string[], offsetTime?: string | number) {
+  topicsOffsetsList(topics: string[], offsetTime?: string) {
     return callKafka<{ rows: TopicOffsetRow[] }>(
       "kafka/topics/offsets/list",
       offsetTime !== undefined ? { topics, offsetTime } : { topics },
@@ -526,8 +531,10 @@ export const kafkaApi = {
   messagesConsume(params: ConsumeParams, options?: { timeoutMs?: number }) {
     return callKafka<ConsumeResult>("kafka/messages/consume", params, options);
   },
+  // 工作台导出走前端序列化（所见即所导），本方法仅契约保留；retentionTruncated
+  // 为后端留存预算兜底标记（评审 H-1）。
   messagesExport(params: ConsumeParams & { format: "json" | "csv"; limit: number }) {
-    return callKafka<{ content: string; filename: string; contentType: string }>("kafka/messages/export", params);
+    return callKafka<{ content: string; filename: string; contentType: string; scanned: number; matched: number; exported: number; hasMore: boolean; retentionTruncated?: boolean }>("kafka/messages/export", params);
   },
 
   // stream

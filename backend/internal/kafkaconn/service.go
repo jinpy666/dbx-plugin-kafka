@@ -260,6 +260,7 @@ func (s *Service) SnapshotStatuses() []ConnectionStatus {
 			Bootstrap:        strings.Join(entry.profile.BootstrapServers, ","),
 			Status:           statusForContract(statusValue),
 			ReadOnly:         entry.profile.ReadOnly,
+			AllowDelete:      entry.profile.AllowDelete && !entry.profile.ReadOnly,
 			ConnectedAt:      entry.connectedAt,
 			LastUsedAt:       lastUsedAt,
 			Error:            lastErr,

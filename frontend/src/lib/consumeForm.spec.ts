@@ -1,9 +1,8 @@
-// consumeForm 纯函数单测：分区/位点解析、表单互斥校验、时间输入互转、fieldFilter 校验、matchMode。
+// consumeForm 纯函数单测：分区/位点解析、表单互斥校验、时间输入互转、fieldFilter 校验。
 import { describe, expect, it } from "vitest";
 import {
   fieldFilterIssue,
   isRangeReversed,
-  matchText,
   nowDatetimeLocal,
   offsetTimeToParam,
   offsetTimeToUnixMs,
@@ -34,7 +33,7 @@ describe("consume form helpers", () => {
   });
 
   it("converts offset time inputs (unix ms, datetime-local, RFC3339)", () => {
-    expect(offsetTimeToParam("1700000000000")).toBe(1700000000000);
+    expect(offsetTimeToParam("1700000000000")).toBe("1700000000000");
     expect(offsetTimeToParam("2026-09-05T08:30")).toBe(new Date("2026-09-05T08:30:00").toISOString());
     expect(offsetTimeToParam("2026-09-05T08:30:00Z")).toBe("2026-09-05T08:30:00.000Z");
     expect(offsetTimeToParam("junk")).toBeNull();
@@ -66,14 +65,6 @@ describe("consume form helpers", () => {
     expect(validateConsumeForm({ ...base, offsetStrategy: "offset" })).toEqual([
       { field: "strategy", key: "offsetsRequired" },
     ]);
-  });
-
-  it("matches text in all four modes", () => {
-    expect(matchText("orders-eu", "orders", "prefix")).toBe(true);
-    expect(matchText("orders", "orders", "exact")).toBe(true);
-    expect(matchText("payload", "OA", "contains")).toBe(false);
-    expect(matchText("error-42", "error-\\d+", "regex")).toBe(true);
-    expect(matchText(undefined, "x", "contains")).toBe(false);
   });
 });
 

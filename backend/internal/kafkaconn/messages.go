@@ -150,6 +150,9 @@ type ConsumeResult struct {
 	// RetentionTruncated 标记留存超 RetentionByteBudget 预算（命中计数完整，
 	// messages 为预算内子集——cursor/样本行只覆盖留存部分）。
 	RetentionTruncated bool `json:"retentionTruncated,omitempty"`
+	// TimedOut 标记扫描窗口（timeoutMs）到点退出：hasMore 为真可能只是超时
+	// 而非「还有更多」——调用方（UI/MCP）据此给出可行动提示而非静默空结果。
+	TimedOut bool `json:"timedOut,omitempty"`
 }
 
 // ProduceRequest 对应 kafka/messages/produce。
@@ -215,6 +218,9 @@ type ExportResult struct {
 	Matched     int    `json:"matched"`
 	Exported    int    `json:"exported"`
 	HasMore     bool   `json:"hasMore"`
+	// RetentionTruncated 留存超预算（评审 H-1）：导出为「预算内子集」，
+	// 计数（Matched）完整——前端据此提示改小范围分批导出。
+	RetentionTruncated bool `json:"retentionTruncated,omitempty"`
 }
 
 // Produce 实现 kafka/messages/produce（批量 ≤1000 / headers / 压缩 / 指定分区；
@@ -372,6 +378,7 @@ func (s *Service) Consume(ctx context.Context, params ConsumeParams) (*ConsumeRe
 		HasMore:              result.hasMore,
 		NextPartitionOffsets: result.nextPartitionOffsets,
 		RetentionTruncated:   result.retentionTruncated,
+		TimedOut:             result.timedOut,
 	}, nil
 }
 
@@ -399,13 +406,14 @@ func (s *Service) Export(ctx context.Context, req ExportRequest) (*ExportResult,
 		return nil, err
 	}
 	return &ExportResult{
-		Content:     content,
-		Filename:    exportFilename(trimSpace(consumeParams.Topic), format, time.Now()),
-		ContentType: contentType,
-		Scanned:     result.scanned,
-		Matched:     result.matched,
-		Exported:    len(result.messages),
-		HasMore:     result.hasMore,
+		Content:            content,
+		Filename:           exportFilename(trimSpace(consumeParams.Topic), format, time.Now()),
+		ContentType:        contentType,
+		Scanned:            result.scanned,
+		Matched:            result.matched,
+		Exported:           len(result.messages),
+		HasMore:            result.hasMore,
+		RetentionTruncated: result.retentionTruncated,
 	}, nil
 }
 
@@ -416,6 +424,7 @@ type consumeResult struct {
 	matched              int
 	limited              bool
 	hasMore              bool
+	timedOut             bool
 	retentionTruncated   bool
 	nextPartitionOffsets map[int32]int64
 }
@@ -428,6 +437,11 @@ type consumeRetentionTracker struct {
 	budget   int
 	retained int
 }
+
+// workbenchRetentionByteBudget 工作台 consume/export 的留存兜底预算：256MiB
+// 覆盖满额单条（512KB value）约 500 条、常规消息数万条，不改变典型行为；
+// 最坏驻留 ≈ 预算 + 序列化瞬时副本（<1GB），对长驻 sidecar 安全。
+const workbenchRetentionByteBudget = 256 << 20
 
 func (t *consumeRetentionTracker) admit(valueBytes int) bool {
 	if t.budget <= 0 || t.retained == 0 {
@@ -453,6 +467,14 @@ func (s *Service) consumeMessages(ctx context.Context, params ConsumeParams) (co
 	if err := validateConsumeParams(params); err != nil {
 		return result, err
 	}
+	// 留存预算兜底（评审 H-1）：digest 聚合路径由调用方显式传 64MiB
+	//（mcp/server.go digestRetentionByteBudget）；工作台 consume/export 与
+	// MCP consume 工具不传（0=契约原语义=无界留存，limit=10000 × ~1.2MB/条
+	// 驻留可达 ~12GB）。统一兜底到工作台预算：超预算停止留存并置
+	// RetentionTruncated（扫描与命中计数完整），由调用方提示「预算内子集」。
+	if params.RetentionByteBudget <= 0 {
+		params.RetentionByteBudget = workbenchRetentionByteBudget
+	}
 	// §5.5：只读策略下禁止 commit（与 stream/start 同门禁）。此前一次性
 	// 消费路径漏检——read_only 连接可经本路径为消费组提交 offset 且不留
 	// 审计。未连接连接按 profileOf 只读兜底拒绝。
@@ -465,7 +487,8 @@ func (s *Service) consumeMessages(ctx context.Context, params ConsumeParams) (co
 	maxScan := consumeMaxScanRecords(limit, params.MaxScanRecords)
 	timeout := time.Duration(params.TimeoutMs) * time.Millisecond
 	if timeout <= 0 {
-		timeout = 5 * time.Second
+		// 15s：跨境/冷启动链路 5s 窗口极易到点空手而归（前端表单默认同值）。
+		timeout = 15 * time.Second
 	}
 
 	groupID := trimSpace(params.GroupID)
@@ -684,6 +707,7 @@ func (s *Service) consumeMessages(ctx context.Context, params ConsumeParams) (co
 	result.scanned = scanned
 	result.limited = limited
 	result.hasMore = hasMore
+	result.timedOut = timedOut
 	result.nextPartitionOffsets = nextPartitionOffsets
 	return result, nil
 }

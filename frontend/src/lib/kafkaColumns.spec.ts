@@ -70,13 +70,12 @@ describe("column builders", () => {
     expect(comparator(filterDay, "2023-11-13 23:59:59")).toBeLessThan(0);
     expect(comparator(filterDay, "2023-11-15 00:00:01")).toBeGreaterThan(0);
     expect(comparator(filterDay, "not-a-date")).toBe(1);
-    // utc tz：UTC 文本按 UTC 解析为时刻后取「本地日」与过滤日期的本地零点按天
-    // 比较（与机器时区无关的确定性断言：先求出该时刻的本地零点）。
+    // utc tz：单元格文本取 UTC 分量、过滤日期的本地 Y/M/D 当「日序数」按天
+    // 比较（评审 L：旧实现取本地分量，跨日时区整体错位一天；与机器时区无关）。
     setWorkbenchTimestampTz("utc");
-    const instant = new Date(Date.UTC(2023, 10, 13, 23, 0, 0));
-    const cellLocalDay = new Date(instant.getFullYear(), instant.getMonth(), instant.getDate());
-    expect(comparator(cellLocalDay, "2023-11-13 23:00:00")).toBe(0);
-    expect(comparator(new Date(cellLocalDay.getTime() + 86400000), "2023-11-13 23:00:00")).toBeLessThan(0);
+    expect(comparator(new Date(2023, 10, 13), "2023-11-13 23:00:00")).toBe(0);
+    expect(comparator(new Date(2023, 10, 14), "2023-11-13 23:00:00")).toBeLessThan(0);
+    expect(comparator(new Date(2023, 10, 12), "2023-11-13 23:00:00")).toBeGreaterThan(0);
     setWorkbenchTimestampTz("local");
   });
 

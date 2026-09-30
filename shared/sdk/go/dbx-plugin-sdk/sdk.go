@@ -15,6 +15,12 @@ const ProtocolVersion = 1
 
 const maxJSONBytes = 8 * 1024 * 1024
 
+// maxConcurrentRequests 在途请求并发上限（评审 M-3：每请求一 goroutine 原本
+// 无界——宿主异常灌入慢请求（admin 20s / consume 15s 窗口）时 goroutine 与
+// 内存无界累积。主循环 acquire 阻塞即暂停读入形成背压；量级与
+// internal/mcp/stdio.go 的 maxConcurrentRequests 对齐）。
+const maxConcurrentRequests = 32
+
 type Metadata struct {
 	ID           string
 	Version      string
@@ -148,6 +154,7 @@ func (server *Server) Serve() error {
 	emitter := &Emitter{writer: server.output, mutex: &sync.Mutex{}}
 	reader := bufio.NewReaderSize(server.input, 64*1024)
 	var workers sync.WaitGroup
+	sem := make(chan struct{}, maxConcurrentRequests)
 	for {
 		payload, tooLong, readErr := readSDKLine(reader)
 		if tooLong {
@@ -198,9 +205,13 @@ func (server *Server) Serve() error {
 				}
 				continue
 			} else {
+				// 背压（评审 M-3）：槽满时阻塞在 acquire，读入循环暂停——
+				// 畸形/超限行与 initialize 的同步处置不受影响。
+				sem <- struct{}{}
 				workers.Add(1)
 				go func(request protocolRequest) {
 					defer workers.Done()
+					defer func() { <-sem }()
 					result, pluginError := server.dispatchSafe(
 						RequestContext{RequestID: request.ID, Driver: request.Driver},
 						request.Method,

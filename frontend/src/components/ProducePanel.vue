@@ -481,7 +481,17 @@ async function startFlow() {
     flowSource.value === "schema_random" && preflight.attachSubject
       ? { subject: preflight.attachSubject, format: "avro" }
       : undefined;
-  const runTick = () => void runFlowTick(preflight.schemaText, schemaAttach);
+  // in-flight 守卫（评审 L）：produce 慢于间隔（最小 250ms）时旧 tick 未返回
+  // 就跳过本次——并发 tick 会双计 flowFailures 提前自动停止，且实际发送速率
+  // 超出配置间隔。
+  let inFlight = false;
+  const runTick = () => {
+    if (inFlight) return;
+    inFlight = true;
+    void runFlowTick(preflight.schemaText, schemaAttach).finally(() => {
+      inFlight = false;
+    });
+  };
   runTick();
   flowTimer = window.setInterval(runTick, flowIntervalMs.value);
 }

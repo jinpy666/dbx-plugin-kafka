@@ -147,6 +147,66 @@ describe("MessagesPanel", () => {
     expect((wrapper.emitted("error") ?? []).every(([message]) => message === "")).toBe(true);
   });
 
+  // 条件重置：footer 重置按钮清空全部条件字段，badge 计数归零并轻通知
+  //（此前无任何重置入口，只能逐字段手清或靠预设覆盖）。
+  it("resets all conditions via the footer reset button (fields + badge + notify)", async () => {
+    installBridge({ "kafka/presets/list": { presets: [] } });
+    const wrapper = mountPanel();
+    await flushPromises();
+    const numberInputs = wrapper.findAll('input[type="number"]');
+    await numberInputs[3].setValue(1); // offsetFrom
+    await numberInputs[4].setValue(2); // offsetTo
+    const textInput = wrapper.find('input[spellcheck="false"]');
+    await textInput.setValue("needle"); // groupId 文本框（抽屉首个文本输入）
+    // 范围/文本条件计入条件数 badge（对齐后端 hasConsumeFilter 语义）
+    expect(wrapper.find(".consume-bar__filters .badge").exists()).toBe(true);
+
+    await wrapper.find('[data-testid="filters-reset"]').trigger("click");
+    await flushPromises();
+    const inputsAfter = wrapper.findAll('input[type="number"]');
+    expect((inputsAfter[3].element as HTMLInputElement).value).toBe("");
+    expect((inputsAfter[4].element as HTMLInputElement).value).toBe("");
+    expect((textInput.element as HTMLInputElement).value).toBe("");
+    expect(wrapper.find(".consume-bar__filters .badge").exists()).toBe(false);
+    expect((wrapper.emitted("notify") ?? []).at(-1)).toEqual([t("messages.uiFiltersReset")]);
+  });
+
+  // 时间位点双模式接线：timestamp 策略下用 datetime-local 选择器录入可直发请求，
+  // unix 切换按钮把输入框换回文本并换算既有值（与「时间与范围」同款交互）。
+  it("accepts offset time via the datetime-local picker and toggles to unix ms", async () => {
+    installBridge({
+      "kafka/presets/list": { presets: [] },
+      "kafka/messages/consume": { messages: [], scanned: 0, matched: 0, limited: false, hasMore: false },
+    });
+    const wrapper = mountPanel();
+    await flushPromises();
+    const strategySelect = wrapper
+      .findAll("label.field")
+      .find((field) => field.text().includes(t("messages.offsetStrategy")))!
+      .find("select");
+    await strategySelect.setValue("timestamp");
+
+    const tsField = wrapper.findAll("label.field").find((field) => field.text().includes(t("messages.offsetTime")));
+    expect(tsField).toBeTruthy();
+    const picker = tsField!.find('input[type="datetime-local"]');
+    expect(picker.exists()).toBe(true);
+    await picker.setValue("2026-09-01T10:00:00");
+
+    await wrapper.find(".form-footer .primary-button").trigger("click");
+    await flushPromises();
+    const consumeCall = invokeMock.mock.calls.find(([method]) => method === "kafka/messages/consume");
+    expect(consumeCall?.[1]).toMatchObject({
+      offsetStrategy: "timestamp",
+      offsetTime: new Date("2026-09-01T10:00:00").toISOString(),
+    });
+
+    const modeButton = tsField!.findAll("button").find((button) => button.text() === t("messages.timeModeUnix"))!;
+    await modeButton.trigger("click");
+    const unixInput = tsField!.find('input[type="text"]');
+    expect(unixInput.exists()).toBe(true);
+    expect((unixInput.element as HTMLInputElement).value).toBe(String(new Date("2026-09-01T10:00:00").getTime()));
+  });
+
   // P1-7：在途消费切换 topic 后，晚到的旧 topic 响应必须丢弃（不串台），且新
   // topic 立即可重新消费（consuming 复位），新响应正常落地。
   it("drops a stale consume response when the topic changes mid-flight (P1-7)", async () => {
@@ -553,6 +613,70 @@ describe("MessagesPanel MCP intent (M3)", () => {
     const miss = await panel.applyIntentSelect({ partition: 9, offset: 9 });
     expect(miss.status).toBe("rejected");
     expect(miss.reason).toContain("partition+offset");
+  });
+
+  // MCP 检索的「填条件」必须看得见：applyIntentConsume 先展开条件抽屉再
+  // 填充（此前填充发生在收起抽屉里，结果落地前 UI 毫无动静）；成功后仍
+  // 收起抽屉展示结果。
+  it("opens the conditions drawer while filling intent params and closes it after success", async () => {
+    let resolveConsume!: (value: ConsumeResult) => void;
+    invokeMock.mockReset();
+    invokeMock.mockImplementation(async (method: string) => {
+      if (method === "kafka/presets/list") return { presets: [] };
+      if (method === "kafka/messages/consume") return new Promise<ConsumeResult>((resolve) => (resolveConsume = resolve));
+      throw new Error(`unhandled method: ${method}`);
+    });
+    (window as unknown as { dbxPlugin: unknown }).dbxPlugin = { invoke: invokeMock };
+    const wrapper = mountPanel();
+    await flushPromises();
+    const panel = wrapper.vm as unknown as { applyIntentConsume(params: Record<string, unknown>): Promise<{ status: string }> };
+    const pending = panel.applyIntentConsume({ topic: "order-events", valueFilter: "needle" });
+    await flushPromises();
+    // 填充期间：抽屉展开且条件值可见（v-show 直接断言 display，happy-dom 下
+    // VTU isVisible 对祖先链判定不可靠）
+    expect((wrapper.find(".consume-drawer").element as HTMLElement).style.display).not.toBe("none");
+    const valueFilterInput = wrapper
+      .findAll("label.field")
+      .find((field) => field.text().includes(t("messages.valueFilter")))!
+      .find("input");
+    expect((valueFilterInput.element as HTMLInputElement).value).toBe("needle");
+    resolveConsume({ messages: [], scanned: 0, matched: 0, limited: false, hasMore: false });
+    const outcome = await pending;
+    expect(outcome.status).toBe("applied");
+    // 成功后抽屉收起（结果表格可见）
+    expect((wrapper.find(".consume-drawer").element as HTMLElement).style.display).toBe("none");
+  });
+
+  // 超时可见（后端 timedOut）：空结果不再是无提示的「没有数据」——meta 行给
+  // 超时徽标（取代误导性的「调大上限」hasMore 徽标），空态同步超时文案。
+  it("surfaces a timeout badge and empty hint when the backend reports timedOut", async () => {
+    installBridge({
+      "kafka/presets/list": { presets: [] },
+      "kafka/messages/consume": { messages: [], scanned: 3, matched: 0, limited: false, hasMore: true, timedOut: true },
+    });
+    const wrapper = mountPanel();
+    await flushPromises();
+    await wrapper.find(".form-footer .primary-button").trigger("click");
+    await flushPromises();
+    expect(wrapper.find('[data-testid="timedout-badge"]').exists()).toBe(true);
+    expect(wrapper.find(".result-meta").text()).toContain(t("messages.uiTimedOut"));
+    // timedOut 时不再显示误导性的「还有更多——调大上限」徽标
+    expect(wrapper.find(".result-meta").text()).not.toContain(t("messages.hasMore"));
+    expect(wrapper.find('[data-testid="empty-hint"]').text()).toBe(t("messages.uiTimedOut"));
+  });
+
+  it("keeps the hasMore badge when the scan is truncated without a timeout", async () => {
+    installBridge({
+      "kafka/presets/list": { presets: [] },
+      "kafka/messages/consume": { messages: [], scanned: 3, matched: 0, limited: false, hasMore: true },
+    });
+    const wrapper = mountPanel();
+    await flushPromises();
+    await wrapper.find(".form-footer .primary-button").trigger("click");
+    await flushPromises();
+    expect(wrapper.find('[data-testid="timedout-badge"]').exists()).toBe(false);
+    expect(wrapper.find(".result-meta").text()).toContain(t("messages.hasMore"));
+    expect(wrapper.find('[data-testid="empty-hint"]').text()).toBe(t("messages.noMessages"));
   });
 });
 

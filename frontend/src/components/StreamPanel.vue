@@ -125,13 +125,14 @@ async function start() {
   }
   starting.value = true;
   emit("error", "");
+  const schemaAttach = buildSchemaAttach();
   try {
     const response = await kafkaApi.streamStart({
       topic: props.topic,
       offsetStrategy: "latest" as OffsetStrategy,
       limit: positiveInt(limit.value, 100),
       ...(filterText.value.trim() ? { filter: filterText.value.trim(), matchMode: matchMode.value } : {}),
-      ...(buildSchemaAttach() ? { schema: buildSchemaAttach() } : {}),
+      ...(schemaAttach ? { schema: schemaAttach } : {}),
     });
     sessionId.value = response.sessionId;
     sessionTopic.value = props.topic;

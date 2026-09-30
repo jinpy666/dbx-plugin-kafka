@@ -239,10 +239,7 @@ async function queryOffsets() {
   try {
     const offsetTime =
       offsetTimeMode.value === "custom" ? offsetTimeToParam(offsetCustomTime.value) : (offsetTimeMode.value as string);
-    const response = await kafkaApi.topicsOffsetsList(
-      [selected.value.name],
-      offsetTime === undefined ? undefined : (offsetTime as string | number),
-    );
+    const response = await kafkaApi.topicsOffsetsList([selected.value.name], offsetTime ?? undefined);
     offsetRows.value = response.rows ?? [];
   } catch (cause) {
     emit("error", cause instanceof Error ? cause.message : String(cause));

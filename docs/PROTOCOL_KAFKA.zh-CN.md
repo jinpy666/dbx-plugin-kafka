@@ -293,16 +293,20 @@ Host API 1.0 的 `plugin_connection_params` 只发送 `runtime.host:port`，且
   `schemaId`、`schemaSubject`、`schemaVersion` 字段；解码失败**不中断
   消费**，置 `decodeError`。元数据按 schemaID / subject+version 在本次
   消费（或流式会话）内缓存，同 ID 只请求一次 SR。
-- 返回：`{messages:MessageView[], scanned:int, matched:int, limited:bool, hasMore:bool, nextPartitionOffsets:map<partition,int>}`
-  （`nextPartitionOffsets` 可作续读游标）。
+- 返回：`{messages:MessageView[], scanned:int, matched:int, limited:bool, hasMore:bool, timedOut?:bool, retentionTruncated?:bool, nextPartitionOffsets:map<partition,int>}`
+  （`nextPartitionOffsets` 可作续读游标；`timedOut`=扫描窗口（timeoutMs）到点
+  退出——hasMore 为真可能只是超时而非「还有更多」，调用方应据此提示而非静默空结果；
+  `retentionTruncated`=命中留存达到服务端字节预算（256MiB 兜底）——messages 为
+  预算内子集、matched 计数完整，调用方应提示缩小范围或分批拉取）。
 - 错误：参数互斥冲突（见 §4）→ `-32602`；连接不可用 → `-32000`。
 
 **`kafka/messages/export`**
 
 - 请求：`ConsumeParams` + `format:"json"|"csv"`、`limit?:int`（≤10000，默认 1000）。
-- 返回：`{content:string, filename:string, contentType:string}`；
+- 返回：`{content:string, filename:string, contentType:string, scanned:int, matched:int, exported:int, hasMore:bool, retentionTruncated?:bool}`；
   filename 形如 `dbx-kafka-<topic>-<yyyyMMdd-HHmmss>.json|.csv`。
-  宿主 1.0 无 save-file 能力，前端以 Blob URL 下载。
+  宿主 1.0 无 save-file 能力，前端以 Blob URL 下载。`retentionTruncated` 语义同
+  consume：导出内容为预算内子集，计数完整。
 - 错误：format 非法 / limit 超限 → `-32602`。
 
 ### 3.6 stream（流式消费会话）
@@ -555,7 +559,7 @@ AWS Glue schema management is available"；双配置歧义/未知 registry →
 | `partitions` | int[]? | — | 指定分区（有值时禁 `groupId`） |
 | `partitionOffsets` | map<partition,int>? | — | strategy=offset 时**必填** |
 | `limit` | int | 100 | 返回条数上限 |
-| `timeoutMs` | int | 5000 | 扫描窗口（客户端启动/metadata 就绪另有独立预算 max(2×窗口, 12s)，不计入本值） |
+| `timeoutMs` | int | 15000 | 扫描窗口（客户端启动/metadata 就绪另有独立预算 max(2×窗口, 12s)，不计入本值） |
 | `maxScanRecords` | int | max(1000, limit×10) | 扫描上限（过滤不过 early-stop） |
 | `isolationLevel` | enum | `read_uncommitted` | `read_uncommitted` / `read_committed` |
 | `commit` | bool | false | true 时**禁一切过滤且必须 groupId**（否则 → `-32602`）；read_only 下拒绝 → `-32000` |

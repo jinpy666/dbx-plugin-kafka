@@ -12,7 +12,8 @@ export type TimestampTz = "local" | "utc";
  * title 的完整 ISO 同一时区语义），tz=local 保持既有本地时区行为。
  */
 export function formatTimestamp(ms: number | undefined, tz: TimestampTz = "local"): string {
-  if (!ms || !Number.isFinite(ms)) return "—";
+  // epoch 0 是合法时间戳（评审 L：!ms 会把 0 渲染成「—」）。
+  if (ms === undefined || ms === null || !Number.isFinite(ms)) return "—";
   const date = new Date(ms);
   if (Number.isNaN(date.getTime())) return String(ms);
   const pad = (value: number) => String(value).padStart(2, "0");
@@ -24,7 +25,7 @@ export function formatTimestamp(ms: number | undefined, tz: TimestampTz = "local
 
 /** unix ms → 完整 ISO-8601（单元格 title 悬停用）；非法值原样字符串化。 */
 export function timestampIso(ms: number | undefined): string {
-  if (!ms || !Number.isFinite(ms)) return "";
+  if (ms === undefined || ms === null || !Number.isFinite(ms)) return "";
   const date = new Date(ms);
   return Number.isNaN(date.getTime()) ? String(ms) : date.toISOString();
 }
@@ -65,7 +66,17 @@ export function timestampFilterTextComparator(filterLocalDateAtMidnight: Date, c
       : `${year}-${month}-${day}T${hour}:${minute}:${second}`;
   const parsed = new Date(iso);
   if (Number.isNaN(parsed.getTime())) return 1;
-  const cell = new Date(parsed.getFullYear(), parsed.getMonth(), parsed.getDate());
-  if (cell.getTime() === filterLocalDateAtMidnight.getTime()) return 0;
-  return cell.getTime() > filterLocalDateAtMidnight.getTime() ? 1 : -1;
+  // 按天比较归约为「日序数」（评审 L：tz=utc 此前用本地分量构造比较日期，
+  // 跨日时区（如 UTC+8 晚间）整体错位一天）。utc 取单元格文本的 UTC 分量、
+  // 过滤日期的本地 Y/M/D 当日序数；local 分支保持本地零点语义不变。
+  const cellDay =
+    tz === "utc"
+      ? Date.UTC(parsed.getUTCFullYear(), parsed.getUTCMonth(), parsed.getUTCDate())
+      : new Date(parsed.getFullYear(), parsed.getMonth(), parsed.getDate()).getTime();
+  const filterDay =
+    tz === "utc"
+      ? Date.UTC(filterLocalDateAtMidnight.getFullYear(), filterLocalDateAtMidnight.getMonth(), filterLocalDateAtMidnight.getDate())
+      : filterLocalDateAtMidnight.getTime();
+  if (cellDay === filterDay) return 0;
+  return cellDay > filterDay ? 1 : -1;
 }

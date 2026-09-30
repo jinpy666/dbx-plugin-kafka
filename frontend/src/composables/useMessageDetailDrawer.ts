@@ -46,18 +46,25 @@ export function useMessageDetailDrawer(detail: Ref<KafkaMessage | null> = shallo
     sectionsOpen.value = { ...sectionsOpen.value, [name]: !sectionsOpen.value[name] };
   }
 
+  // 渲染序号守卫（评审 L）：gzip 路径真实异步（DecompressionStream），快速
+  // 切换两条消息时旧消息的慢完成解压结果不得覆盖新消息视图。
+  let renderSeq = 0;
+
   async function renderView() {
     const message = detail.value;
     if (!message) return;
+    const seq = ++renderSeq;
     viewBusy.value = true;
     try {
-      viewResult.value = await formatMessageValue(message, {
+      const result = await formatMessageValue(message, {
         decode: viewDecode.value,
         decompression: viewDecompression.value,
         format: viewFormat.value,
       });
+      if (seq !== renderSeq) return;
+      viewResult.value = result;
     } finally {
-      viewBusy.value = false;
+      if (seq === renderSeq) viewBusy.value = false;
     }
   }
 
