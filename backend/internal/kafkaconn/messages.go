@@ -150,6 +150,9 @@ type ConsumeResult struct {
 	// RetentionTruncated 标记留存超 RetentionByteBudget 预算（命中计数完整，
 	// messages 为预算内子集——cursor/样本行只覆盖留存部分）。
 	RetentionTruncated bool `json:"retentionTruncated,omitempty"`
+	// TimedOut 标记扫描窗口（timeoutMs）到点退出：hasMore 为真可能只是超时
+	// 而非「还有更多」——调用方（UI/MCP）据此给出可行动提示而非静默空结果。
+	TimedOut bool `json:"timedOut,omitempty"`
 }
 
 // ProduceRequest 对应 kafka/messages/produce。
@@ -372,6 +375,7 @@ func (s *Service) Consume(ctx context.Context, params ConsumeParams) (*ConsumeRe
 		HasMore:              result.hasMore,
 		NextPartitionOffsets: result.nextPartitionOffsets,
 		RetentionTruncated:   result.retentionTruncated,
+		TimedOut:             result.timedOut,
 	}, nil
 }
 
@@ -416,6 +420,7 @@ type consumeResult struct {
 	matched              int
 	limited              bool
 	hasMore              bool
+	timedOut             bool
 	retentionTruncated   bool
 	nextPartitionOffsets map[int32]int64
 }
@@ -465,7 +470,8 @@ func (s *Service) consumeMessages(ctx context.Context, params ConsumeParams) (co
 	maxScan := consumeMaxScanRecords(limit, params.MaxScanRecords)
 	timeout := time.Duration(params.TimeoutMs) * time.Millisecond
 	if timeout <= 0 {
-		timeout = 5 * time.Second
+		// 15s：跨境/冷启动链路 5s 窗口极易到点空手而归（前端表单默认同值）。
+		timeout = 15 * time.Second
 	}
 
 	groupID := trimSpace(params.GroupID)
@@ -684,6 +690,7 @@ func (s *Service) consumeMessages(ctx context.Context, params ConsumeParams) (co
 	result.scanned = scanned
 	result.limited = limited
 	result.hasMore = hasMore
+	result.timedOut = timedOut
 	result.nextPartitionOffsets = nextPartitionOffsets
 	return result, nil
 }

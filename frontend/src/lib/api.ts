@@ -95,6 +95,8 @@ export interface ConsumeResult {
   matched: number;
   limited: boolean;
   hasMore: boolean;
+  /** 扫描窗口（timeoutMs）到点退出：hasMore 可能只是超时而非「还有更多」。 */
+  timedOut?: boolean;
   nextPartitionOffsets?: Record<string, number>;
 }
 

@@ -1,6 +1,6 @@
 {
   "name": "Kafka Studio",
-  "description": "Operate Apache Kafka from one workspace: inspect topics and partitions, produce and consume messages, filter and decode payloads, monitor consumer lag, manage offsets and ACLs, stream records, and export results.",
+  "description": "Operate Apache Kafka from one DBX workspace: inspect topics, brokers, and consumer lag; search, stream, and produce messages with multi-channel filters and payload decoding; manage offsets, ACLs, and Schema Registry. Read-only by default, with guarded writes and 11 MCP tools for AI automation.",
   "icon": "assets/plugin.svg",
   "tags": [
     "kafka",
@@ -20,31 +20,31 @@
   "localizations": {
     "zh-CN": {
       "name": "Kafka Studio",
-      "description": "在一个工作台中管理 Apache Kafka：查看 topic 与分区、生产和消费消息、过滤与解码 payload、监控消费组 lag、管理 offset 和 ACL、流式消费并导出结果。"
+      "description": "在 DBX 工作台中运维 Apache Kafka：巡检 topic、broker 与消费组 lag，多通道过滤检索与流式消费消息并解码 payload，管理 offset、ACL 与 Schema Registry。默认只读、写操作受确认门保护，并内置 11 个 MCP 工具交给 AI 自动化。"
     },
     "zh-TW": {
       "name": "Kafka Studio",
-      "description": "DBX 的 Kafka 主控台外掛：topic 與分割區、訊息生產與消費（過濾/解碼）、消費組（lag 與 offset 重置）、ACL、串流消費與匯出。"
+      "description": "在 DBX 工作台維運 Apache Kafka：巡檢 topic、broker 與消費組 lag，以多通道過濾檢索與串流消費訊息並解碼 payload，管理 offset、ACL 與 Schema Registry。預設唯讀、寫入操作受確認閘保護，並內建 11 個 MCP 工具交給 AI 自動化。"
     },
     "en": {
       "name": "Kafka Studio",
-      "description": "Operate Apache Kafka from one workspace: inspect topics and partitions, produce and consume messages, filter and decode payloads, monitor consumer lag, manage offsets and ACLs, stream records, and export results."
+      "description": "Operate Apache Kafka from one DBX workspace: inspect topics, brokers, and consumer lag; search, stream, and produce messages with multi-channel filters and payload decoding; manage offsets, ACLs, and Schema Registry. Read-only by default, with guarded writes and 11 MCP tools for AI automation."
     },
     "es": {
       "name": "Kafka Studio",
-      "description": "Plugin de consola Kafka para DBX: topics y particiones, producción/consumo de mensajes con filtros y decodificación, grupos de consumidores con lag y reset de offsets, ACL, consumo en streaming y exportación."
+      "description": "Opere Apache Kafka desde un único espacio de trabajo de DBX: inspeccione topics, brokers y el lag de los grupos de consumo; busque, consuma en streaming y produzca mensajes con filtros multicanal y decodificación de payloads; gestione offsets, ACL y Schema Registry. Solo lectura por defecto, escrituras con confirmación y 11 herramientas MCP para automatizar con IA."
     },
     "it": {
       "name": "Kafka Studio",
-      "description": "Plugin console Kafka per DBX: topic e partizioni, produzione/consumo di messaggi con filtri e decodifica, gruppi di consumatori con lag e reset degli offset, ACL, consumo in streaming ed esportazione."
+      "description": "Gestisci Apache Kafka da un unico workspace DBX: ispeziona topic, broker e lag dei gruppi di consumatori; cerca, consuma in streaming e produce messaggi con filtri multicanale e decodifica dei payload; gestisci offset, ACL e Schema Registry. Sola lettura per impostazione predefinita, scritture con conferma e 11 strumenti MCP per l'automazione con l'IA."
     },
     "ja": {
       "name": "Kafka Studio",
-      "description": "DBX 用 Kafka コンソールプラグイン: トピックとパーティション、フィルタリング/デコード付きメッセージ送受信、コンシューマーグループ（ラグと offset リセット）、ACL、ストリーミング消費とエクスポート。"
+      "description": "DBX のワークスペースで Apache Kafka を運用：トピック・ブローカー・コンシューマーラグの巡検、マルチチャネルフィルタによるメッセージ検索、ストリーミング消費とプロデュース、payload のデコード、offset・ACL・Schema Registry の管理。デフォルトは読み取り専用、書き込みは確認ゲートで保護し、AI 自動化のための 11 個の MCP ツールを内蔵。"
     },
     "pt-BR": {
       "name": "Kafka Studio",
-      "description": "Plugin de console Kafka para o DBX: tópicos e partições, produção/consumo de mensagens com filtros e decodificação, grupos de consumidores com lag e redefinição de offsets, ACLs, consumo em streaming e exportação."
+      "description": "Opere o Apache Kafka a partir de um único workspace do DBX: inspecione tópicos, brokers e o lag dos grupos de consumidores; pesquise, consuma em streaming e produza mensagens com filtros multicanal e decodificação de payloads; gerencie offsets, ACLs e Schema Registry. Somente leitura por padrão, gravações com confirmação e 11 ferramentas MCP para automação com IA."
     }
   }
 }

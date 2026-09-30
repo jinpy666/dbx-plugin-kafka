@@ -184,4 +184,35 @@ describe("App MCP UI intent wiring (M3)", () => {
     const reports = invokeMock.mock.calls.filter(([method]) => method === "kafka/ui/state/report").map(([, body]) => body);
     expect(reports).toContainEqual(expect.objectContaining({ intentId: "i-bad", status: "rejected" }));
   });
+
+  // MCP 检索必须可见地落到 UI：用户停在别的 tab 时，search intent 先把
+  // 工作台带回消息面板再填表+消费（此前填表发生在 v-show 隐藏面板里，
+  // 看起来像「没反应」）。
+  it("search intent switches back to the messages panel before applying", async () => {
+    const wrapper = await mountApp();
+    emitHostEvent({
+      method: "kafka/ui/intent",
+      params: { intentId: "i-focus", action: "focus", params: { panel: "topics" } },
+    });
+    await flushPromises();
+    await flushPromises();
+    invokeMock.mockImplementation(async (method: string) => {
+      if (method === "kafka/topics/list") return { topics: [] };
+      if (method === "kafka/connections/statuses") return { statuses: [] };
+      if (method === "kafka/presets/list") return { presets: [] };
+      if (method === "kafka/messages/consume") return { messages: [], scanned: 0, matched: 0, limited: false, hasMore: false };
+      throw new Error(`unhandled method: ${method}`);
+    });
+    emitHostEvent({
+      method: "kafka/ui/intent",
+      params: { intentId: "i-search", action: "search", params: { topic: "order-events" } },
+    });
+    await flushPromises();
+    await flushPromises();
+    const activeTab = wrapper.findAll(".tab-bar button").find((tab) => tab.classes().includes("is-active"));
+    expect(activeTab?.text()).toContain("消息");
+    const reports = invokeMock.mock.calls.filter(([method]) => method === "kafka/ui/state/report").map(([, body]) => body);
+    expect(reports).toContainEqual(expect.objectContaining({ intentId: "i-search", status: "applied" }));
+    wrapper.unmount();
+  });
 });

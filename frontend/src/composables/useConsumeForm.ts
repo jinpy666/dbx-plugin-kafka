@@ -48,33 +48,65 @@ export interface UseConsumeFormOptions {
   error: (message: string) => void;
 }
 
+/**
+ * 表单默认值：初始 refs 与 resetForm 共用的单一来源（避免两处漂移）。
+ * 默认 recent（每分区从日志末端回退扫描窗口起读）：latest 只等新消息，查历史
+ * 永远「已扫描 0」（issue #16）；流式面板不受影响（订阅语义本就是 tail）。
+ */
+const FORM_DEFAULTS = {
+  groupId: "",
+  offsetStrategy: "recent" as OffsetStrategy,
+  offsetTimeText: "",
+  partitionsText: "",
+  partitionOffsetsText: "",
+  limit: "100",
+  // 15s：跨境/冷启动链路 5s 极易超时空手而归（后端缺省回退同值，协议文档同步）。
+  timeoutMs: "15000",
+  maxScanRecords: "10000",
+  isolationLevel: "read_uncommitted" as IsolationLevel,
+  commit: false,
+  filterText: "",
+  keyFilterText: "",
+  valueFilterText: "",
+  headerFilterText: "",
+  matchMode: "contains" as MatchMode,
+  timestampFrom: "",
+  timestampTo: "",
+  offsetFrom: "",
+  offsetTo: "",
+  decode: "none" as DecodeMode,
+  decompression: "none" as Decompression,
+  schemaEnabled: false,
+  schemaSubject: "",
+  schemaVersionText: "",
+  schemaFormat: "avro" as SchemaFormat,
+};
+
 export function useConsumeForm(options: UseConsumeFormOptions) {
   // -- form state ---------------------------------------------------------------
 
-  const groupId = ref("");
-  // 默认 recent（每分区从日志末端回退扫描窗口起读）：latest 只等新消息，查历史
-  // 永远「已扫描 0」（issue #16）；流式面板不受影响（订阅语义本就是 tail）。
-  const offsetStrategy = ref<OffsetStrategy>("recent");
-  const offsetTimeText = ref("");
-  const partitionsText = ref("");
-  const partitionOffsetsText = ref("");
-  const limit = ref("100");
-  const timeoutMs = ref("5000");
-  const maxScanRecords = ref("10000");
-  const isolationLevel = ref<IsolationLevel>("read_uncommitted");
-  const commit = ref(false);
-  const filterText = ref("");
-  const keyFilterText = ref("");
-  const valueFilterText = ref("");
-  const headerFilterText = ref("");
-  const matchMode = ref<MatchMode>("contains");
+  const groupId = ref(FORM_DEFAULTS.groupId);
+  const offsetStrategy = ref<OffsetStrategy>(FORM_DEFAULTS.offsetStrategy);
+  const offsetTimeText = ref(FORM_DEFAULTS.offsetTimeText);
+  const partitionsText = ref(FORM_DEFAULTS.partitionsText);
+  const partitionOffsetsText = ref(FORM_DEFAULTS.partitionOffsetsText);
+  const limit = ref(FORM_DEFAULTS.limit);
+  const timeoutMs = ref(FORM_DEFAULTS.timeoutMs);
+  const maxScanRecords = ref(FORM_DEFAULTS.maxScanRecords);
+  const isolationLevel = ref<IsolationLevel>(FORM_DEFAULTS.isolationLevel);
+  const commit = ref(FORM_DEFAULTS.commit);
+  const filterText = ref(FORM_DEFAULTS.filterText);
+  const keyFilterText = ref(FORM_DEFAULTS.keyFilterText);
+  const valueFilterText = ref(FORM_DEFAULTS.valueFilterText);
+  const headerFilterText = ref(FORM_DEFAULTS.headerFilterText);
+  const matchMode = ref<MatchMode>(FORM_DEFAULTS.matchMode);
   const fieldFilters = ref<FieldFilter[]>([]);
-  const timestampFrom = ref("");
-  const timestampTo = ref("");
-  const offsetFrom = ref("");
-  const offsetTo = ref("");
-  const decode = ref<DecodeMode>("none");
-  const decompression = ref<Decompression>("none");
+  const timestampFrom = ref(FORM_DEFAULTS.timestampFrom);
+  const timestampTo = ref(FORM_DEFAULTS.timestampTo);
+  const offsetFrom = ref(FORM_DEFAULTS.offsetFrom);
+  const offsetTo = ref(FORM_DEFAULTS.offsetTo);
+  const decode = ref<DecodeMode>(FORM_DEFAULTS.decode);
+  const decompression = ref<Decompression>(FORM_DEFAULTS.decompression);
 
   const presets = ref<Array<{ id: string; name: string }>>([]);
   const presetName = ref("");
@@ -123,7 +155,9 @@ export function useConsumeForm(options: UseConsumeFormOptions) {
   const decodeLabel = computed(() =>
     decompression.value !== "none" ? `${decode.value} · ${decompression.value}` : decode.value === "none" ? t("messages.formatRaw") : decode.value,
   );
-  // 生效过滤条件数：三+1 通道文本非空 + 启用且有值的 fieldFilters 行。
+  // 生效过滤条件数：三+1 通道文本非空 + 启用且有值的 fieldFilters 行 + 时间/
+  // offset 范围有值（对齐后端 hasConsumeFilter：范围同样是过滤、与 commit 互斥，
+  // 此前不计导致 commit+时间范围前端放行、后端 -32000 拒绝，badge 亦漏计）。
   const filterCount = computed(() => {
     let count = 0;
     if (filterText.value.trim()) count += 1;
@@ -131,7 +165,18 @@ export function useConsumeForm(options: UseConsumeFormOptions) {
     if (valueFilterText.value.trim()) count += 1;
     if (headerFilterText.value.trim()) count += 1;
     count += fieldFilters.value.filter((row) => row.enabled && row.value.trim().length > 0).length;
+    // 范围解析合法才计数；倒序范围由 uiTimeRangeInvalid 单独告警。
+    if (offsetTimeToUnixMs(timestampFrom.value) !== null) count += 1;
+    if (offsetTimeToUnixMs(timestampTo.value) !== null) count += 1;
+    if (optionalNumber(offsetFrom.value) !== undefined) count += 1;
+    if (optionalNumber(offsetTo.value) !== undefined) count += 1;
     return count;
+  });
+  // 文本/字段匹配通道（matchMode 只作用于这一层；时间/offset 范围与匹配方式无关，
+  // 仅设范围时不上送 matchMode，payload 与旧语义一致）。
+  const hasTextFilters = computed(() => {
+    if (filterText.value.trim() || keyFilterText.value.trim() || valueFilterText.value.trim() || headerFilterText.value.trim()) return true;
+    return fieldFilters.value.some((row) => row.enabled && row.value.trim().length > 0);
   });
 
   // -- 筛选区分组（基础/定位/时间与范围/过滤/解码）：前两组（基础、定位）默认展开；
@@ -176,6 +221,32 @@ export function useConsumeForm(options: UseConsumeFormOptions) {
 
   function toggleGroup(key: ConsumeGroupKey) {
     openGroups.value[key] = !openGroups.value[key];
+  }
+
+  // -- 时间位点输入（offsetTime：datetime-local ↔ unix ms 双模式，与「时间与范围」
+  // 同款交互；此前是纯文本框无日期选择器录入）------------------------------------
+
+  const offsetTimeMode = ref<"datetime" | "unix">("datetime");
+  // 非空且不可解析才标红（unix ms 数字串 / datetime-local / RFC3339 均合法）。
+  const offsetTimeInvalid = computed(
+    () => Boolean(offsetTimeText.value.trim()) && offsetTimeToParam(offsetTimeText.value) === null,
+  );
+
+  function toggleOffsetTimeMode() {
+    const next = offsetTimeMode.value === "datetime" ? "unix" : "datetime";
+    offsetTimeText.value = switchTimeInputMode(offsetTimeText.value, next);
+    offsetTimeMode.value = next;
+  }
+
+  function setOffsetTimeNow() {
+    offsetTimeText.value = offsetTimeMode.value === "unix" ? String(Date.now()) : nowDatetimeLocal();
+  }
+
+  /** 外部填充（preset / intent）按值形态同步模式：unix 毫秒串落进
+   *  datetime-local 会显示为空，数字形态切 unix 模式、其余走 datetime。 */
+  function setOffsetTimeValue(text: string) {
+    offsetTimeText.value = text;
+    offsetTimeMode.value = /^\d{10,}$/.test(text.trim()) ? "unix" : "datetime";
   }
 
   // -- 时间与范围输入（timestampFrom/To：datetime-local ↔ unix ms 双模式）---------
@@ -287,6 +358,39 @@ export function useConsumeForm(options: UseConsumeFormOptions) {
     fieldFilters.value.splice(index, 1);
   }
 
+  /** 条件重置：全部表单字段回 FORM_DEFAULTS（含 fieldFilters 行与时间双模式）。
+   *  布局态（formOpen/openGroups）与预设不动；presetName 输入草稿保留。 */
+  function resetForm() {
+    groupId.value = FORM_DEFAULTS.groupId;
+    offsetStrategy.value = FORM_DEFAULTS.offsetStrategy;
+    offsetTimeText.value = FORM_DEFAULTS.offsetTimeText;
+    partitionsText.value = FORM_DEFAULTS.partitionsText;
+    partitionOffsetsText.value = FORM_DEFAULTS.partitionOffsetsText;
+    limit.value = FORM_DEFAULTS.limit;
+    timeoutMs.value = FORM_DEFAULTS.timeoutMs;
+    maxScanRecords.value = FORM_DEFAULTS.maxScanRecords;
+    isolationLevel.value = FORM_DEFAULTS.isolationLevel;
+    commit.value = FORM_DEFAULTS.commit;
+    filterText.value = FORM_DEFAULTS.filterText;
+    keyFilterText.value = FORM_DEFAULTS.keyFilterText;
+    valueFilterText.value = FORM_DEFAULTS.valueFilterText;
+    headerFilterText.value = FORM_DEFAULTS.headerFilterText;
+    matchMode.value = FORM_DEFAULTS.matchMode;
+    fieldFilters.value = [];
+    timestampFrom.value = FORM_DEFAULTS.timestampFrom;
+    timestampTo.value = FORM_DEFAULTS.timestampTo;
+    offsetFrom.value = FORM_DEFAULTS.offsetFrom;
+    offsetTo.value = FORM_DEFAULTS.offsetTo;
+    decode.value = FORM_DEFAULTS.decode;
+    decompression.value = FORM_DEFAULTS.decompression;
+    schemaEnabled.value = FORM_DEFAULTS.schemaEnabled;
+    schemaSubject.value = FORM_DEFAULTS.schemaSubject;
+    schemaVersionText.value = FORM_DEFAULTS.schemaVersionText;
+    schemaFormat.value = FORM_DEFAULTS.schemaFormat;
+    offsetTimeMode.value = "datetime";
+    tsMode.value = "datetime";
+  }
+
   // -- params build / validation ---------------------------------------------------
 
   function buildParams(topicOverride?: string): ConsumeParams {
@@ -298,7 +402,7 @@ export function useConsumeForm(options: UseConsumeFormOptions) {
       offsetStrategy: offsetStrategy.value,
       isolationLevel: isolationLevel.value,
       limit: positiveInt(limit.value, 100),
-      timeoutMs: positiveInt(timeoutMs.value, 5000),
+      timeoutMs: positiveInt(timeoutMs.value, 15000),
       maxScanRecords: positiveInt(maxScanRecords.value, 10000),
       decode: decode.value,
       decompression: decompression.value,
@@ -319,7 +423,7 @@ export function useConsumeForm(options: UseConsumeFormOptions) {
     if (keyFilterText.value.trim()) params.keyFilter = keyFilterText.value.trim();
     if (valueFilterText.value.trim()) params.valueFilter = valueFilterText.value.trim();
     if (headerFilterText.value.trim()) params.headerFilter = headerFilterText.value.trim();
-    if (hasFilters.value) params.matchMode = matchMode.value;
+    if (hasTextFilters.value) params.matchMode = matchMode.value;
     const enabledFilters = fieldFilters.value.filter((row) => row.enabled && row.value.trim().length > 0);
     if (enabledFilters.length > 0) {
       params.fieldFilters = enabledFilters.map((row) => ({
@@ -379,13 +483,13 @@ export function useConsumeForm(options: UseConsumeFormOptions) {
       const params = preset.params ?? {};
       groupId.value = params.groupId ?? "";
       offsetStrategy.value = params.offsetStrategy ?? "recent";
-      offsetTimeText.value = typeof params.offsetTime === "string" ? params.offsetTime : params.offsetTime ? String(params.offsetTime) : "";
+      setOffsetTimeValue(typeof params.offsetTime === "string" ? params.offsetTime : params.offsetTime ? String(params.offsetTime) : "");
       partitionsText.value = (params.partitions ?? []).join(",");
       partitionOffsetsText.value = Object.entries(params.partitionOffsets ?? {})
         .map(([partition, offset]) => `${partition}=${offset}`)
         .join(",");
       limit.value = String(params.limit ?? 100);
-      timeoutMs.value = String(params.timeoutMs ?? 5000);
+      timeoutMs.value = String(params.timeoutMs ?? 15000);
       maxScanRecords.value = String(params.maxScanRecords ?? 10000);
       isolationLevel.value = params.isolationLevel ?? "read_uncommitted";
       commit.value = params.commit === true;
@@ -459,11 +563,18 @@ export function useConsumeForm(options: UseConsumeFormOptions) {
     tsToInvalid,
     toggleTsMode,
     setNow,
+    // 时间位点双模式
+    offsetTimeMode,
+    offsetTimeInvalid,
+    toggleOffsetTimeMode,
+    setOffsetTimeNow,
+    setOffsetTimeValue,
     // fieldFilters
     fieldFilterIssueKey,
     fieldFilterIssueText,
     addFieldFilter,
     removeFieldFilter,
+    resetForm,
     // schema 挂载
     schemaEnabled,
     schemaSubjects,

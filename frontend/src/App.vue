@@ -100,6 +100,9 @@ const uiIntentHandlers = {
     return { status: "applied", summary: { panel } };
   },
   search: async (params: Record<string, unknown>): Promise<UiIntentOutcome> => {
+    // 立即切到消息面板：MCP 检索必须可见地落到 UI（用户停在别的 tab 时，
+    // 不切面板的填表+消费发生在 v-show 隐藏面板里，看起来像「没反应」）。
+    openPanel("messages");
     const topic = String(params.topic ?? "").trim();
     if (topic && topic !== selectedTopic.value) selectTopic(topic);
     await nextTick(); // 等 props.topic 传播（watch 会清空旧结果，避免串台）

@@ -547,9 +547,15 @@ func (s *Server) messagesDigest(args map[string]any) (map[string]any, error) {
 		"matched":            aggregated.Matched,
 		"scanned":            result.Scanned,
 		"scanTruncated":      result.HasMore,
+		"timedOut":           result.TimedOut,
 		"retentionTruncated": result.RetentionTruncated,
 		"cursorId":           session.ID,
 		"cursorTruncated":    session.Truncated,
+	}
+	// 超时可见性：HasMore 可能只是扫描窗口到点而非「还有更多」——不提示时
+	// AI 会把超时空结果误读成「没有数据」（与 decodeNote/fieldsNote 同范式）。
+	if result.TimedOut {
+		payload["timeoutNote"] = "scan window (timeoutMs, default 15000ms) elapsed before fetching finished — results may be incomplete; retry with a larger timeoutMs or narrower partitions/filters"
 	}
 	if format == "rows" {
 		rowLimit := settings.DigestRowLimit
