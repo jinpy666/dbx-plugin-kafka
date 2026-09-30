@@ -7,7 +7,7 @@
 // 布局压缩（R 路）：有结果后表单默认收起为一行摘要 chips 条（开合记忆
 // dbx.kafka.ui.msgFormOpen），结果表格吃满剩余高度；大数据量防护见各标注。
 import { nextTick, ref, watch } from "vue";
-import { ChevronDown, ChevronsDown, Download, Play, Plus, RotateCcw, Save, SlidersHorizontal, Trash2, X } from "@lucide/vue";
+import { ChevronDown, ChevronsDown, Download, Play, Plus, RotateCcw, Save, SlidersHorizontal, Square, Trash2, X } from "@lucide/vue";
 import { messageFullValueText } from "../lib/messageCodec";
 import { useModalBehavior } from "../lib/modalBehavior";
 import DbxAgGrid from "./DbxAgGrid.vue";
@@ -124,6 +124,29 @@ const consuming = ref(false);
 // 消费表单校验问题（i18n 文案；runConsume / applyIntentConsume 两处写入）。
 const formIssues = ref<string[]>([]);
 
+// -- 在途消费取消（工作台停止按钮） ------------------------------------------
+// 一次性消费是同步 RPC，宿主 invoke 无中断信号——扫描窗口内长时间无数据时
+// UI 只能干等。前端为每次消费生成 uuid 作为取消句柄随请求携带（consumeId），
+// 停止按钮按句柄请求后端提前中断：扫描循环立即退出并返回 cancelled=true 的
+// 部分结果（停止前的消息照常落地展示）；取消失败（旧 sidecar 无该方法等）
+// 只上抛错误，原请求按自身窗口继续。
+let activeConsumeId = "";
+
+function newConsumeID(): string {
+  return typeof crypto !== "undefined" && "randomUUID" in crypto ? crypto.randomUUID() : `consume-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+}
+
+async function stopConsume() {
+  if (!consuming.value || !activeConsumeId) return;
+  try {
+    await kafkaApi.messagesConsumeCancel(activeConsumeId);
+    // 部分结果由原请求返回（cancelled 徽标展示），此处不再改 consuming——
+    // 提前解锁会让旧响应被 finally 序号守卫拒绝，结果丢失。
+  } catch (cause) {
+    emit("error", cause instanceof Error ? cause.message : String(cause));
+  }
+}
+
 /** 条件重置：表单字段回默认 + 清除校验错误横幅 + 轻通知（布局开合态不动）。 */
 function onResetForm() {
   resetForm();
@@ -212,7 +235,10 @@ async function runConsume(options: { topicOverride?: string } = {}) {
   const seq = ++consumeSeq;
   emit("error", "");
   try {
-    const response = await kafkaApi.messagesConsume(buildParams(options.topicOverride));
+    const params = buildParams(options.topicOverride);
+    params.consumeId = newConsumeID();
+    activeConsumeId = params.consumeId;
+    const response = await kafkaApi.messagesConsume(params);
     if (seq !== consumeSeq) return; // 竞态守卫：在途期间切了 topic / 重新消费 → 旧响应丢弃
     applyResult(response);
     // 消费成功后收起条件抽屉，结果表格立即可见（开合记忆仍由 watch(formOpen) 落盘）。
@@ -225,7 +251,10 @@ async function runConsume(options: { topicOverride?: string } = {}) {
     emit("error", cause instanceof Error ? cause.message : String(cause));
   } finally {
     // 仅当仍是最新请求时复位 consuming，避免旧请求 finally 抢先解锁新在途消费。
-    if (seq === consumeSeq) consuming.value = false;
+    if (seq === consumeSeq) {
+      consuming.value = false;
+      activeConsumeId = "";
+    }
   }
 }
 
@@ -309,7 +338,10 @@ async function applyIntentConsume(params: Record<string, unknown>): Promise<UiIn
   const seq = ++consumeSeq;
   emit("error", "");
   try {
-    const response = await kafkaApi.messagesConsume(buildParams(topic || undefined));
+    const params = buildParams(topic || undefined);
+    params.consumeId = newConsumeID();
+    activeConsumeId = params.consumeId;
+    const response = await kafkaApi.messagesConsume(params);
     if (seq !== consumeSeq) {
       return { status: "rejected", reason: t("intent.consumeInProgress") };
     }
@@ -326,7 +358,10 @@ async function applyIntentConsume(params: Record<string, unknown>): Promise<UiIn
     emit("error", reason);
     return { status: "rejected", reason };
   } finally {
-    if (seq === consumeSeq) consuming.value = false;
+    if (seq === consumeSeq) {
+      consuming.value = false;
+      activeConsumeId = "";
+    }
   }
 }
 
@@ -386,11 +421,14 @@ async function saveExport(name: string, contentType: string, content: string, la
 // topic 切换后清空旧结果（跨 topic 结果混排会误导）；无开合记忆时回到默认展开
 // （「尚无结果默认展开」语义），有记忆则维持记忆。
 // P1-7：切换即自增请求序号使在途旧响应全部作废，并复位 consuming——新 topic
-// 可立即重新消费（旧请求的 finally 因序号不匹配不再抢先复位）。
+// 可立即重新消费（旧请求的 finally 因序号不匹配不再抢先复位）；取消句柄若
+// 仍在途则顺带上报后端提前中断（结果本就被丢弃，服务端不必空跑到窗口到点）。
 watch(
   () => props.topic,
   () => {
     consumeSeq += 1;
+    if (activeConsumeId) void kafkaApi.messagesConsumeCancel(activeConsumeId).catch(() => {});
+    activeConsumeId = "";
     consuming.value = false;
     applyResult(null);
     detail.value = null;
@@ -439,7 +477,8 @@ watch(() => props.topic, () => void loadPresets(), { immediate: true });
         <span class="msg-chip" :title="t('messages.decode')">{{ decodeLabel }}</span>
       </span>
       <span class="consume-bar__spacer" />
-      <!-- 消费主按钮；禁用原因悬停（键挂 stream 命名空间，messages.* 无此键）。 -->
+      <!-- 消费主按钮；禁用原因悬停（键挂 stream 命名空间，messages.* 无此键）。
+           在途时旁边给停止按钮：取消句柄提前中断扫描窗口，部分结果照常返回。 -->
       <button
         class="primary-button compact"
         type="button"
@@ -449,6 +488,15 @@ watch(() => props.topic, () => void loadPresets(), { immediate: true });
         @click="runConsume()"
       >
         <Play aria-hidden="true" />{{ consuming ? t("messages.running") : t("messages.run") }}
+      </button>
+      <button
+        v-if="consuming"
+        class="danger-button compact"
+        type="button"
+        data-testid="consume-stop"
+        @click="stopConsume"
+      >
+        <Square aria-hidden="true" /><span>{{ t("messages.stop") }}</span>
       </button>
     </div>
 
@@ -809,6 +857,9 @@ watch(() => props.topic, () => void loadPresets(), { immediate: true });
       <button class="primary-button primary-button--lg" type="button" :disabled="consuming || !topic || tsRangeReversed" @click="runConsume()">
         <Play aria-hidden="true" />{{ consuming ? t("messages.running") : t("messages.run") }}
       </button>
+      <button v-if="consuming" class="danger-button compact" type="button" data-testid="consume-stop-drawer" @click="stopConsume">
+        <Square aria-hidden="true" /><span>{{ t("messages.stop") }}</span>
+      </button>
     </div>
       </div><!-- /consume-drawer__panel -->
     </div><!-- /consume-drawer -->
@@ -822,8 +873,10 @@ watch(() => props.topic, () => void loadPresets(), { immediate: true });
         {{ t("messages.scanned", { count: result.scanned }) }} · {{ t("messages.matched", { count: result.matched }) }}
         <span v-if="result.limited" class="badge badge-warn">{{ t("messages.limited") }}</span>
         <!-- 超时可见（timedOut）：hasMore 此时可能是「窗口到点」而非「还有更多」，
-             误导性「调大上限」徽标由超时徽标取代；空态同步给超时文案。 -->
-        <span v-if="result.timedOut" class="badge badge-warn" data-testid="timedout-badge">{{ t("messages.uiTimedOut") }}</span>
+             误导性「调大上限」徽标由超时徽标取代；空态同步给超时文案。
+             停止（cancelled）优先于超时：hasMore 同样只是「提前退出」而非「还有更多」。 -->
+        <span v-if="result.cancelled" class="badge badge-warn" data-testid="cancelled-badge">{{ t("messages.uiCancelled") }}</span>
+        <span v-else-if="result.timedOut" class="badge badge-warn" data-testid="timedout-badge">{{ t("messages.uiTimedOut") }}</span>
         <span v-else-if="result.hasMore" class="badge badge-warn">{{ t("messages.hasMore") }}</span>
         <!-- 留存预算截断（retentionTruncated）：matched 计数完整但列表为预算内子集。 -->
         <span
@@ -880,7 +933,7 @@ watch(() => props.topic, () => void loadPresets(), { immediate: true });
 
     <div v-if="result" class="grid-box grid-box--fill">
       <p v-if="result.messages.length === 0" class="empty compact" data-testid="empty-hint">
-        {{ result.timedOut ? t("messages.uiTimedOut") : t("messages.noMessages") }}
+        {{ result.cancelled ? t("messages.uiCancelledEmpty") : result.timedOut ? t("messages.uiTimedOut") : t("messages.noMessages") }}
       </p>
       <DbxAgGrid
         v-else

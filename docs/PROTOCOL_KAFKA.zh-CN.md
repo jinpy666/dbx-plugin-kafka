@@ -283,7 +283,8 @@ Host API 1.0 的 `plugin_connection_params` 只发送 `runtime.host:port`，且
 
 **`kafka/messages/consume`**
 
-- 请求：`ConsumeParams`（见 §4，`topic` 必填；Phase 2 新增 `schema?`）。
+- 请求：`ConsumeParams`（见 §4，`topic` 必填；Phase 2 新增 `schema?`；工作台
+  停止按钮另带 `consumeId?`——本次消费的取消句柄）。
 - **schema 解码语义**（Phase 2）：提供 `schema` 时按 Confluent wire format
   解包（魔数字节 0 + schemaID），解析 SR 元数据（指定 `subject` 时按
   subject+version 取，否则按 schemaID 反查 `/schemas/ids/<id>`），把载荷
@@ -293,12 +294,26 @@ Host API 1.0 的 `plugin_connection_params` 只发送 `runtime.host:port`，且
   `schemaId`、`schemaSubject`、`schemaVersion` 字段；解码失败**不中断
   消费**，置 `decodeError`。元数据按 schemaID / subject+version 在本次
   消费（或流式会话）内缓存，同 ID 只请求一次 SR。
-- 返回：`{messages:MessageView[], scanned:int, matched:int, limited:bool, hasMore:bool, timedOut?:bool, retentionTruncated?:bool, nextPartitionOffsets:map<partition,int>}`
+- 返回：`{messages:MessageView[], scanned:int, matched:int, limited:bool, hasMore:bool, timedOut?:bool, cancelled?:bool, retentionTruncated?:bool, nextPartitionOffsets:map<partition,int>}`
   （`nextPartitionOffsets` 可作续读游标；`timedOut`=扫描窗口（timeoutMs）到点
   退出——hasMore 为真可能只是超时而非「还有更多」，调用方应据此提示而非静默空结果；
+  `cancelled`=被 `consume/cancel` 提前中断——messages 为停止前的部分结果，
+  scanned/matched 计数完整，徽标语义同 timedOut 优先展示；
   `retentionTruncated`=命中留存达到服务端字节预算（256MiB 兜底）——messages 为
   预算内子集、matched 计数完整，调用方应提示缩小范围或分批拉取）。
 - 错误：参数互斥冲突（见 §4）→ `-32602`；连接不可用 → `-32000`。
+
+**`kafka/messages/consume/cancel`**
+
+- 请求：`connectionId:string`、`consumeId:string`（缺失 → `-32602`）。
+- 返回：`{success:bool}`——`true`=已中断在途消费；`false`=未知/已结束的
+  consumeId（幂等，调用方可按「已停止」处理）。
+- 语义：一次性消费是同步 RPC，宿主 invoke 无请求中断信号——调用方为每次
+  消费生成 uuid 作为取消句柄随 `ConsumeParams.consumeId` 携带；sidecar 在
+  启动期（Ping）之前把取消根 ctx 登记进注册表，本方法按句柄触发——启动
+  阶段被取消返回 `cancelled:true` 的空结果，扫描阶段被取消则消费循环立即
+  退出并经原请求返回 `cancelled:true` 的部分结果（commit 语义不变：取消退
+  出仍走既有 commit 路径）。请求结束即注销句柄；同句柄复用时后登者覆盖。
 
 **`kafka/messages/export`**
 
@@ -560,6 +575,7 @@ AWS Glue schema management is available"；双配置歧义/未知 registry →
 | `partitionOffsets` | map<partition,int>? | — | strategy=offset 时**必填** |
 | `limit` | int | 100 | 返回条数上限 |
 | `timeoutMs` | int | 15000 | 扫描窗口（客户端启动/metadata 就绪另有独立预算 max(2×窗口, 12s)，不计入本值） |
+| `consumeId` | string? | — | 本次消费的取消句柄（调用方生成 uuid）：非空时登记进取消注册表，`kafka/messages/consume/cancel` 可提前中断；仅一次性消费路径消费 |
 | `maxScanRecords` | int | max(1000, limit×10) | 扫描上限（过滤不过 early-stop） |
 | `isolationLevel` | enum | `read_uncommitted` | `read_uncommitted` / `read_committed` |
 | `commit` | bool | false | true 时**禁一切过滤且必须 groupId**（否则 → `-32602`）；read_only 下拒绝 → `-32000` |

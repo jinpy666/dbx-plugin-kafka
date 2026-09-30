@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Smoke test for the dbx-plugin-kafka sidecar (scenarios S1-S18).
+"""Smoke test for the dbx-plugin-kafka sidecar (scenarios S1-S19).
 
 Covers the IMPL_PLAN_DBX_KAFKA §8 table over a live KRaft container
 (docker-compose.kafka-test.yml, apache/kafka, PLAINTEXT 127.0.0.1:9092):
@@ -57,6 +57,10 @@ Covers the IMPL_PLAN_DBX_KAFKA §8 table over a live KRaft container
         (wrong credentials -> business error); unreachable proxy and
         unsupported proxy type -> fast business errors. Runs whenever the
         main broker is reachable (no extra env).
+    S19 consume cancel (stop button): consume(consumeId) mid-window ->
+        kafka/messages/consume/cancel hits the registered handle (unknown
+        id -> idempotent success:false) -> the original request returns
+        cancelled=true (never also timedOut) with the partial counters.
 
 SKIP semantics (M0 §5.2):
   * a method not registered / not implemented yet  -> SKIP (backend under
@@ -80,6 +84,7 @@ import select
 import socket
 import sys
 import threading
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -1369,6 +1374,11 @@ def run_s18(client: SidecarClient) -> None:
     # Negative: unsupported proxy type -> parameter-level business error.
     test_rejected("smoke-socks-http", markers=("proxy", "socks5"), proxy_type="http", port=1)
 
+    # 卫生收尾：connect() 把 CURRENT_CONNECTION 留在了最后一个代理连接上
+    # （域方法经 CURRENT_CONNECTION 注入 connectionId），后续场景必须落回
+    # 直连 smoke-main，否则会沿已停代理路由。
+    connect(client, make_connection("smoke-main", read_only=False, allow_delete=True))
+
 
 def kafka_reachable() -> tuple[bool, str]:
     try:
@@ -1435,6 +1445,63 @@ def sr_rest(method: str, path: str, payload: dict | None = None, timeout: float 
         return jsonlib.loads(response.read())
 
 
+@scenario("S19", "consume cancel: mid-flight stop returns cancelled partial result")
+def run_s19(client: SidecarClient) -> None:
+    """S19 consume(consumeId) -> cancel mid-window -> result.cancelled true.
+
+    一次性消费是同步 RPC：在途请求发出后不等待（协议按 id 匹配响应），利用
+    _pump 的「无关响应暂存 events」语义，在扫描窗口中段注入 cancel 请求，再
+    收回原 consume 的响应断言 cancelled=true（与 timedOut 互斥）。取消句柄
+    在启动期（Ping）之前登记，启动/扫描两段均可中断。
+    """
+    token = f"cancel-{RUN}"
+
+    # 显式落回直连 smoke-main：S18 会把 CURRENT_CONNECTION 留在已停代理的
+    # smoke-socks 上（域方法经 CURRENT_CONNECTION 注入 connectionId），本场景
+    # 必须与场景顺序解耦。
+    connect(client, make_connection("smoke-main", read_only=False, allow_delete=True))
+
+    # 未知/已结束句柄的取消是幂等 no-op：success:false，不报错。
+    unknown = data_of(domain(client, "kafka/messages/consume/cancel", {"consumeId": f"nope-{RUN}"}))
+    if unknown.get("success") is not False:
+        raise AssertionError(f"cancel of unknown consumeId must be success:false: {unknown}")
+
+    consume_params = {
+        "connectionId": CURRENT_CONNECTION["id"],
+        "topic": TOPIC_EVENTS,
+        "offsetStrategy": "latest",
+        "limit": 10,
+        "timeoutMs": 30000,
+        "consumeId": token,
+    }
+    client.next_id += 1
+    consume_call_id = client.next_id
+    client._send_line({"jsonrpc": "2.0", "id": consume_call_id, "method": "kafka/messages/consume", "params": consume_params})
+    time.sleep(3.0)  # 启动预算（Ping 等元数据就绪，本地毫秒级）之后、扫描窗口内
+    cancelled = data_of(domain(client, "kafka/messages/consume/cancel", {"consumeId": token}))
+    if cancelled.get("success") is not True:
+        raise AssertionError(f"mid-flight cancel must hit the registered handle: {cancelled}")
+
+    def _find_consume_response() -> dict | None:
+        for message in list(client.events):
+            if isinstance(message, dict) and message.get("id") == consume_call_id:
+                return message
+        return None
+
+    hit = _find_consume_response()
+    if hit is not None and hit.get("error") is not None:
+        raise AssertionError(f"cancelled consume returned error: {hit.get('error')}")
+    payload = hit.get("result") if hit is not None else client._pump(consume_call_id)
+    payload = payload if isinstance(payload, dict) else {}
+    if payload.get("cancelled") is not True:
+        raise AssertionError(
+            f"consume result must be cancelled=true: timedOut={payload.get('timedOut')} "
+            f"scanned={payload.get('scanned')} matched={payload.get('matched')}"
+        )
+    if payload.get("timedOut"):
+        raise AssertionError("cancelled consume must not also be flagged timedOut")
+
+
 def main() -> int:
     steps = [
         ("S1", "initialize + connection/test without params -> -32602", run_s1),
@@ -1455,6 +1522,7 @@ def main() -> int:
         ("S16", "SASL wrong-password rejection + end-to-end roundtrip", run_s16),
         ("S17", "TLS/mTLS matrix: CA verify, wrong CA, no client cert, insecure", run_s17),
         ("S18", "runtime SOCKS5 proxy route: dial, auth, data path, failure modes", run_s18),
+        ("S19", "consume cancel: mid-flight stop returns cancelled partial result", run_s19),
     ]
 
     ok, reason = kafka_reachable()

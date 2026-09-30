@@ -974,6 +974,10 @@ const invoke: DbxPluginApi["invoke"] = async <T = unknown>(method: string, rawPa
       hasMore: false,
       nextPartitionOffsets: {},
     };
+  } else if (method === "kafka/messages/consume/cancel") {
+    // mock 一次性消费同步返回，无在途扫描窗口可取消；幂等 success（真实
+    // sidecar 对未知/已结束 consumeId 返回 success:false）。
+    result = { success: true };
   } else if (method === "kafka/messages/export") {
     const topic = requireTopic(String(input.topic ?? ""));
     const scan = scanTopic(topic, input);

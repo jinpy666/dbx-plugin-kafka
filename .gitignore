@@ -4,6 +4,8 @@
 /frontend/coverage/
 /scripts/__pycache__/
 /dist/
+# 开发宿主本地数据（含明文开发凭据；DBX 插件硬约束：不入库、不打包）
+/.dbx-dev/
 /dbx-plugin-kafka
 node_modules/
 .DS_Store

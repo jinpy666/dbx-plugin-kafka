@@ -25,6 +25,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 	"unicode/utf8"
 
@@ -84,6 +85,10 @@ type ConsumeParams struct {
 	// 解码：decode none|base64（二次解码）；decompression 一次解压。
 	Decode        string `json:"decode,omitempty"`
 	Decompression string `json:"decompression,omitempty"`
+
+	// ConsumeID 是本次消费的取消句柄（前端生成的 uuid，可选）：非空时登记
+	// 进取消注册表，kafka/messages/consume/cancel 可提前中断扫描窗口。
+	ConsumeID string `json:"consumeId,omitempty"`
 
 	// SkipValueBase64 跳过 valueBase64 通道（评审 H-1：digest 聚合只读
 	// valueText，base64 是纯冤枉驻留；工作台消费保持双通道不变）。
@@ -153,6 +158,9 @@ type ConsumeResult struct {
 	// TimedOut 标记扫描窗口（timeoutMs）到点退出：hasMore 为真可能只是超时
 	// 而非「还有更多」——调用方（UI/MCP）据此给出可行动提示而非静默空结果。
 	TimedOut bool `json:"timedOut,omitempty"`
+	// Cancelled 标记消费被 consume/cancel 提前中断（工作台停止按钮）：
+	// messages 为停止前的部分结果，scanned/matched 计数完整。
+	Cancelled bool `json:"cancelled,omitempty"`
 }
 
 // ProduceRequest 对应 kafka/messages/produce。
@@ -379,6 +387,7 @@ func (s *Service) Consume(ctx context.Context, params ConsumeParams) (*ConsumeRe
 		NextPartitionOffsets: result.nextPartitionOffsets,
 		RetentionTruncated:   result.retentionTruncated,
 		TimedOut:             result.timedOut,
+		Cancelled:            result.cancelled,
 	}, nil
 }
 
@@ -392,9 +401,11 @@ func (s *Service) Export(ctx context.Context, req ExportRequest) (*ExportResult,
 	if err != nil {
 		return nil, err
 	}
-	// 导出禁 commit（tinyrdm 同款：导出是只读回放）。
+	// 导出禁 commit（tinyrdm 同款：导出是只读回放）；取消句柄同样只属于
+	// 一次性消费路径（契约 §4），导出不登记。
 	consumeParams := req.ConsumeParams
 	consumeParams.Commit = false
+	consumeParams.ConsumeID = ""
 	consumeParams.Limit = limit
 
 	result, err := s.consumeMessages(ctx, consumeParams)
@@ -425,6 +436,7 @@ type consumeResult struct {
 	limited              bool
 	hasMore              bool
 	timedOut             bool
+	cancelled            bool
 	retentionTruncated   bool
 	nextPartitionOffsets map[int32]int64
 }
@@ -586,17 +598,39 @@ func (s *Service) consumeMessages(ctx context.Context, params ConsumeParams) (co
 		schemaDec = newSchemaDecoder(schemaClient, params.Schema)
 	}
 
+	// 取消句柄（工作台停止按钮）：consumeId 非空时在 Ping 之前登记——冷启动
+	// （跨境 TLS/SASL/metadata）同样可能久等，停止必须对启动期同样生效。
+	// cancel 根同时覆盖启动与扫描两段；请求结束即注销。
+	cancelRoot, cancelRootFn := context.WithCancel(ctx)
+	defer cancelRootFn()
+	var userCancelled atomic.Bool
+	if consumeID := trimSpace(params.ConsumeID); consumeID != "" {
+		handle := s.consumeCancels.register(consumeID, func() {
+			userCancelled.Store(true)
+			cancelRootFn()
+		})
+		defer s.consumeCancels.deregister(consumeID, handle)
+	}
+
 	// 启动期预算与扫描窗口分离：冷启动的 TLS/SASL/metadata/ListOffsets 不吃
 	// 用户 timeoutMs（5s 窗口在跨境链路上连启动都跑不完）；Ping 等 metadata
 	// ready 后才开扫描窗口。
-	pingCtx, pingCancel := context.WithTimeout(ctx, consumeStartupBudget(timeout))
+	pingCtx, pingCancel := context.WithTimeout(cancelRoot, consumeStartupBudget(timeout))
 	pingErr := client.Ping(pingCtx)
 	pingCancel()
 	if pingErr != nil {
+		if userCancelled.Load() {
+			// 启动期被取消：返回空结果（cancelled 标记）而非报错——拨号本身
+			// 没有失败，client 保持 healthy 可回池。
+			result.cancelled = true
+			result.messages = []ConsumedMessage{}
+			result.nextPartitionOffsets = map[int32]int64{}
+			return result, nil
+		}
 		healthy = false
 		return result, fmt.Errorf("kafka cluster not ready within %s: %w", consumeStartupBudget(timeout), pingErr)
 	}
-	consumeCtx, cancel := context.WithTimeout(ctx, timeout)
+	consumeCtx, cancel := context.WithTimeout(cancelRoot, timeout)
 	defer cancel()
 
 	// 预分配按 min(limit, maxScan) 收敛：留存条数同时受两者约束，不再
@@ -611,7 +645,6 @@ func (s *Service) consumeMessages(ctx context.Context, params ConsumeParams) (co
 	retention := consumeRetentionTracker{budget: params.RetentionByteBudget}
 	scanned := 0
 	matched := 0
-	timedOut := false
 	committed := params.Commit && groupID != ""
 
 	for scanned < maxScan && matched < limit {
@@ -678,19 +711,19 @@ func (s *Service) consumeMessages(ctx context.Context, params ConsumeParams) (co
 		}
 		if err := fetches.Err(); err != nil {
 			if isDeadline(err) {
-				timedOut = true
+				result.cancelled, result.timedOut = consumeExitFlags(userCancelled.Load())
 				break
 			}
 			healthy = false
 			return result, err
 		}
 		if consumeCtx.Err() != nil {
-			timedOut = true
+			result.cancelled, result.timedOut = consumeExitFlags(userCancelled.Load())
 			break
 		}
 	}
 	limited := matched >= limit
-	hasMore := limited || scanned >= maxScan || timedOut
+	hasMore := limited || scanned >= maxScan || result.timedOut || result.cancelled
 
 	if params.Commit {
 		// commit 不复用扫描窗口 ctx（窗口超时退出是 commit 型消费最常见
@@ -707,7 +740,6 @@ func (s *Service) consumeMessages(ctx context.Context, params ConsumeParams) (co
 	result.scanned = scanned
 	result.limited = limited
 	result.hasMore = hasMore
-	result.timedOut = timedOut
 	result.nextPartitionOffsets = nextPartitionOffsets
 	return result, nil
 }

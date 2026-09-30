@@ -87,6 +87,8 @@ export interface ConsumeParams {
   decompression?: Decompression;
   /** SR 解码挂载（Phase 2；与 decode 内层解码可叠加，后端先 SR 再内层）。 */
   schema?: SchemaAttach;
+  /** 本次消费的取消句柄（前端生成的 uuid）：配合 messagesConsumeCancel 提前中断扫描窗口。 */
+  consumeId?: string;
 }
 
 export interface ConsumeResult {
@@ -97,6 +99,8 @@ export interface ConsumeResult {
   hasMore: boolean;
   /** 扫描窗口（timeoutMs）到点退出：hasMore 可能只是超时而非「还有更多」。 */
   timedOut?: boolean;
+  /** 消费被 consume/cancel 提前中断：messages 为停止前的部分结果。 */
+  cancelled?: boolean;
   /** 留存超后端字节预算（256MiB 兜底）：messages 为预算内子集，matched 计数完整。 */
   retentionTruncated?: boolean;
   nextPartitionOffsets?: Record<string, number>;
@@ -530,6 +534,10 @@ export const kafkaApi = {
   },
   messagesConsume(params: ConsumeParams, options?: { timeoutMs?: number }) {
     return callKafka<ConsumeResult>("kafka/messages/consume", params, options);
+  },
+  /** 提前中断在途一次性消费（停止按钮）；原请求会尽快返回 cancelled=true 的部分结果。未知/已结束 id 返回 success:false。 */
+  messagesConsumeCancel(consumeId: string) {
+    return callKafka<{ success: boolean }>("kafka/messages/consume/cancel", { consumeId });
   },
   // 工作台导出走前端序列化（所见即所导），本方法仅契约保留；retentionTruncated
   // 为后端留存预算兜底标记（评审 H-1）。

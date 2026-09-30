@@ -250,6 +250,50 @@ describe("MessagesPanel", () => {
     expect((wrapper.emitted("error") ?? []).every(([message]) => message === "")).toBe(true);
   });
 
+  // 停止按钮（在途消费取消）：在途时出现停止钮，点击后按 consumeId 请求后端
+  // 提前中断；原请求返回的取消部分结果（cancelled=true）照常落地并显示
+  // 「已停止」徽标（优先于超时徽标），停止钮随 consuming 复位消失。
+  it("stops an in-flight consume and lands the partial result with a cancelled badge", async () => {
+    let resolveConsume!: (value: ConsumeResult) => void;
+    const cancelCalls: Array<Record<string, unknown>> = [];
+    invokeMock.mockReset();
+    invokeMock.mockImplementation(async (method: string, params?: Record<string, unknown>) => {
+      if (method === "kafka/presets/list") return { presets: [] };
+      if (method === "kafka/messages/consume") {
+        return new Promise<ConsumeResult>((resolve) => {
+          resolveConsume = resolve;
+        });
+      }
+      if (method === "kafka/messages/consume/cancel") {
+        cancelCalls.push(params ?? {});
+        return { success: true };
+      }
+      throw new Error(`unhandled method: ${method}`);
+    });
+    (window as unknown as { dbxPlugin: unknown }).dbxPlugin = { invoke: invokeMock };
+
+    const wrapper = mountPanel({ topic: "order-events" });
+    await flushPromises();
+    expect(wrapper.find('[data-testid="consume-stop"]').exists()).toBe(false);
+    await wrapper.find('[data-testid="consume-run"]').trigger("click");
+    expect(wrapper.find('[data-testid="consume-stop"]').exists()).toBe(true);
+
+    await wrapper.find('[data-testid="consume-stop"]').trigger("click");
+    await flushPromises();
+    expect(cancelCalls).toHaveLength(1);
+    expect(String(cancelCalls[0]?.consumeId ?? "")).not.toBe("");
+    // 消费请求与取消请求携带同一句柄（后端按句柄命中在途扫描窗口）
+    const consumeParams = invokeMock.mock.calls.find(([method]) => method === "kafka/messages/consume")?.[1] as { consumeId?: string };
+    expect(consumeParams.consumeId).toBe(cancelCalls[0]?.consumeId);
+
+    resolveConsume({ ...consumeResult("order-events", 1), cancelled: true });
+    await flushPromises();
+    expect(wrapper.find('[data-testid="cancelled-badge"]').exists()).toBe(true);
+    expect(wrapper.find('[data-testid="timedout-badge"]').exists()).toBe(false);
+    expect(wrapper.text()).toContain(t("messages.matched", { count: 3 }));
+    expect(wrapper.find('[data-testid="consume-stop"]').exists()).toBe(false);
+  });
+
   // P2-21：未选 topic 时引导先在左侧树选择；已选 topic 尚未消费引导点消费
   // （「调整条件重新消费」文案只属于 0 条命中，见 result 非空分支）。
   it("distinguishes the no-topic empty state from the not-consumed empty state (P2-21)", async () => {
