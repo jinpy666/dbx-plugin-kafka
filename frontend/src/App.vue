@@ -416,9 +416,23 @@ async function initialize() {
   void refreshBackendPolicy();
 }
 
+// 记录当前连接 id：宿主重推 context 时检测连接切换（评审 M2——此前只更新
+// connectionId 与策略，面板 v-if 常驻旧连接数据，跨连接串台）。
+let activeConnectionId = "";
+
 function syncConnectionContext() {
+  const switched = activeConnectionId !== "" && activeConnectionId !== connectionId.value;
+  activeConnectionId = connectionId.value;
   setKafkaConnectionId(connectionId.value);
   void refreshBackendPolicy();
+  if (!switched) return;
+  // 换连接：旧连接的选中 topic、缓冲流事件与全部面板状态失效；重置面板
+  // 注册表强制重建（Stream 会话/Monitor 采样随组件卸载停止），topics 重拉。
+  pendingStreamEvents.length = 0;
+  selectedTopic.value = "";
+  visitedPanels.value = new Set<PanelKey>(["messages"]);
+  activePanel.value = "messages";
+  void loadTopics();
 }
 
 // 工作台统一使用自己的交互菜单；拦截原生 context menu，避免宿主/浏览器菜单

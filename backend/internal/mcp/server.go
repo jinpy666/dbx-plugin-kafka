@@ -448,11 +448,15 @@ func (s *Server) messagesDigest(args map[string]any) (map[string]any, error) {
 	if offsetStrategy == "" {
 		offsetStrategy = "earliest"
 	}
+	maxScan, err := digestScanLimit(args, settings.DigestScanLimit)
+	if err != nil {
+		return nil, err
+	}
 	params := kafkaconn.ConsumeParams{
 		ConnectionID:   connectionID,
 		Topic:          topic,
 		OffsetStrategy: offsetStrategy,
-		MaxScanRecords: digestScanLimit(args, settings.DigestScanLimit),
+		MaxScanRecords: maxScan,
 		Filter:         strings.TrimSpace(stringField(args, "filter")),
 		KeyFilter:      strings.TrimSpace(stringField(args, "keyFilter")),
 		ValueFilter:    strings.TrimSpace(stringField(args, "valueFilter")),
@@ -610,12 +614,21 @@ func fieldsNoteOf(aggregated DigestResult, fields []string) string {
 }
 
 // digestScanLimit 扫描上限：显式 maxScanRecords（clamp ≤100000）优先，
-// 否则用 settings.DigestScanLimit。
-func digestScanLimit(args map[string]any, fallback int) int {
-	limit := intArg(args["maxScanRecords"])
-	if limit <= 0 {
-		limit = fallback
+// 否则用 settings.DigestScanLimit。present-but-非法（非整数/非正）报错——
+// 静默回落缺省会让调用方以为扫了那么多（评审 M-5 同 offsetArg）。
+func digestScanLimit(args map[string]any, fallback int) (int, error) {
+	raw, present := args["maxScanRecords"]
+	if !present || raw == nil {
+		return clampDigestScanLimit(fallback), nil
 	}
+	limit, ok := coerceInt(raw)
+	if !ok || limit <= 0 {
+		return 0, fmt.Errorf("maxScanRecords must be a positive integer (got %v)", raw)
+	}
+	return clampDigestScanLimit(limit), nil
+}
+
+func clampDigestScanLimit(limit int) int {
 	if limit <= 0 {
 		limit = 1000
 	}
@@ -649,7 +662,11 @@ func (s *Server) cursorNext(args map[string]any) (map[string]any, error) {
 		}
 		n = value
 	}
-	result, status := s.cursors.Next(cursorID, NextRequest{N: n, Offset: offsetArg(args)}, s.now())
+	offset, err := offsetArg(args)
+	if err != nil {
+		return nil, err
+	}
+	result, status := s.cursors.Next(cursorID, NextRequest{N: n, Offset: offset}, s.now())
 	switch status {
 	case LookupExpired:
 		// 过期报文携带实际生效 TTL（settings 可调，同族 files 同款语义），
@@ -771,12 +788,11 @@ func (s *Server) messagesProduce(args map[string]any) (map[string]any, error) {
 		}
 	}
 	if raw, present := args["partition"]; present && raw != nil {
-		partitionValue, ok := coerceInt(raw)
+		partitionValue, ok := coerceInt32(raw)
 		if !ok || partitionValue < 0 {
-			return nil, fmt.Errorf("partition must be a non-negative integer (got %v)", raw)
+			return nil, fmt.Errorf("partition must be a non-negative 32-bit integer (got %v)", raw)
 		}
-		partition := int32(partitionValue)
-		req.Partition = &partition
+		req.Partition = &partitionValue
 	}
 	if schema, ok := args["schema"].(map[string]any); ok {
 		schemaRef, err := parseSchemaRef(schema, true)
@@ -1128,21 +1144,21 @@ func parseIntList(raw any) ([]int32, error) {
 	case []any:
 		out := make([]int32, 0, len(value))
 		for index, item := range value {
-			number, ok := coerceInt(item)
+			number, ok := coerceInt32(item)
 			if !ok || number < 0 {
-				return nil, fmt.Errorf("partitions[%d] must be a non-negative integer (got %v)", index, item)
+				return nil, fmt.Errorf("partitions[%d] must be a non-negative 32-bit integer (got %v)", index, item)
 			}
-			out = append(out, int32(number))
+			out = append(out, number)
 		}
 		return out, nil
 	case string:
 		out := []int32{}
 		for _, piece := range strings.FieldsFunc(value, func(r rune) bool { return r == ',' || r == ' ' || r == '\n' || r == '\r' || r == '\t' }) {
-			number, err := strconv.Atoi(strings.TrimSpace(piece))
-			if err != nil || number < 0 {
-				return nil, fmt.Errorf("partitions must be non-negative integers (got %q)", piece)
+			parsed, err := strconv.ParseInt(strings.TrimSpace(piece), 10, 32)
+			if err != nil || parsed < 0 {
+				return nil, fmt.Errorf("partitions must be non-negative 32-bit integers (got %q)", piece)
 			}
-			out = append(out, int32(number))
+			out = append(out, int32(parsed))
 		}
 		return out, nil
 	default:

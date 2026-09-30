@@ -2,8 +2,10 @@
 // （shared/IMPL_PLAN_M0_COMMON.zh-CN.md §4）。
 //
 //	<数据目录>/                       解析顺序见 resolveDataDir
-//	├── prefs.json                   UI 偏好（非敏感）
+//	├── prefs.json                   UI 偏好（非敏感；当前无生产调用方，
+//	│                                LoadPrefs/SavePrefs 保留为通用 API）
 //	├── presets.json                 Kafka 消费/过滤预设（明文，不含凭据）
+//	├── mcp-settings.json            MCP 工具面设置（internal/mcp settings.go）
 //	└── audit.jsonl                  写操作审计（append-only）
 //
 // 数据目录必须是持久化路径（保存重启后仍在的偏好/审计）：macOS 的
@@ -172,6 +174,8 @@ func (s *Store) SaveJSON(name string, value any) error {
 // --- prefs.json ---
 
 // LoadPrefs 读取 prefs.json；不存在时返回空 map。
+// 当前无生产调用方（工作台偏好走宿主 storage，MCP 设置走 settings.go），
+// 保留为通用偏好存取 API，行为由 store_test 锁定。
 func (s *Store) LoadPrefs() (map[string]any, error) {
 	prefs := map[string]any{}
 	if _, err := s.LoadJSON("prefs.json", &prefs); err != nil {

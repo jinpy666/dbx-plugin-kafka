@@ -1,5 +1,5 @@
 <script setup lang="ts">
-// 连接状态面板（Phase 2 增强）：kafka/connections/statuses（status/lastError/
+// 连接状态面板（Phase 2 增强）：kafka/connections/statuses（status/error/
 // lastUsedAt + allowDelete 门禁徽标）+ SR/Kerberos/ZK 连接摘要徽标 +
 // 「Confluent properties 导入助手」：粘贴 → 纯解析出 bootstrap/protocol/sasl/
 // jaas 用户名密码/SR URL → 只读键值表并提示对应宿主表单字段；
@@ -300,7 +300,7 @@ function clearAssistant() {
           <div class="settings-list-main">
             <strong class="mono">{{ status.connectionId }}</strong>
             <span v-if="status.lastUsedAt" :title="formatTime(status.lastUsedAt)">{{ t("connections.lastUsed") }}: {{ relativeTime(status.lastUsedAt) }}</span>
-            <span v-if="status.lastError" class="form-error">{{ t("connections.lastError") }}: {{ friendlyKafkaError(status.lastError) }}</span>
+            <span v-if="status.error" class="form-error">{{ t("connections.lastError") }}: {{ friendlyKafkaError(status.error) }}</span>
             <span class="inline-actions" style="margin-top: 2px; flex-wrap: wrap">
               <span class="badge" :class="status.schemaRegistry?.enabled ? 'badge-ok' : ''">
                 {{ status.schemaRegistry?.enabled ? t("connections.srOn") : t("connections.srOff") }}

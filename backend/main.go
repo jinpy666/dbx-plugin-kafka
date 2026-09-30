@@ -33,6 +33,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log"
 	"os"
 	"strings"
@@ -915,7 +916,11 @@ func (h *pluginHandler) mcpTools(params json.RawMessage) (any, *dbxpluginsdk.Plu
 	var body struct {
 		ConnectionID string `json:"connectionId"`
 	}
-	_ = json.Unmarshal(params, &body)
+	// 畸形参数 -32602（评审 L）：此前 `_ = json.Unmarshal` 吞错误，垃圾输入
+	// 会按全量工具清单应答，与本文件其余入口的严格校验不一致。
+	if err := json.Unmarshal(params, &body); err != nil {
+		return nil, dbxpluginsdk.NewError(-32602, fmt.Sprintf("Invalid params: %v", err))
+	}
 	return h.mcpSrv.Tools(strings.TrimSpace(body.ConnectionID)), nil
 }
 

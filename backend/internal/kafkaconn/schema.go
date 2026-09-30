@@ -612,32 +612,29 @@ func (b *confluentBackend) listVersions(ctx context.Context, subject string) ([]
 	if err != nil {
 		return nil, err
 	}
-	out := make([]SchemaVersionInfo, 0, len(versions))
-	for _, version := range versions {
-		format := "UNKNOWN"
-		if meta, err := b.client.getSchema(ctx, subject, int64(version)); err == nil {
-			format = normalizeConfluentSchemaType(meta.SchemaType)
-		}
-		out = append(out, SchemaVersionInfo{
-			Version: int64(version),
-			Format:  format,
-			ID:      schemaIDForVersion(ctx, b.client, subject, int64(version)),
-		})
+	// 每版本一次 getSchema 同时取 format 与 id（评审 M-6：原实现串行且
+	// format/schemaID 各调一次 getSchema——2×N 顺序往返，版本多的 subject
+	// 在外层 admin 预算内必然截断）。有界并发照 listSubjects 同款：
+	// 信号量在循环内先取后 spawn，避免 goroutine 尖峰。
+	out := make([]SchemaVersionInfo, len(versions))
+	sem := make(chan struct{}, schemaSubjectsConcurrency)
+	var wg sync.WaitGroup
+	for i, version := range versions {
+		sem <- struct{}{}
+		wg.Add(1)
+		go func(i int, version int64) {
+			defer wg.Done()
+			defer func() { <-sem }()
+			item := SchemaVersionInfo{Version: version, Format: "UNKNOWN"}
+			if meta, err := b.client.getSchema(ctx, subject, version); err == nil {
+				item.Format = normalizeConfluentSchemaType(meta.SchemaType)
+				item.ID = meta.ID
+			}
+			out[i] = item
+		}(i, int64(version))
 	}
+	wg.Wait()
 	return out, nil
-}
-
-// schemaIDForVersion 尽力补 id（失败返回 0，不阻断列表）。ctx 从调用方
-// 传入（评审 M-5）：此前 context.Background() 另起独立预算，取消不传播
-// 且每版本独立 10s、最坏 V×10s 串行远超调用方总预算。
-func schemaIDForVersion(ctx context.Context, client *schemaRegistryClient, subject string, version int64) int {
-	probeCtx, cancel := context.WithTimeout(ctx, schemaRegistryTimeout)
-	defer cancel()
-	meta, err := client.getSchema(probeCtx, subject, version)
-	if err != nil {
-		return 0
-	}
-	return meta.ID
 }
 
 func (b *confluentBackend) getSchema(ctx context.Context, subject string, version int64) (SchemaMeta, error) {

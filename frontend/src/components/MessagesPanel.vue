@@ -825,6 +825,13 @@ watch(() => props.topic, () => void loadPresets(), { immediate: true });
              误导性「调大上限」徽标由超时徽标取代；空态同步给超时文案。 -->
         <span v-if="result.timedOut" class="badge badge-warn" data-testid="timedout-badge">{{ t("messages.uiTimedOut") }}</span>
         <span v-else-if="result.hasMore" class="badge badge-warn">{{ t("messages.hasMore") }}</span>
+        <!-- 留存预算截断（retentionTruncated）：matched 计数完整但列表为预算内子集。 -->
+        <span
+          v-if="result.retentionTruncated"
+          class="badge badge-warn"
+          data-testid="retention-badge"
+          :title="t('messages.uiRetentionCapped', { matched: result.matched, shown: result.messages.length })"
+        >{{ t("messages.uiRetentionBadge") }}</span>
         <span v-if="rowsDropped > 0" class="badge badge-warn" :title="t('messages.uiRowsCapped', { shown: messageRows.length, total: rowsTotal })">
           {{ t("messages.uiRowsCapped", { shown: messageRows.length, total: rowsTotal }) }}
         </span>

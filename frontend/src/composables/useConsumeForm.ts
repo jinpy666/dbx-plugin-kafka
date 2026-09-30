@@ -19,6 +19,7 @@ import {
   parsePartitionList,
   parsePartitionOffsetsText,
   switchTimeInputMode,
+  unixMsToDatetimeLocal,
   validateConsumeForm,
 } from "../lib/consumeForm";
 
@@ -501,6 +502,13 @@ export function useConsumeForm(options: UseConsumeFormOptions) {
       fieldFilters.value = (params.fieldFilters ?? []).map((row) => ({ ...row, enabled: true }));
       decode.value = params.decode ?? "none";
       decompression.value = params.decompression ?? "none";
+      // 时间/offset 范围过滤与 buildParams 保存侧对称（评审 M1：漏回填会让
+      // 重放查询静默丢掉范围条件）。timestamp 存档为 unix ms → 还原
+      // datetime-local 显示；offset 存档为 number → 文本框回填。
+      timestampFrom.value = typeof params.timestampFrom === "number" ? unixMsToDatetimeLocal(params.timestampFrom) : "";
+      timestampTo.value = typeof params.timestampTo === "number" ? unixMsToDatetimeLocal(params.timestampTo) : "";
+      offsetFrom.value = params.offsetFrom !== undefined && params.offsetFrom !== null ? String(params.offsetFrom) : "";
+      offsetTo.value = params.offsetTo !== undefined && params.offsetTo !== null ? String(params.offsetTo) : "";
       schemaEnabled.value = Boolean(params.schema);
       schemaSubject.value = params.schema?.subject ?? "";
       schemaVersionText.value = params.schema?.version !== undefined ? String(params.schema.version) : "";

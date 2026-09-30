@@ -1,8 +1,7 @@
 /**
  * consume 表单纯逻辑（自 kafkaModel 拆分）：分区/位点文本解析、时间输入互转、
- * 表单互斥校验、fieldFilter 行级校验与 matchMode 本地预览。
+ * 表单互斥校验与 fieldFilter 行级校验。
  */
-import type { MatchMode } from "./api";
 
 // -- consume form helpers ---------------------------------------------------------
 
@@ -56,11 +55,12 @@ export function partitionOffsetsToText(offsets: Record<string, number>): string 
     .join(",");
 }
 
-/** datetime-local（或留空）→ RFC3339（本地时区偏移）；unix ms 数字原样透传。 */
-export function offsetTimeToParam(text: string): string | number | null {
+/** datetime-local（或留空）→ RFC3339（本地时区偏移）；unix ms 字符串透传
+ *  （后端 OffsetTime 为 string，ParseInt/RFC3339 双解析，number 会被拒 -32602）。 */
+export function offsetTimeToParam(text: string): string | null {
   const trimmed = text.trim();
   if (!trimmed) return null;
-  if (/^\d{10,}$/.test(trimmed)) return Number(trimmed);
+  if (/^\d{10,}$/.test(trimmed)) return trimmed;
   if (/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2})?$/.test(trimmed)) {
     const withSeconds = trimmed.length === 16 ? `${trimmed}:00` : trimmed;
     const parsed = new Date(withSeconds);
@@ -78,9 +78,14 @@ export function offsetTimeToParam(text: string): string | number | null {
  * 留空或不可解析返回 null。
  */
 export function offsetTimeToUnixMs(text: string): number | null {
-  const param = offsetTimeToParam(text);
+  const trimmed = text.trim();
+  if (!trimmed) return null;
+  if (/^\d{10,}$/.test(trimmed)) {
+    const ms = Number(trimmed);
+    return Number.isSafeInteger(ms) ? ms : null;
+  }
+  const param = offsetTimeToParam(trimmed);
   if (param === null) return null;
-  if (typeof param === "number") return param;
   const parsed = Date.parse(param);
   return Number.isNaN(parsed) ? null : parsed;
 }
@@ -165,24 +170,4 @@ export function validateConsumeForm(form: {
     if (Object.keys(offsets).length === 0) issues.push({ field: "strategy", key: "offsetsRequired" });
   }
   return issues;
-}
-
-// -- matchMode 本地预览（后端为准，前端仅做详情过滤提示/导出前二次确认用）-----
-
-export function matchText(candidate: string | undefined, pattern: string, mode: MatchMode): boolean {
-  const haystack = candidate ?? "";
-  switch (mode) {
-    case "prefix":
-      return haystack.startsWith(pattern);
-    case "exact":
-      return haystack === pattern;
-    case "regex":
-      try {
-        return new RegExp(pattern).test(haystack);
-      } catch {
-        return false;
-      }
-    default:
-      return haystack.includes(pattern);
-  }
 }

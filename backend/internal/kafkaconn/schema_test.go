@@ -11,7 +11,6 @@ import (
 	"net/http/httptest"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"testing"
 
 	"io.dbx.kafka.plugin/internal/lifecycle"
@@ -773,30 +772,6 @@ func TestSchemaTextDiffLineCap(t *testing.T) {
 	hunks, summary, err := schemaTextDiff(small, small)
 	if err != nil || len(hunks) != 0 || summary.Unchanged != 10 {
 		t.Fatalf("within-cap diff broken: err=%v hunks=%d summary=%+v", err, len(hunks), summary)
-	}
-}
-
-// S-SRID-CTX（评审 M-5）：schemaIDForVersion 必须从调用方 ctx 派生预算——
-// 此前 context.Background() 另起预算，取消不传播且每版本独立 10s。
-func TestSchemaIDForVersionHonorsCtx(t *testing.T) {
-	var hits int32
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		atomic.AddInt32(&hits, 1)
-		w.Header().Set("Content-Type", "application/vnd.schemaregistry.v1+json")
-		_, _ = w.Write([]byte(`{"subject":"s","version":1,"id":7,"schemaType":"AVRO","schema":"{\"type\":\"record\"}"}`))
-	}))
-	defer server.Close()
-	client, err := newSchemaRegistryClient(Profile{SRURL: server.URL}, connSecrets{})
-	if err != nil {
-		t.Fatalf("newSchemaRegistryClient() error = %v", err)
-	}
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel()
-	if got := schemaIDForVersion(ctx, client, "s", 1); got != 0 {
-		t.Fatalf("id = %d, want 0 (canceled ctx must not fetch)", got)
-	}
-	if n := atomic.LoadInt32(&hits); n != 0 {
-		t.Fatalf("server hits = %d, want 0", n)
 	}
 }
 

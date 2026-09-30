@@ -12,7 +12,7 @@ workflow:
     integration: [review]
     verification: [integration]
 ownership:
-  contract: [manifest.json, docs/PROTOCOL.zh-CN.md]
+  contract: [manifest.json, docs/PROTOCOL_KAFKA.zh-CN.md]
   backend: [backend/]
   frontend: [frontend/, manifest.json]
   tests: [scripts/]

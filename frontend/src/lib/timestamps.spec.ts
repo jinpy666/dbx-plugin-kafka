@@ -12,10 +12,12 @@ describe("timestamp tz helpers (F6-3)", () => {
     const date = new Date(ms);
     const pad = (value: number) => String(value).padStart(2, "0");
     expect(local).toBe(`${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`);
-    // 缺省参数 = local（既有调用面行为不变）；非法值兜底。
+    // 缺省参数 = local（既有调用面行为不变）；非法值兜底；epoch 0 是合法时间戳。
     expect(formatTimestamp(ms)).toBe(local);
     expect(formatTimestamp(undefined)).toBe("—");
     expect(timestampIso(undefined)).toBe("");
+    expect(formatTimestamp(0, "utc")).toBe("1970-01-01 00:00:00");
+    expect(timestampIso(0)).toBe("1970-01-01T00:00:00.000Z");
   });
 
   it("compares date-filter days after parsing cell text in its tz", () => {
@@ -24,9 +26,10 @@ describe("timestamp tz helpers (F6-3)", () => {
     expect(timestampFilterTextComparator(filterDay, "2023-11-13 23:59:59", "local")).toBe(-1);
     expect(timestampFilterTextComparator(filterDay, "2023-11-15 00:00:00", "local")).toBe(1);
     expect(timestampFilterTextComparator(filterDay, "garbage", "local")).toBe(1);
-    // UTC 文本按 UTC 解析为时刻再取本地日比较。
-    const instant = new Date(Date.UTC(2023, 10, 13, 23, 0, 0));
-    const cellLocalDay = new Date(instant.getFullYear(), instant.getMonth(), instant.getDate());
-    expect(timestampFilterTextComparator(cellLocalDay, "2023-11-13 23:00:00", "utc")).toBe(0);
+    // UTC 模式按「日序数」比较（评审 L：旧实现取本地分量，跨日时区整体错位
+    // 一天）——单元格文本取 UTC 分量，过滤日期的本地 Y/M/D 当日序数。
+    expect(timestampFilterTextComparator(new Date(2023, 10, 13), "2023-11-13 23:00:00", "utc")).toBe(0);
+    expect(timestampFilterTextComparator(new Date(2023, 10, 13), "2023-11-14 00:30:00", "utc")).toBe(1);
+    expect(timestampFilterTextComparator(new Date(2023, 10, 13), "2023-11-12 23:59:59", "utc")).toBe(-1);
   });
 });

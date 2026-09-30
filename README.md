@@ -11,7 +11,7 @@
 之间的来回横跳，而是一条连贯、可审计、可复用的工作流。
 
 > Topics · Messages · Streams · Consumer Groups · Brokers · ACLs · Schema Registry ——
-> 一个工作台管完 Kafka 日常运维，默认只读，AI 可自动化。
+> 一个工作台管完 Kafka 日常运维，写操作受门禁保护，AI 可自动化。
 
 ▶️ [观看功能演示视频](docs/media/kafka-studio-demo.mp4)
 
@@ -20,9 +20,9 @@
 | 你要完成的事 | Kafka Studio 给你的体验 |
 | --- | --- |
 | 巡检集群健康度 | Topic 树直接标出不健康分区；分区、ISR、配置与 broker、集群元数据一屏看全 |
-| 找到那条消息 | key/value/header 多通道过滤、字段检索、5 种 offset 策略；压缩与多格式解码开箱即用 |
+| 找到那条消息 | key/value/header 多通道过滤、字段检索、6 种 offset 策略；压缩与多格式解码开箱即用 |
 | 盯住消费延迟 | 消费组 lag、成员与 offset 视图，加监控面板的阈值告警（watch plan 可保存复用） |
-| 改数据不心虚 | 默认只读；删除类操作另有 allowDelete 门；MCP 写路径强制 preview → confirmToken 两阶段确认，全程落审计轨迹 |
+| 改数据不心虚 | 写路径受门禁保护；删除类操作另有 allowDelete 门；MCP 写路径强制 preview → confirmToken 两阶段确认，全程落审计轨迹 |
 | 让 AI 替你值班 | 11 个 MCP 工具复用已保存连接与权限边界；digest 在 sidecar 本地聚合 + cursor 翻页，AI 拿到结论而不是全量数据 |
 
 ## 🔌 全能力矩阵
@@ -57,7 +57,7 @@
 | 压缩 | 生产：gzip · lz4 · zstd · snappy（批压缩）；消费：同名算法解压，帧头预检 + 16 MiB 输出上限双重解压炸弹防护 |
 | 载荷视图 | UTF-8 · JSON（pretty）· XML · Hex · BitSet · Base64 解码 |
 | Schema 编解码 | Confluent wire format 自动解码：**AVRO · JSON Schema · PROTOBUF**（动态 descriptor，无需本地代码生成） |
-| 检索 | key/value/header 多通道过滤 · 字段级检索 · 5 种 offset 策略（latest / earliest / committed / timestamp / offset） |
+| 检索 | key/value/header 多通道过滤 · 字段级检索 · 6 种 offset 策略（latest / earliest / recent / committed / timestamp / offset） |
 | 生产输入 | key/value 文本或 Base64 二进制保真 · 消息 headers · 指定分区 · 批量 ≤1000 条（单条 ≤64 KiB）· acks all/1 · 幂等开关 |
 | 导出 | JSON · CSV（流式与批量皆可） |
 
@@ -114,7 +114,7 @@ MCP 默认只读：生产消息需显式传 `readOnly: false`，删除与清理�
 
 ## 🔐 安全设计
 
-- **默认只读**：新连接默认拒绝一切写操作，写能力逐连接显式开启。
+- **写门禁 + MCP 缺省只读**：写能力按连接表单的 read_only / allow_delete 逐连接开启；MCP 写工具缺省按只读处理，需显式传 `readOnly: false` 才放行写入。
 - **删除双重门**：删除类操作要求同时关闭只读并打开 allowDelete，UI/MCP 双侧一致。
 - **两阶段确认**：MCP 写操作强制 preview → confirmToken，token 单次有效。
 - **审计轨迹**：关键操作在 workbench 内可查、可回放。

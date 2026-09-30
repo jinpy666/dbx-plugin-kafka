@@ -50,7 +50,7 @@ describe("ConnectionsPanel", () => {
     installBridge(() => ({
       statuses: [
         { ...baseStatus },
-        { ...baseStatus, connectionId: "other", status: "error", lastError: "boom", allowDelete: false, readOnly: true, kerberos: { enabled: true }, connectionSource: "zookeeper", schemaRegistry: { enabled: false } },
+        { ...baseStatus, connectionId: "other", status: "error", error: "boom", allowDelete: false, readOnly: true, kerberos: { enabled: true }, connectionSource: "zookeeper", schemaRegistry: { enabled: false } },
       ],
     }));
     const wrapper = mountPanel();
@@ -68,7 +68,7 @@ describe("ConnectionsPanel", () => {
     // 门禁徽标：readOnly / allowDelete=false
     expect(items[1].text()).toContain(t("readOnly"));
     expect(items[1].find(".badge-danger").text()).toBe(t("connections.noDelete"));
-    // lastError 经 friendlyKafkaError 原样兜底
+    // error 经 friendlyKafkaError 原样兜底
     expect(items[1].text()).toContain("boom");
   });
 

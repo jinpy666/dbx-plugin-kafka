@@ -11,6 +11,7 @@ package kafkaconn
 
 import (
 	"context"
+	"fmt"
 	"sort"
 	"sync"
 	"time"
@@ -29,6 +30,9 @@ const (
 	StreamMaxRetryDelay  = 30 * time.Second
 	StreamBackoffFactor  = 2.0
 	StreamEvictScanEvery = 5 * time.Minute
+	// StreamMaxConsecutiveErrors fetch 连续错误熔断阈值（评审 L）：
+	// 500ms→30s 退避下连续 8 次跨度约 1 分钟，topic 永久不可达即停会话。
+	StreamMaxConsecutiveErrors = 8
 )
 
 // StreamEmitter 是流式事件出口（main 注入 SDK emitter 适配器）。
@@ -579,6 +583,7 @@ func (r *StreamRegistry) runLoop(session *streamSession) {
 	defer func() { r.flush(session, &batch) }()
 
 	retryDelay := StreamMinRetryDelay
+	consecutiveErrors := 0
 	for {
 		select {
 		case <-session.ctx.Done():
@@ -597,7 +602,16 @@ func (r *StreamRegistry) runLoop(session *streamSession) {
 		fetches := session.client.PollRecords(pollCtx, StreamBatchSize)
 		pollCancel()
 		if fetchErr := fetches.Err(); fetchErr != nil && !isDeadline(fetchErr) {
+			// 连续错误熔断（评审 L）：topic 永久不可达时指数退避只封频率不封
+			// 次数，每周期向前端 spam 一次错误直至 30 分钟空闲回收。连续 8 次
+			//（500ms→30s 退避，跨度约 1 分钟）后停止会话（runLoop 退出，
+			// 名额等既有空闲回收释放）。
+			consecutiveErrors++
 			r.emitError(session, fetchErr.Error())
+			if consecutiveErrors >= StreamMaxConsecutiveErrors {
+				r.emitError(session, fmt.Sprintf("stream stopped after %d consecutive fetch errors", consecutiveErrors))
+				return
+			}
 			select {
 			case <-session.ctx.Done():
 				return
@@ -609,6 +623,7 @@ func (r *StreamRegistry) runLoop(session *streamSession) {
 			}
 			continue
 		}
+		consecutiveErrors = 0
 		retryDelay = StreamMinRetryDelay
 
 		iter := fetches.RecordIter()

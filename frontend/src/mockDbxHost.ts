@@ -732,7 +732,7 @@ const invoke: DbxPluginApi["invoke"] = async <T = unknown>(method: string, rawPa
     throw new Error("connection lost (fixture error injection)");
   }
   if (method === "kafka/brokers/list") {
-    result = { brokers, connectionSource: "kafka" };
+    result = { brokers, connectionSource: "bootstrap" };
   } else if (method === "kafka/brokers/config") {
     result = { entries: brokerConfigs };
   } else if (method === "kafka/topics/list") {
@@ -1056,7 +1056,7 @@ const invoke: DbxPluginApi["invoke"] = async <T = unknown>(method: string, rawPa
             provider: defaultSrProvider,
           },
           kerberos: { enabled: false },
-          connectionSource: "kafka",
+          connectionSource: "bootstrap",
         },
         {
           // schema_registry=none 的对照行：SR 徽标应显示「未启用」（srOff）。
@@ -1066,7 +1066,7 @@ const invoke: DbxPluginApi["invoke"] = async <T = unknown>(method: string, rawPa
           allowDelete: false,
           schemaRegistry: { enabled: false, provider: "none" },
           kerberos: { enabled: false },
-          connectionSource: "kafka",
+          connectionSource: "bootstrap",
         },
       ],
     };

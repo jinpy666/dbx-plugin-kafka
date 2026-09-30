@@ -13,7 +13,7 @@ cluster stops being a jump between CLIs, web consoles, and chat windows, and bec
 one coherent, auditable, reusable workflow.
 
 > Topics · Messages · Streams · Consumer Groups · Brokers · ACLs · Schema Registry —
-> one workspace for everyday Kafka operations. Read-only by default, AI-automatable.
+> one workspace for everyday Kafka operations. Guarded writes, AI-automatable.
 
 ▶️ [Watch the demo video](docs/media/kafka-studio-demo.mp4)
 
@@ -22,9 +22,9 @@ one coherent, auditable, reusable workflow.
 | Your job | The Kafka Studio workflow |
 | --- | --- |
 | Check cluster health | The topic tree flags unhealthy partitions outright; partitions, ISR, configs, brokers, and cluster metadata in one view |
-| Find that one message | key/value/header multi-channel filters, field search, 5 offset strategies; compression and multi-format decoding out of the box |
+| Find that one message | key/value/header multi-channel filters, field search, 6 offset strategies; compression and multi-format decoding out of the box |
 | Keep lag on a leash | Consumer-group lag, member, and offset views, plus threshold alerts in the monitor panel (watch plans are saved and reusable) |
-| Change data with confidence | Read-only by default; delete-class operations sit behind a separate allowDelete gate; MCP writes enforce a preview → confirmToken two-phase flow and land in the audit trail |
+| Change data with confidence | Writes are gated per connection; delete-class operations sit behind a separate allowDelete gate; MCP writes enforce a preview → confirmToken two-phase flow and land in the audit trail |
 | Let AI take the shift | 11 MCP tools reuse saved connections and permission boundaries; digest aggregates locally in the sidecar with cursor paging, so AI gets conclusions instead of raw bulk data |
 
 ## 🔌 Full capability matrix
@@ -59,7 +59,7 @@ one coherent, auditable, reusable workflow.
 | Compression | Produce: gzip · lz4 · zstd · snappy (batch compression); consume: matching decompression with bomb guards — frame-header pre-checks plus a 16 MiB output cap |
 | Payload views | UTF-8 · JSON (pretty) · XML · Hex · BitSet · Base64 decoding |
 | Schema codecs | Automatic Confluent wire-format decoding: **AVRO · JSON Schema · PROTOBUF** (dynamic descriptors, no local code generation) |
-| Search | key/value/header multi-channel filters · field-level search · 5 offset strategies (latest / earliest / committed / timestamp / offset) |
+| Search | key/value/header multi-channel filters · field-level search · 6 offset strategies (latest / earliest / recent / committed / timestamp / offset) |
 | Produce input | Text or Base64-faithful binary key/value · message headers · target partition · batches ≤1000 records (≤64 KiB each) · acks all/1 · idempotence toggle |
 | Export | JSON · CSV (streaming and batch) |
 
@@ -120,7 +120,7 @@ and the [Kafka MCP reference](docs/MCP.zh-CN.md) for configuration and safety de
 
 ## 🔐 Security
 
-- **Read-only by default**: new connections reject every write until writing is explicitly enabled per connection.
+- **Gated writes + read-only MCP defaults**: write capability is enabled per connection via the read_only / allow_delete form switches; MCP write tools default to read-only and require an explicit `readOnly: false` to proceed.
 - **Double gate on deletion**: delete-class operations require both read-only off and allowDelete on, consistently across UI and MCP.
 - **Two-phase confirmation**: MCP writes enforce preview → confirmToken, with single-use tokens.
 - **Audit trail**: key operations are inspectable and replayable in the workbench.
