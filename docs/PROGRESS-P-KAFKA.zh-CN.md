@@ -1824,3 +1824,10 @@ MCP 专项收口轮：第七轮代码之后对在跑 dev 集群（127.0.0.1:9092
 `DBX_PREBUILT_UI=1 bash scripts/build.sh` 实跑通过——前端跳过、go build +
 打包产出 `io.dbx.kafka-0.1.52-darwin-arm64.dbxp` 与 artifact.json 完整、
 旧版本 dist 清理正常。剩余风险：GitHub runner 真跑待推送观察。
+
+## CI 实测结果：分支 CI 全绿（2026-10-01 续）
+
+`ci-optimize-prebuilt-ui` draft PR #60 的 pull_request CI 全绿
+（run 36759140545：5 平台 candidate 全部 success，前端去重生效；容器
+集成 K1-K19 通过）。主仓 build-candidates 的 kafka 5 平台矩阵同批
+全绿（run 36799950921 部分窗口）。
