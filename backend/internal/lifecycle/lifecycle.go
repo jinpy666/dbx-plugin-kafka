@@ -120,17 +120,27 @@ func (p *Params) ConfigString(key string) string {
 	return anyToString(p.Connection.ExternalConfig[key])
 }
 
-// ConfigBool 取 external_config 中的布尔值。
+// ConfigBool 取 external_config 中的布尔值：标准 Go 形态（1/t/T/TRUE…）
+// 之外，宽容接受 coerceBool 同族的 yes/on / no/off（大小写不敏感，与
+// mcp/stdio 的布尔宽容口径一致）——KAFKA-LC-L1（第二轮审查）：此前
+// "read_only": "yes" 静默按 false 处理，只读门禁 fail-open；门禁类解析
+// 失败方向必须保守。
 func (p *Params) ConfigBool(key string) bool {
 	switch value := p.Connection.ExternalConfig[key].(type) {
 	case bool:
 		return value
 	case string:
-		parsed, err := strconv.ParseBool(strings.TrimSpace(value))
-		if err != nil {
+		trimmed := strings.TrimSpace(value)
+		if parsed, err := strconv.ParseBool(trimmed); err == nil {
+			return parsed
+		}
+		switch strings.ToLower(trimmed) {
+		case "yes", "on":
+			return true
+		case "no", "off":
 			return false
 		}
-		return parsed
+		return false
 	default:
 		return false
 	}

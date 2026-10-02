@@ -31,7 +31,7 @@ import {
 } from "../lib/flowRandom";
 import { isInternalTopicName } from "../lib/topics";
 import { parseHeadersJson } from "../lib/jsonText";
-import { partitionInputIssue, previewText } from "../lib/uiHelpers";
+import { isValidBase64, partitionInputIssue, previewText } from "../lib/uiHelpers";
 import { formatTimestamp, timestampIso } from "../lib/timestamps";
 import { t } from "../lib/i18n";
 
@@ -222,6 +222,16 @@ async function send() {
   }
   if (partition !== undefined && !Number.isInteger(partition)) {
     localError.value = t("err.partition");
+    return;
+  }
+  // L-3 回归：勾选 base64 直发时先做客户端格式校验，非法 base64 行内提示
+  // 而非等后端报错。
+  if (keyIsBase64.value && key.value !== "" && !isValidBase64(key.value)) {
+    localError.value = t("produce.base64Invalid");
+    return;
+  }
+  if (valueIsBase64.value && value.value !== "" && !isValidBase64(value.value)) {
+    localError.value = t("produce.base64Invalid");
     return;
   }
   sending.value = true;

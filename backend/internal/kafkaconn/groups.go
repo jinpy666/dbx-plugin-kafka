@@ -313,6 +313,13 @@ func offsetResetRows(targets kadm.Offsets, commits kadm.OffsetResponses, commitE
 	return rows, failure
 }
 
+// NormalizeOffsetResetMode 归一化 resetTo 的导出包装（MCP offsets_reset 工具
+// 预检共用）：别名集与合法取值单一真相——mcp/server.go validateResetRequest
+// 不再手抄枚举，漂移只剩一处可能。
+func NormalizeOffsetResetMode(value string) (OffsetResetMode, error) {
+	return normalizeResetMode(value)
+}
+
 // normalizeResetMode 归一化 resetTo。
 func normalizeResetMode(value string) (OffsetResetMode, error) {
 	switch strings.ToLower(trimSpace(value)) {

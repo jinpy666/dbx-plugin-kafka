@@ -1,0 +1,19 @@
+{
+  "$comment": "DBX Kafka 插件事件契约注册表（sidecar → 前端的事件载荷单一真相）。后端 backend/events_contract_test.go 与前端 frontend/src/lib/eventContract.spec.ts 共同消费：新增或修改事件载荷必须同步本文件。resultEnum 等取值面同样以本文件为准。",
+  "events": {
+    "kafka/stream/messages": {
+      "keys": ["sessionId", "messages", "totalScanned", "totalMatched", "paused", "bufferSize"],
+      "source": "kafkaconn.StreamMessageBatch（后端测试按反射 json tag 对拍；bufferSize 曾漂移：前端/mock 有、真实后端无，droppedRows 估算在生产从不工作）"
+    },
+    "kafka/stream/error": {
+      "keys": ["sessionId", "error"],
+      "source": "pluginHandler.streamErrorEventPayload"
+    },
+    "kafka/audit": {
+      "keys": ["connectionId", "action", "target", "result", "detail", "source"],
+      "optionalKeys": ["detail", "source"],
+      "resultEnum": ["ok", "denied", "error"],
+      "source": "kafkaconn.AuditRecord（后端测试按反射 json tag 对拍；result 经 auditResultForStore 折算，与 audit.jsonl 同面。result 曾漂移：事件发原始 success|blocked，前端只认 ok|denied，成功操作在审计流全部显示为错误）"
+    }
+  }
+}

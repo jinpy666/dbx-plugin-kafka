@@ -476,11 +476,16 @@ export function useConsumeForm(options: UseConsumeFormOptions) {
     }
   }
 
+  // L-2 回归：快速连选两个预设时 presetsList 慢响应乱序，先选的会整体
+  // 回填覆盖后选的——序号守卫只让最后一次选择落地。
+  let applyPresetSeq = 0;
+
   async function applyPreset(id: string) {
+    const seq = ++applyPresetSeq;
     try {
       const response = await kafkaApi.presetsList();
       const preset = (response.presets ?? []).find((row) => row.id === id);
-      if (!preset) return;
+      if (!preset || seq !== applyPresetSeq) return;
       const params = preset.params ?? {};
       groupId.value = params.groupId ?? "";
       offsetStrategy.value = params.offsetStrategy ?? "recent";
@@ -513,6 +518,7 @@ export function useConsumeForm(options: UseConsumeFormOptions) {
       schemaSubject.value = params.schema?.subject ?? "";
       schemaVersionText.value = params.schema?.version !== undefined ? String(params.schema.version) : "";
       schemaFormat.value = params.schema?.format === "protobuf" || params.schema?.format === "json" ? params.schema.format : "avro";
+      if (seq !== applyPresetSeq) return;
       options.notify(t("messages.presetApplied"));
     } catch (cause) {
       options.error(cause instanceof Error ? cause.message : String(cause));

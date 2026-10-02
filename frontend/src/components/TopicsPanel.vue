@@ -189,6 +189,8 @@ function askDelete(topic: KafkaTopic | null) {
 async function submitDelete() {
   // confirmTopic 必须与 topic 同名（防误删，§6）。
   if (deleteConfirmText.value.trim() !== deleteTarget.value) return;
+  // M-2 回归：Enter 路径绕过按钮的 :disabled，快速连按会发出两个删除 RPC。
+  if (busy.value) return;
   busy.value = true;
   try {
     await kafkaApi.topicsDelete([deleteTarget.value], deleteConfirmText.value.trim());

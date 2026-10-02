@@ -738,7 +738,7 @@ func parseInlineConn(args map[string]any) (inlineConn, bool, error) {
 		TLSCACert:              stringField(args, "tlsCaCert"),
 		TLSClientCert:          stringField(args, "tlsClientCert"),
 		TLSClientKey:           stringField(args, "tlsClientKey"),
-		TLSInsecureSkipVerify:  boolArg(args["tlsInsecureSkipVerify"]),
+		TLSInsecureSkipVerify:  false,
 		SchemaRegistry:         strings.TrimSpace(stringField(args, "schemaRegistry")),
 		SchemaRegistryURL:      strings.TrimSpace(stringField(args, "schemaRegistryUrl")),
 		SchemaRegistryUsername: strings.TrimSpace(stringField(args, "schemaRegistryUsername")),
@@ -748,12 +748,16 @@ func parseInlineConn(args map[string]any) (inlineConn, bool, error) {
 		ReadOnly:    true,
 		AllowDelete: false,
 	}
+	// KAFKA-L4：tlsInsecureSkipVerify 与 readOnly/allowDelete 同走 coerceBool
+	// 宽容口径——LLM 传 "true"（字符串布尔）此前被严格 boolArg 静默按 false
+	// 处理，自签集群连不上且无提示。
 	for _, field := range []struct {
 		key    string
 		target *bool
 	}{
 		{"readOnly", &inline.ReadOnly},
 		{"allowDelete", &inline.AllowDelete},
+		{"tlsInsecureSkipVerify", &inline.TLSInsecureSkipVerify},
 	} {
 		raw, present := args[field.key]
 		if !present || raw == nil {

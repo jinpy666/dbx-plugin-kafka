@@ -701,23 +701,59 @@ func (s *Service) schemaBackendFor(connectionID, registry string) (schemaBackend
 	}
 	switch provider {
 	case schemaProviderConfluent:
-		client, err := newSchemaRegistryClient(profile, secrets)
+		// KAFKA-L6：管理面与挂载路径共用同一 SR 客户端缓存（confluentClientFor
+		// 的指纹命中直接复用）——此前每次 listSubjects/get/list 请求都新建
+		// http.Client+Transport，TLS 重握手白白翻倍。
+		client, err := s.confluentClientFor(connectionID)
 		if err != nil {
 			return nil, err
 		}
 		return &confluentBackend{client: client}, nil
 	case schemaProviderGlue:
-		return newGlueSchemaBackend(glueRegistryConfig{
+		// KAFKA-M2：按连接缓存 glue 后端（同 confluentClientFor 先例）——
+		// 此前每次请求重建 client，默认凭据链（env/共享配置/IMDS）逐调用
+		// 解析，IMDS 无凭据环境可拖秒级。baseEndpoint 是单测注入 seam，
+		// 一并进指纹防测试间串味。
+		entry.mu.Lock()
+		defer entry.mu.Unlock()
+		cfg := glueRegistryConfig{
 			Region:          profile.GlueRegion,
 			RegistryName:    profile.GlueRegistryName,
 			AuthMode:        profile.GlueAuthMode,
 			AccessKeyID:     profile.GlueAccessKeyID,
 			SecretAccessKey: secrets.GlueSecretAccessKey,
 			SessionToken:    secrets.GlueSessionToken,
-		}, glueBaseEndpointOverride)
+		}
+		key := glueConfigFingerprint(cfg, glueBaseEndpointOverride)
+		if entry.glueBackendCache != nil && entry.glueFingerprintKey == key {
+			return entry.glueBackendCache, nil
+		}
+		backend, err := newGlueSchemaBackend(cfg, glueBaseEndpointOverride)
+		if err != nil {
+			return nil, err
+		}
+		entry.glueBackendCache = backend
+		entry.glueFingerprintKey = key
+		return backend, nil
 	default:
 		return nil, errf("schema registry is not enabled for connection %q (set schemaRegistry to confluent or aws_glue)", profile.Name)
 	}
+}
+
+// glueConfigFingerprint 计算 Glue 通道配置摘要（凭据进摘要不落盘，同
+// srFingerprintLocked 先例；baseEndpoint 变化即失效）。
+func glueConfigFingerprint(cfg glueRegistryConfig, baseEndpoint string) string {
+	parts := []string{
+		cfg.Region,
+		cfg.RegistryName,
+		cfg.AuthMode,
+		cfg.AccessKeyID,
+		cfg.SecretAccessKey,
+		cfg.SessionToken,
+		baseEndpoint,
+	}
+	sum := sha256.Sum256([]byte(strings.Join(parts, "\x00")))
+	return hex.EncodeToString(sum[:])
 }
 
 // confluentClientFor 取连接的 Confluent SR 客户端（produce/consume/stream

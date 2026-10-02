@@ -17,7 +17,7 @@ import type { MessageRow } from "../lib/kafkaColumns";
 import { messageCellCopyText, MINIMAL_MESSAGE_FIELDS } from "../lib/kafkaColumns";
 import { serializeMessagesToCsv, serializeMessagesToJson, serializeMessagesToTsv } from "../lib/messageExport";
 import { saveTextFile, type SaveFileOutcome } from "../lib/download";
-import { copyTextToClipboard } from "../lib/uiHelpers";
+import { capRows, copyTextToClipboard } from "../lib/uiHelpers";
 import { validateConsumeForm } from "../lib/consumeForm";
 import { positiveInt, useConsumeForm } from "../composables/useConsumeForm";
 import { useConsumeResults } from "../composables/useConsumeResults";
@@ -409,7 +409,11 @@ async function exportMessages(format: "json" | "csv" | "tsv") {
     tsv: { file: "kafka-messages.tsv", type: "text/tab-separated-values", run: serializeMessagesToTsv },
   } as const;
   const spec = specs[format];
-  await saveExport(spec.file, spec.type, spec.run(result.value.messages), format.toUpperCase());
+  // M-5 回归：导出与表格同一数据源（capRows 裁剪后的最新 N 条）——此前用
+  // 未裁剪的完整响应数组，结果超表格上限时被裁掉的旧行也进导出，「所见即
+  // 所导」失真；同时超大集合的主线程同步序列化冻结 UI。
+  const exported = capRows(result.value.messages).rows;
+  await saveExport(spec.file, spec.type, spec.run(exported), format.toUpperCase());
 }
 
 /** 保存导出内容（宿主另存为优先/网页下载兜底，见 lib/download）；用户取消另存为不提示成功。 */
@@ -520,7 +524,7 @@ watch(() => props.topic, () => void loadPresets(), { immediate: true });
             </label>
             <label class="field">
               <span>{{ t("messages.limit") }}</span>
-              <input v-model="limit" type="number" min="1" />
+              <input v-model="limit" type="number" min="1" max="10000" />
             </label>
             <label class="field">
               <span>{{ t("messages.timeoutMs") }}</span>

@@ -189,7 +189,7 @@ export function prettyXml(text: string): string {
 }
 
 // BitSet 展示：把整数字符串（十进制/0x 十六进制/二进制字面量）转成从
-// 高位到低位的 0/1 串，按 8 位分组（tinyrdm BitSet 语义的纯函数版）。
+// 高位到低位的 0/1 串，按 4 位分组（tinyrdm BitSet 语义的纯函数版）。
 export function formatBitSet(text: string): string | null {
   const trimmed = text.trim();
   if (!/^(0x[0-9a-f]+|0b[01]+|\d+)$/i.test(trimmed)) return null;

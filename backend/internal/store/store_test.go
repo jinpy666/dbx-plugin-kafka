@@ -289,3 +289,24 @@ func TestSaveJSONConcurrentValidFile(t *testing.T) {
 		}
 	}
 }
+
+// KAFKA-ST-L2 回归：OpenAt 清理 SaveJSON 崩溃残留的孤儿临时文件
+// （<name>.json.* 形态），真实数据文件保留。
+func TestOpenAtCleansOrphanTempFiles(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "presets.json.123456"), []byte("junk"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "presets.json"), []byte("{}"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := OpenAt(dir); err != nil {
+		t.Fatalf("open = %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "presets.json.123456")); !os.IsNotExist(err) {
+		t.Errorf("orphan temp file survived: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "presets.json")); err != nil {
+		t.Errorf("real data file removed: %v", err)
+	}
+}

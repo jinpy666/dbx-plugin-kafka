@@ -33,6 +33,12 @@ const (
 	// StreamMaxConsecutiveErrors fetch 连续错误熔断阈值（评审 L）：
 	// 500ms→30s 退避下连续 8 次跨度约 1 分钟，topic 永久不可达即停会话。
 	StreamMaxConsecutiveErrors = 8
+	// StreamBatchByteBudget 单批事件的序列化字节预算（KAFKA-H2）：SDK 单行
+	// JSON 上限 8MiB，50 条满额大消息（每条 ~1.05MB wire）可到 52MB——整批
+	// 事件被 SDK 丢弃且只落 stderr，前端表现为流无声卡死。按 4MiB 分批：
+	// 单条消息 wire ≤ ~1.05MB（value 512KB 上限的双通道），预算必然装得下
+	// 至少 3 条，不存在「单条永远发不出」的死锁。
+	StreamBatchByteBudget = 4 << 20
 )
 
 // StreamEmitter 是流式事件出口（main 注入 SDK emitter 适配器）。
@@ -43,13 +49,16 @@ type StreamEmitter interface {
 	EmitStreamError(sessionID, message string)
 }
 
-// StreamMessageBatch 是 kafka/stream/messages 事件载荷（§5.4）。
+// StreamMessageBatch 是 kafka/stream/messages 事件载荷（§5.4）。BufferSize
+// 是发送时点的 ring 存量快照：前端据此估算被丢弃的行数（容量 10000，超出
+// 覆盖最旧）。
 type StreamMessageBatch struct {
 	SessionID    string            `json:"sessionId"`
 	Messages     []ConsumedMessage `json:"messages"`
 	TotalScanned int64             `json:"totalScanned"`
 	TotalMatched int64             `json:"totalMatched"`
 	Paused       bool              `json:"paused"`
+	BufferSize   int               `json:"bufferSize"`
 }
 
 // StreamStatus 是 kafka/stream/status 返回（§5.2）。
@@ -553,9 +562,25 @@ func (r *StreamRegistry) StatusesFor(connectionID string) []StreamStatus {
 	return statuses
 }
 
+// streamBatchShouldFlush 批次推送判定（KAFKA-H2 双阈值）：条数将超上限或
+// 字节将超预算即先 flush；空批恒不 flush（单条消息 wire ≤ ~1.05MB 远小于
+// 预算，任何单条都装得进新批，不存在发不出的死锁）。
+func streamBatchShouldFlush(batchLen, batchBytes, nextWire int) bool {
+	if batchLen == 0 {
+		return false
+	}
+	return batchLen+1 > StreamBatchSize || batchBytes+nextWire > StreamBatchByteBudget
+}
+
 // runLoop 消费主循环：节流 emit + ring 写入 + 指数退避（tinyrdm
 // processStream :413 重写；计数与 ring 仅经 session.mu 保护读写）。
 func (r *StreamRegistry) runLoop(session *streamSession) {
+	// KAFKA-M1：任何退出路径都要把会话从注册表摘除——此前熔断/入口校验失败
+	// 只发事件就 return，会话以「活跃」状态滞留至 30 分钟空闲回收，
+	// kafka/stream/status 一直返回冻结的正常快照。Stop 幂等，正常 stop 路径
+	// 不受影响；放首行以覆盖入口校验错误等早期 return。
+	defer r.Stop(session.sessionID)
+
 	matcher, err := newConsumeTextMatcher(session.req)
 	if err != nil {
 		r.emitError(session, err.Error())
@@ -578,6 +603,7 @@ func (r *StreamRegistry) runLoop(session *streamSession) {
 	}
 
 	batch := make([]ConsumedMessage, 0, StreamBatchSize)
+	batchBytes := 0
 	ticker := time.NewTicker(StreamBatchFlush)
 	defer ticker.Stop()
 	defer func() { r.flush(session, &batch) }()
@@ -591,6 +617,7 @@ func (r *StreamRegistry) runLoop(session *streamSession) {
 		case <-ticker.C:
 			if len(batch) > 0 {
 				r.flush(session, &batch)
+				batchBytes = 0
 			}
 		default:
 		}
@@ -604,8 +631,8 @@ func (r *StreamRegistry) runLoop(session *streamSession) {
 		if fetchErr := fetches.Err(); fetchErr != nil && !isDeadline(fetchErr) {
 			// 连续错误熔断（评审 L）：topic 永久不可达时指数退避只封频率不封
 			// 次数，每周期向前端 spam 一次错误直至 30 分钟空闲回收。连续 8 次
-			//（500ms→30s 退避，跨度约 1 分钟）后停止会话（runLoop 退出，
-			// 名额等既有空闲回收释放）。
+			//（500ms→30s 退避，跨度约 1 分钟）后停止会话；退出统一经
+			// runLoop 入口的 defer Stop 摘除注册（KAFKA-M1）。
 			consecutiveErrors++
 			r.emitError(session, fetchErr.Error())
 			if consecutiveErrors >= StreamMaxConsecutiveErrors {
@@ -677,10 +704,14 @@ func (r *StreamRegistry) runLoop(session *streamSession) {
 			ensureValueDecoded()
 			// 流式会话是工作台路径：保持 valueText/valueBase64 双通道（评审
 			// H-1 的 skipValueBase64 仅用于 digest 一次性消费）。
-			batch = append(batch, messageFromRecordWithSchema(record, value, decoded, decodeErr, false, recordSchemaInfo, false))
-			if len(batch) >= StreamBatchSize {
+			msg := messageFromRecordWithSchema(record, value, decoded, decodeErr, false, recordSchemaInfo, false)
+			wire := consumeWireSizeBytes(msg)
+			if streamBatchShouldFlush(len(batch), batchBytes, wire) {
 				r.flush(session, &batch)
+				batchBytes = 0
 			}
+			batchBytes += wire
+			batch = append(batch, msg)
 		}
 		if session.ctx.Err() != nil {
 			return
@@ -702,6 +733,7 @@ func (r *StreamRegistry) flush(session *streamSession, batch *[]ConsumedMessage)
 	paused := session.paused
 	totalScanned := session.totalScanned
 	totalMatched := session.totalMatched
+	bufferSize := session.ring.Len()
 	session.mu.Unlock()
 
 	if r.Emitter == nil || paused {
@@ -713,6 +745,7 @@ func (r *StreamRegistry) flush(session *streamSession, batch *[]ConsumedMessage)
 		TotalScanned: totalScanned,
 		TotalMatched: totalMatched,
 		Paused:       paused,
+		BufferSize:   bufferSize,
 	})
 }
 

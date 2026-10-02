@@ -12,6 +12,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"reflect"
 	"strings"
 	"sync"
 	"time"
@@ -81,11 +82,24 @@ func (s *Service) Connect(params *lifecycle.Params) error {
 	if err != nil {
 		return err
 	}
+	target := connTarget{Host: params.Runtime.Host, Port: params.Runtime.Port, Proxy: params.Runtime.Proxy}
+
+	// KAFKA-M3：幂等重连短路。mcp/call 桥每次工具调用都携带 lifecycle 即
+	// Connect（幂等覆盖语义），前端对同一保存连接的刷新/重试也常触发——
+	// 配置完全未变时保留旧 entry：admin client 与 SR/Glue 缓存原样复用，
+	// 在途流式会话与消费池不被误杀。profile/secrets/target 发布后不可变，
+	// 锁外读安全（entry 构造后原子替换）。
+	s.mu.Lock()
+	if old := s.conns[profile.ID]; old != nil && sameConnectionConfig(old, profile, secrets, target) {
+		s.mu.Unlock()
+		return nil
+	}
+	s.mu.Unlock()
 
 	// 审查 L5（2026-09-26）：tls_insecure_skip_verify=true 的连接必留痕。
 	// 生命周期配置应用是单次 emit 点（TCP 重连不重走 Connect，不刷屏）；
 	// Result 走三值契约的 success（store 折算 ok），警示语义放 Detail，
-	// 不引入第四种 result 值。
+	// 不引入第四种 result 值。短路路径不重复 emit。
 	if profile.TLSInsecureSkipVerify {
 		s.emitAudit(profile.ID, "connection-configure", profile.Name, "success",
 			"TLS certificate verification is disabled (tlsInsecureSkipVerify=true)")
@@ -94,7 +108,7 @@ func (s *Service) Connect(params *lifecycle.Params) error {
 	entry := &connEntry{
 		profile: profile,
 		secrets: secrets,
-		target:  connTarget{Host: params.Runtime.Host, Port: params.Runtime.Port, Proxy: params.Runtime.Proxy},
+		target:  target,
 		status:  "idle",
 		// statuses 契约字段（评审 L-4）：此前恒 0，前端时间线无从展示。
 		connectedAt: time.Now().UnixMilli(),
@@ -117,6 +131,15 @@ func (s *Service) Connect(params *lifecycle.Params) error {
 		s.consumePoolCloseFor(profile.ID)
 	}
 	return nil
+}
+
+// sameConnectionConfig 报告两个连接配置是否完全一致（KAFKA-M3 短路判定）。
+// Profile 含切片字段（BootstrapServers 等），connTarget.Proxy 是指针——
+// 统一走 DeepEqual，逐字段手抄必然在加新字段时漏比对。
+func sameConnectionConfig(old *connEntry, profile Profile, secrets connSecrets, target connTarget) bool {
+	return reflect.DeepEqual(old.profile, profile) &&
+		reflect.DeepEqual(old.secrets, secrets) &&
+		reflect.DeepEqual(old.target, target)
 }
 
 // Test 处理 connection/test：立即拨号 + ListBrokers 真实 metadata 探活；

@@ -149,6 +149,12 @@ const server = spawn("pnpm", ["--dir", "frontend", "exec", "vite", "--port", Str
   cwd: PLUGIN_ROOT,
   stdio: ["ignore", "pipe", "pipe"],
 });
+// KAFKA-UIT-L10：环境无 pnpm 时 ChildProcess 会发 'error' 事件——不监听则
+// 未捕获异常丑栈，而非既定的 SKIP/FAIL 语义。
+server.on("error", (cause) => {
+  console.error(`FAIL: kafka UI walkthrough — vite dev server failed to start: ${cause.message}`);
+  process.exit(1);
+});
 let browser;
 try {
   const url = `http://localhost:${PORT}/mock.html`;

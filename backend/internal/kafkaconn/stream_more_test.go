@@ -7,6 +7,7 @@ package kafkaconn
 
 import (
 	"context"
+	"encoding/json"
 	"strings"
 	"testing"
 )
@@ -273,5 +274,101 @@ func TestStartStreamCommitRejected(t *testing.T) {
 	_, err = svc.StartStream(ConsumeParams{ConnectionID: "sc", Topic: "t", Commit: true})
 	if err == nil || !strings.Contains(err.Error(), "commit") {
 		t.Fatalf("err = %v, want explicit commit rejection", err)
+	}
+}
+
+// KAFKA-H2 回归：flush 事件携带发送时点的 ring 存量（bufferSize），前端
+// 据此估算被覆盖丢弃的行数——此前真实后端不发送该字段，前端 droppedRows
+// 估算只在 mock 中生效（活体漂移）。
+func TestStreamFlushCarriesBufferSize(t *testing.T) {
+	service := NewService()
+	emitter := &fakeStreamEmitter{}
+	service.Streams.Emitter = emitter
+	session := newTestSession("bs1", "conn-a", "orders")
+	service.Streams.inject(session)
+
+	batch := []ConsumedMessage{{ValueText: "x"}, {ValueText: "y"}}
+	service.Streams.flush(session, &batch)
+	if len(emitter.batches) != 1 {
+		t.Fatalf("batches = %d", len(emitter.batches))
+	}
+	if got := emitter.batches[0].BufferSize; got != 2 {
+		t.Errorf("bufferSize = %d, want ring size 2", got)
+	}
+}
+
+// KAFKA-H2 回归：批次推送判定双阈值（条数上限 / 字节预算），空批恒不 flush。
+func TestStreamBatchShouldFlushMatrix(t *testing.T) {
+	if streamBatchShouldFlush(0, 0, StreamBatchByteBudget) {
+		t.Error("empty batch must never flush")
+	}
+	if !streamBatchShouldFlush(StreamBatchSize, 0, 0) {
+		t.Error("count overflow must flush")
+	}
+	if streamBatchShouldFlush(StreamBatchSize-1, 0, 0) {
+		t.Error("below count cap must not flush")
+	}
+	if !streamBatchShouldFlush(1, StreamBatchByteBudget, 1) {
+		t.Error("byte overflow must flush")
+	}
+	if streamBatchShouldFlush(1, StreamBatchByteBudget-1, 1) {
+		t.Error("within byte budget must not flush")
+	}
+}
+
+// KAFKA-M1 回归：runLoop 任何错误退出都必须把会话从注册表摘除——此前
+// 入口校验失败/熔断只发事件就 return，会话以「活跃」状态滞留至 30 分钟
+// 空闲回收，status 一直返回冻结快照。
+func TestStreamRunLoopErrorExitRemovesSession(t *testing.T) {
+	service := NewService()
+	emitter := &fakeStreamEmitter{}
+	service.Streams.Emitter = emitter
+	session := newTestSession("z1", "conn-a", "orders")
+	// 非法正则让 runLoop 在触碰 client 之前于入口校验处退出。
+	session.req.MatchMode = "regex"
+	session.req.ValueFilter = "["
+	service.Streams.inject(session)
+
+	service.Streams.runLoop(session)
+
+	if len(emitter.errors) == 0 {
+		t.Fatal("expected error event before exit")
+	}
+	service.Streams.mu.Lock()
+	_, ok := service.Streams.sessions["z1"]
+	service.Streams.mu.Unlock()
+	if ok {
+		t.Fatal("zombie session left in registry after runLoop error exit")
+	}
+}
+
+// KAFKA-EVT 回归（架构审查"事件通道不在契约守护面内"最小钉）：事件载荷
+// 顶层键与协议文档 §6.1 严格一致——此前 bufferSize 漂移（前端/mock 有、
+// 真实后端无）导致 droppedRows 估算在生产从不工作且所有测试全绿。
+func TestStreamMessageBatchEventShape(t *testing.T) {
+	batch := StreamMessageBatch{
+		SessionID:    "s1",
+		Messages:     []ConsumedMessage{},
+		TotalScanned: 1,
+		TotalMatched: 1,
+		Paused:       false,
+		BufferSize:   2,
+	}
+	data, err := json.Marshal(batch)
+	if err != nil {
+		t.Fatalf("marshal = %v", err)
+	}
+	var keys map[string]json.RawMessage
+	if err := json.Unmarshal(data, &keys); err != nil {
+		t.Fatalf("unmarshal = %v", err)
+	}
+	want := []string{"sessionId", "messages", "totalScanned", "totalMatched", "paused", "bufferSize"}
+	if len(keys) != len(want) {
+		t.Fatalf("event keys = %v, want exactly %v", keys, want)
+	}
+	for _, key := range want {
+		if _, ok := keys[key]; !ok {
+			t.Errorf("event key %q missing (doc §6.1 drift)", key)
+		}
 	}
 }
