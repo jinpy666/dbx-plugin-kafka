@@ -72,6 +72,12 @@ type connEntry struct {
 	srClient      *schemaRegistryClient
 	srFingerprint string
 
+	// Glue 后端缓存（KAFKA-M2）：schema 管理面此前每次调用重建 glue client，
+	// 默认凭据链（env/共享配置/IMDS）逐调用解析，IMDS 无凭据环境可拖秒级。
+	// entry 随 Connect 整体替换，配置变更自然失效。
+	glueBackendCache   *glueBackend
+	glueFingerprintKey string
+
 	// 状态面用独立细粒度锁（评审 M-6）：此前与 mu 共锁，withAdmin 在 mu 内
 	// 执行整个 admin RPC（≤20s），statuses UI 轮询被串行阻塞。锁序：
 	// mu → statusMu，禁反向。
@@ -86,6 +92,16 @@ type connEntry struct {
 func (e *connEntry) setStatus(status, lastErr string) {
 	e.statusMu.Lock()
 	e.status = status
+	e.lastError = lastErr
+	e.lastUsedAt = time.Now().UnixMilli()
+	e.statusMu.Unlock()
+}
+
+// recordOpError 记录最近一次操作错误（KAFKA-L1）：只写 lastError 与
+// lastUsedAt，不改生命周期状态——admin RPC 的业务失败（describe 不存在的
+// topic、参数错等）≠ 连接断开，状态面翻红会误导且要等下次成功才自愈。
+func (e *connEntry) recordOpError(lastErr string) {
+	e.statusMu.Lock()
 	e.lastError = lastErr
 	e.lastUsedAt = time.Now().UnixMilli()
 	e.statusMu.Unlock()
@@ -512,7 +528,9 @@ func (s *Service) withAdmin(connectionID string, fn func(client *kgo.Client) err
 	if err == nil {
 		entry.setStatus("connected", "")
 	} else {
-		entry.setStatus("error", err.Error())
+		// KAFKA-L1：RPC 层失败只记 lastError（ConnectionsPanel 一直展示），
+		// 生命周期状态不动——只有 client 构建/拨号失败才算连接级故障。
+		entry.recordOpError(err.Error())
 	}
 	return err
 }

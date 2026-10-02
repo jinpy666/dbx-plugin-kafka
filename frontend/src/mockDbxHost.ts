@@ -773,7 +773,7 @@ const invoke: DbxPluginApi["invoke"] = async <T = unknown>(method: string, rawPa
     const partitionCount = Number(input.partitions ?? 1);
     const replicationFactor = Number(input.replicationFactor ?? 1);
     const config = (input.config ?? {}) as Record<string, string>;
-    guardWrite("topics/create", names.join(","));
+    guardWrite("topics-create", names.join(","));
     const results = names.map((name) => {
       if (topics.has(name)) return { topic: name, ok: false, error: "topic already exists" };
       seedTopic(name, partitionCount, false, []);
@@ -786,7 +786,7 @@ const invoke: DbxPluginApi["invoke"] = async <T = unknown>(method: string, rawPa
   } else if (method === "kafka/topics/delete") {
     const names = (input.topics ?? []) as string[];
     for (const name of names) {
-      guardWrite("topics/delete", name, { critical: true, confirmTopic: String(input.confirmTopic ?? "") });
+      guardWrite("topics-delete", name, { critical: true, confirmTopic: String(input.confirmTopic ?? "") });
     }
     result = {
       results: names.map((name) => {
@@ -796,7 +796,7 @@ const invoke: DbxPluginApi["invoke"] = async <T = unknown>(method: string, rawPa
     };
   } else if (method === "kafka/topics/partitions/update") {
     const wanted = (input.partitions ?? {}) as Record<string, number>;
-    guardWrite("topics/partitions/update", JSON.stringify(wanted));
+    guardWrite("partitions-update", JSON.stringify(wanted));
     const results: Array<{ topic: string; ok: boolean; error?: string }> = [];
     for (const [name, nextCount] of Object.entries(wanted)) {
       const topic = topics.get(name);
@@ -822,7 +822,7 @@ const invoke: DbxPluginApi["invoke"] = async <T = unknown>(method: string, rawPa
       ],
     };
   } else if (method === "kafka/topics/config/alter") {
-    guardWrite("topics/config/alter", String(input.topic ?? ""));
+    guardWrite("topic-config-alter", String(input.topic ?? ""));
     // 形状对齐 sidecar（MutationResult[]）：逐键结果；面板改完后经
     // config/get 重拉列表（sidecar 不在 alter 响应里回完整条目）。
     result = { results: [{ topic: String(input.topic ?? ""), ok: true }] };
@@ -874,11 +874,11 @@ const invoke: DbxPluginApi["invoke"] = async <T = unknown>(method: string, rawPa
     result = { rows, totalLag, hasCommitted };
   } else if (method === "kafka/groups/delete") {
     const group = String(input.group ?? "");
-    guardWrite("groups/delete", group, { critical: true });
+    guardWrite("groups-delete", group, { critical: true });
     result = { success: groups.delete(group) };
   } else if (method === "kafka/groups/offsets/reset") {
     const group = groups.get(String(input.group ?? ""));
-    guardWrite("groups/offsets/reset", String(input.group ?? ""));
+    guardWrite("group-offsets-reset", String(input.group ?? ""));
     const topicsArg = ((input.topics ?? []) as string[]).filter(Boolean);
     const rows: Array<Record<string, unknown>> = [];
     if (group) {
@@ -912,12 +912,12 @@ const invoke: DbxPluginApi["invoke"] = async <T = unknown>(method: string, rawPa
     result = { acls: matched };
   } else if (method === "kafka/acls/create") {
     const acl = (input.acl ?? {}) as KafkaAclFixture;
-    guardWrite("acls/create", `${acl.resourceType}:${acl.resourceName}`);
+    guardWrite("acls-create", `${acl.resourceType}:${acl.resourceName}`);
     acls.push(acl);
     result = { success: true };
   } else if (method === "kafka/acls/delete") {
     const filter_ = (input.filter ?? {}) as Record<string, string>;
-    guardWrite("acls/delete", JSON.stringify(filter_), { critical: true });
+    guardWrite("acls-delete", JSON.stringify(filter_), { critical: true });
     // matched 回显逐条删除结果（与后端 ACLsDeleteResult 对齐，评审 M-4）。
     const matched: Array<Record<string, string>> = [];
     for (let index = acls.length - 1; index >= 0; index -= 1) {
@@ -932,9 +932,14 @@ const invoke: DbxPluginApi["invoke"] = async <T = unknown>(method: string, rawPa
   } else if (method === "kafka/messages/produce") {
     const topicName = String(input.topic ?? "");
     const topic = requireTopic(topicName);
-    guardWrite("messages/produce", topicName);
+    guardWrite("produce", topicName);
     const count = Math.min(Number(input.count ?? 1) || 1, 1000);
     const partition = typeof input.partition === "number" ? input.partition : 0;
+    // KAFKA-MOCK-M3：分区越界必须报错——此前 optional chaining 吞掉越界，
+    // 消息全部丢弃仍返回成功（真实链路由 broker 报 UNKNOWN_TOPIC_OR_PARTITION）。
+    if (!Number.isInteger(partition) || partition < 0 || partition >= topic.partitions.length) {
+      throw new Error(`partition ${partition} out of range [0, ${topic.partitions.length}) (fixture)`);
+    }
     // Phase 2：keyBase64/valueBase64 保真载荷（与 key/value 二选一），base64 → 文本。
     const key = typeof input.keyBase64 === "string" ? atob(input.keyBase64) : typeof input.key === "string" ? input.key : "";
     const value = typeof input.valueBase64 === "string" ? atob(input.valueBase64) : String(input.value ?? "");
@@ -1185,6 +1190,11 @@ const invoke: DbxPluginApi["invoke"] = async <T = unknown>(method: string, rawPa
     const intentId = String(input.intentId ?? "").trim();
     if (intentId && status !== "applied" && status !== "rejected") throw new Error("status must be applied or rejected");
     result = { success: true };
+  } else {
+    // KAFKA-MOCK-M2：未知方法必须红灯——此前静默返回 {success:true}，
+    // api.ts 新增方法而 mock 未路由时走查假绿（methodContract 守护只查
+    // 「mock ⊆ 契约」与「api ⊆ 契约」，不查「api ⊆ mock 路由」）。
+    throw new Error(`unknown method (fixture): ${method}`);
   }
   // kafka/audit 不在路由里：它是 sidecar→宿主的事件通道（emitter.Event），
   // mock 侧同样经 emitEvent 注入，方法契约（methodContract.json）只管方法面。

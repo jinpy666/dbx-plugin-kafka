@@ -416,20 +416,80 @@ func TestConsumeReuseEligibleExcludesExactOffsets(t *testing.T) {
 
 // digest 聚合上界（评审 M-1，2026-09-28）：留存预算路径不吃 limit 硬钳位，
 // 否则 maxScanRecords 超过 1 万时扫描在钳位处提前终止，聚合分布只覆盖子集。
+// H-1 回归（2026-10-02）：只有显式预算（digest）才抬升命中上界；工作台
+// 默认兜底预算不得改变 limit 契约语义（返回条数上限）。
 func TestConsumeEffectiveLimitDigestBypass(t *testing.T) {
 	limit := clampConsumeLimit(100_000) // digest 把 Limit 设为 maxScanRecords
 	maxScan := consumeMaxScanRecords(limit, 100_000)
 	if maxScan != 100_000 {
 		t.Fatalf("maxScan = %d, want 100000", maxScan)
 	}
-	if got := consumeEffectiveLimit(limit, maxScan, 0); got != consumeLimitHardCap {
+	if got := consumeEffectiveLimit(limit, maxScan, false); got != consumeLimitHardCap {
 		t.Errorf("non-digest effective limit = %d, want %d", got, consumeLimitHardCap)
 	}
-	if got := consumeEffectiveLimit(limit, maxScan, 64<<20); got != maxScan {
+	if got := consumeEffectiveLimit(limit, maxScan, true); got != maxScan {
 		t.Errorf("digest effective limit = %d, want maxScan %d", got, maxScan)
 	}
 	// maxScan 小于钳位时 digest 也取较大者，语义一致。
-	if got := consumeEffectiveLimit(100, 1000, 1); got != 1000 {
+	if got := consumeEffectiveLimit(100, 1000, true); got != 1000 {
 		t.Errorf("digest small-scan effective limit = %d, want 1000", got)
+	}
+	// 工作台默认预算不抬升 limit：请求 limit=100 时命中上界就是 100。
+	if got := consumeEffectiveLimit(100, 1000, false); got != 100 {
+		t.Errorf("workbench effective limit = %d, want 100 (contract §5.3)", got)
+	}
+}
+
+// H-1 回归：显式预算与默认兜底的推导。工作台不传 retentionByteBudget，
+// 不得被推导成 digest 聚合路径。
+func TestConsumeRetentionSetup(t *testing.T) {
+	digest, budget := consumeRetentionSetup(0)
+	if digest {
+		t.Error("zero budget must not be treated as digest aggregation")
+	}
+	if budget != workbenchRetentionByteBudget {
+		t.Errorf("workbench fallback budget = %d, want %d", budget, workbenchRetentionByteBudget)
+	}
+	digest, budget = consumeRetentionSetup(64 << 20)
+	if !digest {
+		t.Error("explicit budget must be treated as digest aggregation")
+	}
+	if budget != 64<<20 {
+		t.Errorf("explicit budget = %d, want %d", budget, 64<<20)
+	}
+}
+
+// H-1 回归（请求形状）：工作台 consume 请求不带 retentionByteBudget 时，
+// 命中上界就是请求 limit（协议 §5.3 limit = 返回条数上限；此前默认预算把
+// 命中上界抬到 maxScan，limit=100 最多可返回 1 万条）。
+func TestConsumeDefaultParamsRespectLimitContract(t *testing.T) {
+	var params ConsumeParams // 模拟前端工作台请求：不传 retentionByteBudget
+	if params.RetentionByteBudget > 0 {
+		t.Fatalf("frontend requests must not carry retentionByteBudget, got %d", params.RetentionByteBudget)
+	}
+	digest, _ := consumeRetentionSetup(params.RetentionByteBudget)
+	limit := clampConsumeLimit(params.Limit)
+	maxScan := consumeMaxScanRecords(limit, params.MaxScanRecords)
+	if got := consumeEffectiveLimit(limit, maxScan, digest); got != 100 {
+		t.Errorf("default consume hit cap = %d, want request limit 100", got)
+	}
+}
+
+// KAFKA-H2 回归：响应传输预算的 wire 估算必须覆盖双通道 value、key 与
+// headers（保守高估，防止预算误放行）。
+func TestConsumeWireSizeEstimateCoversPayload(t *testing.T) {
+	msg := ConsumedMessage{
+		Topic:       "t",
+		ValueText:   strings.Repeat("v", 1000),
+		ValueBase64: strings.Repeat("A", 1400),
+		Headers:     map[string]string{"h1": strings.Repeat("x", 100)},
+	}
+	wire := consumeWireSizeBytes(msg)
+	payload := len("t") + len(msg.ValueText) + len(msg.ValueBase64) + len("h1") + len(msg.Headers["h1"])
+	if wire < payload {
+		t.Fatalf("wire estimate %d smaller than payload sum %d", wire, payload)
+	}
+	if cap := payload + 256 + 8*len(msg.Headers); wire > cap {
+		t.Fatalf("wire estimate %d inflated beyond fixed overhead cap %d", wire, cap)
 	}
 }

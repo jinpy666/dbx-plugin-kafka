@@ -47,6 +47,11 @@ const (
 	// 经 gzip/lz4/zstd/snappy 可膨胀上万倍，无上限 ReadAll 可把 sidecar 打到
 	// OOM。超出即报错，按现有 DecodeError 语义进消息不中断消费。
 	maxDecodedBytes = 16 * 1024 * 1024
+	// produceTimeout 是 produce 的两阶段统一超时预算（KAFKA-L5）：schema
+	// 编码与 ProduceSync 此前一处 adminTimeout(20s) 一处硬编码 30s。30s 覆盖
+	// acks=all 的最慢副本同步，宿主 invoke 超时（默认 10s+）之外由 ctx 取消
+	// 兜底。
+	produceTimeout = 30 * time.Second
 )
 
 // ConsumeParams 是一次性与流式消费共用参数（契约 §5.3 全字段）。
@@ -309,7 +314,7 @@ func (s *Service) Produce(ctx context.Context, req ProduceRequest) (*ProduceResu
 	defer closeClient()
 
 	if req.Schema != nil {
-		produceCtx, cancel := context.WithTimeout(ctx, adminTimeout)
+		produceCtx, cancel := context.WithTimeout(ctx, produceTimeout)
 		var schemaResult SchemaGetResult
 		payload, schemaResult, err = encodeForProduce(produceCtx, schemaClient, req.Schema, payload)
 		cancel()
@@ -335,20 +340,49 @@ func (s *Service) Produce(ctx context.Context, req ProduceRequest) (*ProduceResu
 		records = append(records, record)
 	}
 
-	produceCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	produceCtx, cancel := context.WithTimeout(ctx, produceTimeout)
 	defer cancel()
-	written, err := client.ProduceSync(produceCtx, records...).First()
-	if err != nil {
-		s.emitAuditSource(req.Source, req.ConnectionID, "produce", topic, "error", err.Error())
+	// KAFKA-PR-H1（第二轮审查）：ProduceSync 返回完成序结果，First() 只看
+	// 首个完成批次——count>1 按 key 分散多分区（或共享 produceTimeout 中途
+	// 到期）时，非首完成批次的失败被整体吞掉：调用方拿到 success、审计记
+	// success，落库却缺数据（静默丢数 + 审计假阳性）。FirstErr() = 任一批
+	// 次失败即报，并带失败计数。
+	results := client.ProduceSync(produceCtx, records...)
+	if err := results.FirstErr(); err != nil {
+		failed := 0
+		for i := range results {
+			if results[i].Err != nil {
+				failed++
+			}
+		}
+		s.emitAuditSource(req.Source, req.ConnectionID, "produce", topic, "error",
+			sprintf("%d/%d failed: %v", failed, count, err))
 		return nil, err
 	}
+	// 契约 §produce：首条消息定位；count>1 时为末条 offset（KAFKA-PR-M1：
+	// 此前取完成序首个结果，count>1 时系统性偏小且多分区下字段可来自不同
+	// 记录）。锚点 = 最大 offset 的结果。
+	written := produceAnchorResult(results)
 	s.emitAuditSource(req.Source, req.ConnectionID, "produce", topic, "success", sprintf("count=%d%s", count, schemaAuditDetail))
 	return &ProduceResult{
-		Topic:     written.Topic,
-		Partition: written.Partition,
-		Offset:    written.Offset,
-		Timestamp: written.Timestamp.UnixMilli(),
+		Topic:     written.Record.Topic,
+		Partition: written.Record.Partition,
+		Offset:    written.Record.Offset,
+		Timestamp: written.Record.Timestamp.UnixMilli(),
 	}, nil
+}
+
+// produceAnchorResult 从全部成功的结果集中取契约锚点（最大 offset 的结果；
+// count=1 即该条；count>1 同分区为末条，跨分区为全局末条写入位置）。
+// 空集由调用方保证不发生（ProduceSync 至少返回 count 条）。
+func produceAnchorResult(results kgo.ProduceResults) kgo.ProduceResult {
+	anchor := results[0]
+	for i := 1; i < len(results); i++ {
+		if results[i].Record.Offset > anchor.Record.Offset {
+			anchor = results[i]
+		}
+	}
+	return anchor
 }
 
 // producePayloadBytes 解析 produce 载荷：value 与 valueBase64 二选一
@@ -455,6 +489,38 @@ type consumeRetentionTracker struct {
 // 最坏驻留 ≈ 预算 + 序列化瞬时副本（<1GB），对长驻 sidecar 安全。
 const workbenchRetentionByteBudget = 256 << 20
 
+// consumeResponseByteBudget 工作台 consume/export 的响应传输预算（KAFKA-H2）：
+// SDK 单行 JSON 上限 8MiB（shared/sdk/go/dbx-plugin-sdk/sdk.go maxJSONBytes），
+// 超限整个响应被丢弃——连错误响应都发不出，调用方挂到宿主超时。按 6MiB
+// 兜底：valueText + valueBase64 双通道 ≈ 2.4×value/条，再加 headers 与 JSON
+// 结构开销。digest 聚合路径响应是聚合结果（远小于留存样本），不套用本预算。
+const consumeResponseByteBudget = 6 << 20
+
+// consumeRetentionSetup 由调用方显式传入的留存预算推导（digestAggregation,
+// budget）：显式预算只来自 digest 聚合路径（mcp/server.go
+// digestRetentionByteBudget），此时命中计数不吃 limit 硬钳位；其余调用方
+// （工作台 consume/export、MCP consume 工具）不传预算，只做内存兜底，
+// limit 契约语义（返回条数上限，§5.3）不变。
+func consumeRetentionSetup(explicitBudget int) (digestAggregation bool, budget int) {
+	if explicitBudget > 0 {
+		return true, explicitBudget
+	}
+	return false, workbenchRetentionByteBudget
+}
+
+// consumeWireSizeBytes 单条留存消息的响应序列化字节估算：双通道 value、
+// key 与 headers 全量计入，另加每条 ~256B 的 JSON 结构/数字字段开销。
+// 估算偏保守（略高估），只用于传输预算判断。
+func consumeWireSizeBytes(msg ConsumedMessage) int {
+	size := len(msg.Topic) + len(msg.Key) + len(msg.KeyBase64) +
+		len(msg.ValueText) + len(msg.ValueBase64) +
+		len(msg.DecodeError) + 256
+	for k, v := range msg.Headers {
+		size += len(k) + len(v) + 8
+	}
+	return size
+}
+
 func (t *consumeRetentionTracker) admit(valueBytes int) bool {
 	if t.budget <= 0 || t.retained == 0 {
 		t.retained += valueBytes
@@ -479,14 +545,11 @@ func (s *Service) consumeMessages(ctx context.Context, params ConsumeParams) (co
 	if err := validateConsumeParams(params); err != nil {
 		return result, err
 	}
-	// 留存预算兜底（评审 H-1）：digest 聚合路径由调用方显式传 64MiB
-	//（mcp/server.go digestRetentionByteBudget）；工作台 consume/export 与
-	// MCP consume 工具不传（0=契约原语义=无界留存，limit=10000 × ~1.2MB/条
-	// 驻留可达 ~12GB）。统一兜底到工作台预算：超预算停止留存并置
-	// RetentionTruncated（扫描与命中计数完整），由调用方提示「预算内子集」。
-	if params.RetentionByteBudget <= 0 {
-		params.RetentionByteBudget = workbenchRetentionByteBudget
-	}
+	// 留存预算推导（评审 H-1 回归修复）：显式预算 = digest 聚合路径；工作台
+	// consume/export 与 MCP consume 工具不传（0=契约原语义），只做内存兜底。
+	// 此前把「显式预算」和「默认兜底」混在一个字段里，导致 consumeEffectiveLimit
+	// 对所有调用方把命中上界抬到 maxScan，limit 契约（返回条数上限）失真。
+	digestAggregation, retentionBudget := consumeRetentionSetup(params.RetentionByteBudget)
 	// §5.5：只读策略下禁止 commit（与 stream/start 同门禁）。此前一次性
 	// 消费路径漏检——read_only 连接可经本路径为消费组提交 offset 且不留
 	// 审计。未连接连接按 profileOf 只读兜底拒绝。
@@ -636,13 +699,19 @@ func (s *Service) consumeMessages(ctx context.Context, params ConsumeParams) (co
 	// 预分配按 min(limit, maxScan) 收敛：留存条数同时受两者约束，不再
 	// 按未上界的入参做虚拟预留。
 	messages := make([]ConsumedMessage, 0, min(limit, maxScan))
-	// digest 聚合路径（RetentionByteBudget>0）的留存另有字节预算兜底：
-	// 命中计数不吃 limit 硬钳位（否则 maxScanRecords 超过钳位时扫描在
-	// 1 万命中处提前终止，聚合分布只覆盖子集，调大扫描上限无效——评审
-	// M-1）；预分配仍按钳位锚定，追加交给 append 自然扩容。
-	limit = consumeEffectiveLimit(limit, maxScan, params.RetentionByteBudget)
+	// digest 聚合路径的留存由显式字节预算兜底，命中计数不吃 limit 硬钳位
+	//（否则 maxScanRecords 超过钳位时扫描在 1 万命中处提前终止，聚合分布
+	// 只覆盖子集——评审 M-1）；预分配仍按钳位锚定，追加交给 append 自然扩容。
+	limit = consumeEffectiveLimit(limit, maxScan, digestAggregation)
 	nextPartitionOffsets := map[int32]int64{}
-	retention := consumeRetentionTracker{budget: params.RetentionByteBudget}
+	retention := consumeRetentionTracker{budget: retentionBudget}
+	// 响应传输预算（KAFKA-H2）：只约束把原始消息发回调用方的路径；digest
+	// 聚合的响应是聚合结果，留存样本按自己的显式预算走。0 = 不限。
+	responseBudget := consumeResponseByteBudget
+	if digestAggregation {
+		responseBudget = 0
+	}
+	responseBytes := 0
 	scanned := 0
 	matched := 0
 	committed := params.Commit && groupID != ""
@@ -707,7 +776,17 @@ func (s *Service) consumeMessages(ctx context.Context, params ConsumeParams) (co
 				result.retentionTruncated = true
 				continue
 			}
-			messages = append(messages, messageFromRecordWithSchema(record, value, decoded, decodeErr, committed, recordSchemaInfo, params.SkipValueBase64))
+			msg := messageFromRecordWithSchema(record, value, decoded, decodeErr, committed, recordSchemaInfo, params.SkipValueBase64)
+			// 响应传输预算（KAFKA-H2）：序列化估算超 SDK 单行上限即停止
+			// 留存而非让整个响应被丢弃。首条恒 admitted（与留存预算同语义：
+			// 预算小于单条消息时保证至少 1 条样本可用）。
+			wire := consumeWireSizeBytes(msg)
+			if responseBudget > 0 && responseBytes > 0 && responseBytes+wire > responseBudget {
+				result.retentionTruncated = true
+				continue
+			}
+			responseBytes += wire
+			messages = append(messages, msg)
 		}
 		if err := fetches.Err(); err != nil {
 			if isDeadline(err) {
@@ -1787,8 +1866,17 @@ func recordHeadersMap(headers []kgo.RecordHeader) map[string]string {
 		return nil
 	}
 	result := make(map[string]string, len(headers))
+	seen := make(map[string]int, len(headers))
 	for _, header := range headers {
-		result[header.Key] = safeUTF8Preview(header.Value)
+		// Kafka 允许同 key 多 header（KIP-82）：map 形状下后者覆盖即静默
+		// 丢数据。冲突时第 2 条起加 "#2" 序号后缀（#3 顺延），单 key 场景
+		// 形状不变（KAFKA-L3）。
+		seen[header.Key]++
+		key := header.Key
+		if n := seen[header.Key]; n > 1 {
+			key = sprintf("%s#%d", header.Key, n)
+		}
+		result[key] = safeUTF8Preview(header.Value)
 	}
 	return result
 }
@@ -1886,12 +1974,13 @@ func clampConsumeLimit(limit int) int {
 	return min(limit, consumeLimitHardCap)
 }
 
-// consumeEffectiveLimit 扫描循环的命中上界：digest 聚合路径
-// （retentionBudget>0）的留存由 RetentionByteBudget 字节预算兜底，命中
-// 计数不吃 limit 硬钳位（否则 maxScanRecords 超过钳位时扫描提前终止，
-// 聚合分布只覆盖子集）；扫描面仍受 maxScan 上界。
-func consumeEffectiveLimit(limit, maxScan, retentionBudget int) int {
-	if retentionBudget > 0 {
+// consumeEffectiveLimit 扫描循环的命中上界：digest 聚合路径的留存由显式
+// RetentionByteBudget 兜底，命中计数不吃 limit 硬钳位（否则 maxScanRecords
+// 超过钳位时扫描提前终止，聚合分布只覆盖子集）；扫描面仍受 maxScan 上界。
+// 非 digest 路径（工作台 consume/export、MCP consume 工具）保持 limit 契约
+// 语义：返回条数上限就是 limit。
+func consumeEffectiveLimit(limit, maxScan int, digestAggregation bool) int {
+	if digestAggregation {
 		return max(limit, maxScan)
 	}
 	return limit

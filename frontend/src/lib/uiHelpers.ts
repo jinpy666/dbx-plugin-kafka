@@ -38,6 +38,23 @@ export function capRows<T>(rows: T[], max: number = MESSAGE_ROWS_MAX): CappedRow
   return { rows: rows.slice(dropped), total: rows.length, dropped };
 }
 
+/**
+ * L-3（2026-10-02）：base64 直发的客户端预校验（标准或 URL-safe 字母表，
+ * 允许无 padding）。非法输入此前要等后端报错才可见；atob 试解一次即可
+ * 在行内提示（RFC 4648 §4/§5 字符集 + 长度对 4 取模非 1）。
+ */
+export function isValidBase64(value: string): boolean {
+  const trimmed = value.replace(/\s+/g, "");
+  if (trimmed === "" || trimmed.length % 4 === 1) return false;
+  if (!/^[A-Za-z0-9+\-/]*={0,2}$/.test(trimmed)) return false;
+  try {
+    atob(trimmed.replace(/-/g, "+").replace(/_/g, "/"));
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 /** 详情抽屉 value 预览上限（字符）：大 value（如 512KB base64）不整段塞 DOM 文本节点。 */
 export const DETAIL_VALUE_PREVIEW_MAX = 16384;
 

@@ -10,7 +10,6 @@ import { isDbxPluginTheme, onHostThemeChange, themeToAppearance } from "./lib/ho
 import { setWorkbenchLocale, t } from "./lib/i18n";
 import { kafkaApi, setKafkaConnectionId, type KafkaStreamErrorEvent, type KafkaStreamMessagesEvent, type KafkaTopic } from "./lib/api";
 import { friendlyKafkaError } from "./lib/kafkaErrors";
-import { decideModalKeydown, focusableElements } from "./lib/modalBehavior";
 import { parseAuditEvent, pushAuditItem, type AuditFeedItem } from "./lib/auditFeed";
 import { useUiIntent, type UiIntentOutcome } from "../../shared/frontend/uiIntent";
 import { applyAppearanceColorVars, subscribeHostEnvironment } from "../../shared/frontend/hostThemeRuntime";
@@ -126,55 +125,11 @@ const uiIntentHandlers = {
 // 快照型 report 的上报点：面板切换（openPanel）、topic 选中（selectTopic）。
 const uiIntent = useUiIntent("kafka", uiIntentHandlers);
 
-// -- 连接弹窗交互（P1-2/P1-3）：Esc 关闭 + Tab 焦点陷阱 + 关闭归还触发元素 --------
-// ConnectionsPanel 不可内改，keydown 在 App 壳层监听；决策逻辑走
-// modalBehavior.decideModalKeydown（纯函数，有单测）。
-
-const connectionsTrigger = ref<HTMLElement | null>(null);
-
-function modalContainerForTrap(): HTMLElement | null {
-  // 导入助手弹窗（teleport 到 body）在场时置顶，陷阱圈定它；否则圈定主弹窗。
-  return (
-    document.querySelector<HTMLElement>("body > .modal-backdrop .modal") ??
-    document.querySelector<HTMLElement>(".workbench .modal-backdrop .modal")
-  );
-}
-
-function onConnectionsKeydown(event: KeyboardEvent) {
-  if (!connectionsOpen.value || (event.key !== "Escape" && event.key !== "Tab")) return;
-  const container = modalContainerForTrap();
-  if (!container && event.key !== "Escape") return;
-  const focusables = container ? focusableElements(container) : [];
-  const currentIndex = focusables.indexOf(document.activeElement as HTMLElement);
-  const decision = decideModalKeydown(event.key, event.shiftKey, focusables.length, currentIndex);
-  if (decision.kind === "close") {
-    event.preventDefault();
-    event.stopPropagation();
-    connectionsOpen.value = false;
-  } else if (decision.kind === "focus") {
-    event.preventDefault();
-    event.stopPropagation();
-    focusables[decision.index]?.focus();
-  }
-}
-
-watch(connectionsOpen, (open) => {
-  if (open) {
-    connectionsTrigger.value = document.activeElement instanceof HTMLElement ? document.activeElement : null;
-    window.addEventListener("keydown", onConnectionsKeydown);
-    void nextTick(() => {
-      // 打开：焦点进弹窗首个可交互控件（header 操作按钮）。
-      const container = document.querySelector<HTMLElement>(".workbench .modal-backdrop .modal");
-      const first = container ? focusableElements(container)[0] : null;
-      first?.focus({ preventScroll: true });
-    });
-  } else {
-    // 关闭（Esc/✕/footer/遮罩）：焦点归还工具栏触发按钮。
-    window.removeEventListener("keydown", onConnectionsKeydown);
-    connectionsTrigger.value?.focus({ preventScroll: true });
-    connectionsTrigger.value = null;
-  }
-});
+// -- 连接弹窗交互 ----------------------------------------------------------------
+// H-1 回归（2026-10-02）：壳层不再监听 keydown——ConnectionsPanel 内部已有
+// 同一套 modalBehavior 实现（Esc 关闭 + Tab 焦点陷阱 + 助手子弹层让位）。
+// 此前两层同时挂 window 监听，每按一次 Tab 走两次 decideModalKeydown，
+// 焦点一次跳两个控件；壳层也不在 layerStack 内，与消费抽屉同开时 Esc 互抢。
 
 const auditItems = ref<AuditFeedItem[]>([]);
 let auditSeq = 0;
@@ -452,9 +407,8 @@ onMounted(() => {
 onBeforeUnmount(() => {
   document.removeEventListener("visibilitychange", onVisibilityChange);
   document.removeEventListener("contextmenu", preventNativeContextMenu, true);
-  // 兜底移除（评审 LOW-1）：connectionsOpen=true 时卸载，keydown 监听不随
-  // 关闭路径摘除——HMR/测试场景会泄漏。
-  window.removeEventListener("keydown", onConnectionsKeydown);
+  // 连接弹窗 keydown 由 ConnectionsPanel 自管（open watch 成对挂摘，
+  // H-1 回归后壳层不再持有监听）。
   window.clearTimeout(noticeTimer);
   uiIntent.stop();
   for (const dispose of [...unsubscribeEnvironment, ...unsubscribeEvent]) dispose();

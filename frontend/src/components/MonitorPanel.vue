@@ -237,7 +237,9 @@ onBeforeUnmount(() => {
       </label>
       <label class="field">
         <span>{{ t("monitor.interval") }} ({{ t("monitor.intervalHint") }})</span>
-        <input v-model="intervalSec" type="number" min="5" max="60" />
+        <!-- M-6 回归：间隔在 startSampling 时定格，运行中可改但实时不生效——
+             与阈值（每 tick 现读）行为不一致且无提示，运行中直接禁用。 -->
+        <input v-model="intervalSec" type="number" min="5" max="60" :disabled="sampling" />
       </label>
       <label class="field">
         <span>{{ t("monitor.threshold") }}</span>

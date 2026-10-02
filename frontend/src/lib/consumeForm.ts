@@ -126,7 +126,9 @@ export function isRangeReversed(fromMs: number | null, toMs: number | null): boo
 
 /**
  * fieldFilters 行级校验：数值比较 operator（gt/gte/lt/lte）要求 value 可转数字。
- * 返回 i18n key 片段（messages.fieldValueNumeric）或 null（通过/不适用）。
+ * 返回哨兵片段 "fieldValueNumeric" 或 null（通过/不适用）。注意：该片段不再
+ * 对应 i18n key——展示侧（useConsumeForm.fieldFilterIssueKey）统一映射为
+ * messages.uiFilterValueRequired（原 messages.fieldValueNumeric 死键已清理）。
  */
 export function fieldFilterIssue(row: { operator: string; value: string }): string | null {
   if (!["gt", "gte", "lt", "lte"].includes(row.operator)) return null;

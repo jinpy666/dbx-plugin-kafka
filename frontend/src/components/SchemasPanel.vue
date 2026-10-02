@@ -285,6 +285,9 @@ async function loadCompat(subject: string | undefined) {
 // （版本表/详情与 selectedSubject、selectedVersion 保持一致）。
 let subjectSeq = 0;
 let versionSeq = 0;
+// runDiff 专用守卫（M-1 回归）：对比响应慢到时，选中 subject / registry 已
+// 切换的话，旧 hunks 不得渲染到新 subject 面板下。
+let diffSeq = 0;
 
 async function selectSubject(row: SubjectVm | null) {
   const seq = ++subjectSeq;
@@ -336,14 +339,21 @@ async function viewVersion(version: number) {
 
 async function runDiff() {
   if (!selectedSubject.value || !diffFrom.value || !diffTo.value) return;
+  const seq = ++diffSeq;
+  const subject = selectedSubject.value;
+  const provider = registry.value;
   diffBusy.value = true;
   emit("error", "");
   try {
-    diff.value = await kafkaApi.schemaVersionsCompare(selectedSubject.value, Number(diffFrom.value), Number(diffTo.value), registry.value);
+    const response = await kafkaApi.schemaVersionsCompare(subject, Number(diffFrom.value), Number(diffTo.value), provider);
+    // 等待期间切换了 subject / registry：旧对比结果丢弃（M-1 回归）。
+    if (seq !== diffSeq || selectedSubject.value !== subject || registry.value !== provider) return;
+    diff.value = response;
   } catch (cause) {
+    if (seq !== diffSeq) return;
     emit("error", cause instanceof Error ? cause.message : String(cause));
   } finally {
-    diffBusy.value = false;
+    if (seq === diffSeq) diffBusy.value = false;
   }
 }
 
@@ -603,7 +613,7 @@ onMounted(async () => {
     </div>
 
     <div class="grid-box grid-box--fill">
-      <p v-if="subjects.length === 0 && !loading" class="empty compact">{{ t("acls.empty") }}</p>
+      <p v-if="subjects.length === 0 && !loading" class="empty compact">{{ t("schemas.empty") }}</p>
       <DbxAgGrid
         v-else
         table-key="schema-subjects"
@@ -645,7 +655,7 @@ onMounted(async () => {
         </button>
       </div>
       <div class="grid-box" style="height: 150px">
-        <p v-if="versions.length === 0" class="empty compact">{{ t("topics.offsetsEmpty") }}</p>
+        <p v-if="versions.length === 0" class="empty compact">{{ t("schemas.versionsEmpty") }}</p>
         <DbxAgGrid
           v-else
           table-key="schema-versions"

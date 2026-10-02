@@ -203,6 +203,8 @@ function askDelete() {
 async function submitDelete() {
   // confirmGroup 必须与组同名（防误删，§6；后端 ensureGroupDeleteConfirm 同规则）。
   if (deleteConfirmText.value.trim() !== deleteTarget.value) return;
+  // M-2 回归：Enter 路径绕过按钮的 :disabled，快速连按会发出两个删除 RPC。
+  if (busy.value) return;
   busy.value = true;
   try {
     await kafkaApi.groupsDelete(deleteTarget.value, deleteConfirmText.value.trim());

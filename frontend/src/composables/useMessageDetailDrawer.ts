@@ -71,48 +71,59 @@ export function useMessageDetailDrawer(detail: Ref<KafkaMessage | null> = shallo
   // 编辑器直接承载全量解码/格式化文本（CodeMirror 虚拟渲染，16384 截断预览
   // 退役）——「所见即所复制」：copy-value 复制当前解码/格式化结果文本。
 
-  // -- 弹层交互（P1-2/P1-3）：抽屉 Esc 关闭 + Tab 焦点陷阱 + 关闭归还触发元素 --------
-  // 决策逻辑在 modalBehavior.decideModalKeydown（纯函数，有单测），这里只做 DOM 接线。
+// -- 弹层交互（P1-2/P1-3）：抽屉 Esc 关闭 + Tab 焦点陷阱 + 关闭归还触发元素 --------
+// 决策逻辑在 modalBehavior.decideModalKeydown（纯函数，有单测），这里只做 DOM 接线。
 
-  const drawerEl = ref<HTMLElement | null>(null);
-  let drawerTrigger: HTMLElement | null = null;
+// M-3 回归：Messages 与 Stream 两个面板常驻，各自的消息详情抽屉可同时打开。
+// 模块级打开栈登记实例，Esc/Tab 只有栈顶（最后打开）的抽屉响应——此前两个
+// handler 都通过自身守卫，一次 Esc 把两个抽屉同时关掉。
+const openDrawerStack: symbol[] = [];
 
-  watch(detail, (message, previous) => {
-    if (message && !previous) {
-      // 打开：记住触发元素，下一帧焦点进抽屉（首个可交互控件，兜底抽屉容器）。
-      drawerTrigger = document.activeElement instanceof HTMLElement ? document.activeElement : null;
-      void nextTick(() => {
-        const drawer = drawerEl.value;
-        if (!drawer) return;
-        const first = focusableElements(drawer)[0];
-        (first ?? drawer).focus({ preventScroll: true });
-      });
-    } else if (!message && previous) {
-      // 关闭（Esc/✕/遮罩）：焦点归还触发元素，遮罩随 v-if 一并卸载、无残留。
-      drawerTrigger?.focus({ preventScroll: true });
-      drawerTrigger = null;
-    }
-  });
+const drawerEl = ref<HTMLElement | null>(null);
+let drawerTrigger: HTMLElement | null = null;
+const drawerToken = Symbol("message-detail-drawer");
 
-  function onWindowKeydown(event: KeyboardEvent) {
-    if (!detail.value) return;
-    // 更高层弹窗（连接弹窗 / teleport 助手弹窗）在场时让位，不抢 Esc/Tab。
-    if (document.querySelector(".workbench .modal-backdrop, body > .modal-backdrop")) return;
-    const drawer = drawerEl.value;
-    if (!drawer) return;
-    const focusables = focusableElements(drawer);
-    const currentIndex = focusables.indexOf(document.activeElement as HTMLElement);
-    const decision = decideModalKeydown(event.key, event.shiftKey, focusables.length, currentIndex);
-    if (decision.kind === "close") {
-      event.preventDefault();
-      event.stopPropagation();
-      detail.value = null;
-    } else if (decision.kind === "focus") {
-      event.preventDefault();
-      event.stopPropagation();
-      focusables[decision.index]?.focus();
-    }
+watch(detail, (message, previous) => {
+  if (message && !previous) {
+    // 打开：记住触发元素，下一帧焦点进抽屉（首个可交互控件，兜底抽屉容器）。
+    openDrawerStack.push(drawerToken);
+    drawerTrigger = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    void nextTick(() => {
+      const drawer = drawerEl.value;
+      if (!drawer) return;
+      const first = focusableElements(drawer)[0];
+      (first ?? drawer).focus({ preventScroll: true });
+    });
+  } else if (!message && previous) {
+    // 关闭（Esc/✕/遮罩）：焦点归还触发元素，遮罩随 v-if 一并卸载、无残留。
+    const at = openDrawerStack.indexOf(drawerToken);
+    if (at >= 0) openDrawerStack.splice(at, 1);
+    drawerTrigger?.focus({ preventScroll: true });
+    drawerTrigger = null;
   }
+});
+
+function onWindowKeydown(event: KeyboardEvent) {
+  if (!detail.value) return;
+  // 更高层弹窗（连接弹窗 / teleport 助手弹窗）在场时让位，不抢 Esc/Tab。
+  if (document.querySelector(".workbench .modal-backdrop, body > .modal-backdrop")) return;
+  // 多抽屉同开：只有最后打开的一个响应 Esc/Tab（M-3 回归）。
+  if (openDrawerStack[openDrawerStack.length - 1] !== drawerToken) return;
+  const drawer = drawerEl.value;
+  if (!drawer) return;
+  const focusables = focusableElements(drawer);
+  const currentIndex = focusables.indexOf(document.activeElement as HTMLElement);
+  const decision = decideModalKeydown(event.key, event.shiftKey, focusables.length, currentIndex);
+  if (decision.kind === "close") {
+    event.preventDefault();
+    event.stopPropagation();
+    detail.value = null;
+  } else if (decision.kind === "focus") {
+    event.preventDefault();
+    event.stopPropagation();
+    focusables[decision.index]?.focus();
+  }
+}
 
   onMounted(() => window.addEventListener("keydown", onWindowKeydown));
   onBeforeUnmount(() => window.removeEventListener("keydown", onWindowKeydown));

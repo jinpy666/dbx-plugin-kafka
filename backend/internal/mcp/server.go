@@ -471,6 +471,13 @@ func (s *Server) messagesDigest(args map[string]any) (map[string]any, error) {
 	} else if len(partitions) > 0 {
 		params.Partitions = partitions
 	}
+	// partitionOffsets（consume 契约 strategy=offset 必填）：此前 schema 枚举
+	// 有 "offset" 但解析/schema 双缺——LLM 选了就必然后端报错（隐性死参数）。
+	if partitionOffsets, err := parseConsumePartitionOffsets(args["partitionOffsets"]); err != nil {
+		return nil, err
+	} else if len(partitionOffsets) > 0 {
+		params.PartitionOffsets = partitionOffsets
+	}
 	if groupId := strings.TrimSpace(stringField(args, "groupId")); groupId != "" {
 		params.GroupID = groupId
 	}
@@ -978,27 +985,29 @@ func (s *Server) groupsOffsetsReset(args map[string]any) (map[string]any, error)
 // validateResetRequest resetTo 模式与配套参数的预检（预览前拒绝，不签发
 // 令牌）：earliest/latest/timestamp 必须给 topics；timestamp 必须给正的
 // timestampMs（0 等价重置到纪元，几乎必是参数缺失的产物）；partitionOffset
-// 必须给 partitionOffsets。归一与大小写别名与 kafkaconn normalizeResetMode
-// 保持一致（groups.go），漂移时以那边为准。
+// 必须给 partitionOffsets。模式归一与别名集复用 kafkaconn.NormalizeOffsetResetMode
+// （KAFKA-MCP1：此前手抄枚举，别名增删时两处必然漂移）。
 func validateResetRequest(req offsetsResetArgs) error {
-	switch strings.ToLower(req.ResetTo) {
-	case "earliest", "latest":
+	mode, err := kafkaconn.NormalizeOffsetResetMode(req.ResetTo)
+	if err != nil {
+		return fmt.Errorf("resetTo must be earliest, latest, timestamp, or partitionOffset (got %q)", req.ResetTo)
+	}
+	switch mode {
+	case kafkaconn.OffsetResetEarliest, kafkaconn.OffsetResetLatest:
 		if len(req.Topics) == 0 {
 			return fmt.Errorf("topics is required for resetTo=%s (topic name list)", req.ResetTo)
 		}
-	case "timestamp":
+	case kafkaconn.OffsetResetTimestamp:
 		if len(req.Topics) == 0 {
 			return errors.New("topics is required for resetTo=timestamp (topic name list)")
 		}
 		if req.TimestampMs <= 0 {
 			return errors.New("timestampMs is required (unix milliseconds > 0) for resetTo=timestamp")
 		}
-	case "partitionoffset", "partition_offset", "partitionoffsets":
+	case kafkaconn.OffsetResetPartitionOffsets:
 		if len(req.PartitionOffsets) == 0 {
 			return errors.New("partitionOffsets is required for resetTo=partitionOffset (topic -> partition -> offset)")
 		}
-	default:
-		return fmt.Errorf("resetTo must be earliest, latest, timestamp, or partitionOffset (got %q)", req.ResetTo)
 	}
 	return nil
 }
@@ -1164,6 +1173,32 @@ func parseIntList(raw any) ([]int32, error) {
 	default:
 		return nil, fmt.Errorf("partitions must be an array of non-negative integers (got %v)", raw)
 	}
+}
+
+// parseConsumePartitionOffsets 解析消费的 partitionOffsets（strategy=offset
+// 必填）：JSON 对象 {"0": 120, "3": "55"}，键为分区号（数字字符串容忍），
+// 值为 offset（>=0，数字字符串容忍）；非法即报错，不静默忽略。
+func parseConsumePartitionOffsets(raw any) (map[int32]int64, error) {
+	object, ok := raw.(map[string]any)
+	if !ok || len(object) == 0 {
+		if raw == nil {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("partitionOffsets must be an object of partition -> offset (got %v)", raw)
+	}
+	out := make(map[int32]int64, len(object))
+	for key, value := range object {
+		partition, ok := coerceInt32(key)
+		if !ok || partition < 0 {
+			return nil, fmt.Errorf("partitionOffsets keys must be non-negative partition numbers (got %q)", key)
+		}
+		offset, ok := coerceInt64(value)
+		if !ok || offset < 0 {
+			return nil, fmt.Errorf("partitionOffsets[%s] must be a non-negative integer offset (got %v)", key, value)
+		}
+		out[partition] = offset
+	}
+	return out, nil
 }
 
 // optionalInt64Arg 可选整数参数三态：缺失 → (0,false,nil)；JSON number 或

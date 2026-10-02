@@ -109,7 +109,25 @@ func OpenAt(dir string) (*Store, error) {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return nil, fmt.Errorf("store: create data dir: %w", err)
 	}
+	cleanupOrphanTempFiles(dir)
 	return &Store{dir: dir}, nil
+}
+
+// cleanupOrphanTempFiles 清理 SaveJSON 的 CreateTemp 与 Rename 之间进程
+// 崩溃残留的孤儿临时文件（`<name>.json.*` 形态；KAFKA-ST-L2）。失败静默
+// ——清理是卫生动作，不阻塞 store 打开。
+func cleanupOrphanTempFiles(dir string) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return
+	}
+	for _, entry := range entries {
+		name := entry.Name()
+		if entry.IsDir() || !strings.Contains(name, ".json.") {
+			continue
+		}
+		_ = os.Remove(filepath.Join(dir, name))
+	}
 }
 
 // Dir 返回数据目录绝对路径。

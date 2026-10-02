@@ -83,17 +83,24 @@ describe("AuditFeedPanel", () => {
     expect(wrapper.find(".audit-toggle").attributes("title")).toBe(t("audit.show"));
   });
 
-  it("emits clear and falls back to the empty summary while expanded", async () => {
-    const wrapper = mountFeed([item({ id: 1, action: "messages/produce", result: "ok" })]);
-    // 手动展开后清空：expanded 保持 → section 保留并回退空态摘要（组件现行为）
+  it("emits clear and collapses the empty feed (KAFKA-AF-L7)", async () => {
+    const wrapper = mountFeed([item({ id: 1, action: "produce", result: "ok" })]);
     await wrapper.find(".audit-toggle").trigger("click");
     await wrapper.find(".audit-clear").trigger("click");
     expect(wrapper.emitted("clear")).toHaveLength(1);
     await wrapper.setProps({ items: [] });
-    expect(wrapper.find(".audit-feed").exists()).toBe(true);
-    expect(wrapper.find(".audit-summary").text()).toBe(t("audit.empty"));
-    // 无事件时清空按钮与 toggle 均不可用
-    expect(wrapper.find(".audit-clear").exists()).toBe(false);
-    expect(wrapper.find(".audit-toggle").attributes("disabled")).toBeDefined();
+    // 清空后 expanded 复位 → 空面板整体收起（此前 expanded 残留 true 且
+    // toggle 禁用，空面板永久可见）。
+    expect(wrapper.find(".audit-feed").exists()).toBe(false);
+  });
+
+  it("counts denied and error separately (KAFKA-AF-L6)", async () => {
+    const wrapper = mountFeed([
+      item({ id: 1, action: "produce", result: "denied" }),
+      item({ id: 2, action: "topics-delete", result: "error" }),
+    ]);
+    const summary = wrapper.find(".audit-summary").text();
+    expect(summary).toContain(t("audit.deniedCount", { denied: 1 }));
+    expect(summary).toContain(t("audit.errorCount", { error: 1 }));
   });
 });

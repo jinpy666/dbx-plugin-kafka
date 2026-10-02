@@ -39,10 +39,14 @@ async function load() {
 // 旧 broker 的配置挂到新弹窗名下。
 let configSeq = 0;
 
+const configLoading = ref(false);
+
 async function openConfig(broker: KafkaBroker) {
   const seq = ++configSeq;
   configBroker.value = broker;
   entries.value = [];
+  // KAFKA-BR-L9：加载态可见——此前 fetch 期间渲染空表，慢网络下像「无配置」。
+  configLoading.value = true;
   configOpen.value = true;
   try {
     const response = await kafkaApi.brokersConfig(broker.nodeId);
@@ -51,6 +55,8 @@ async function openConfig(broker: KafkaBroker) {
   } catch (cause) {
     if (seq !== configSeq) return;
     emit("error", cause instanceof Error ? cause.message : String(cause));
+  } finally {
+    if (seq === configSeq) configLoading.value = false;
   }
 }
 
@@ -106,6 +112,9 @@ onMounted(() => {
                 </tr>
               </thead>
               <tbody>
+                <tr v-if="configLoading && entries.length === 0">
+                  <td colspan="3" class="empty compact">{{ t("brokers.loading") }}</td>
+                </tr>
                 <tr v-for="entry in entries" :key="entry.name">
                   <td class="mono-s">{{ entry.name }}</td>
                   <td class="mono-s">{{ entry.sensitive ? t("brokers.sensitiveMasked") : entry.value }}</td>

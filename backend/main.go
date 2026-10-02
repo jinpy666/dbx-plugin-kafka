@@ -1023,10 +1023,15 @@ func (h *pluginHandler) EmitStreamError(sessionID, message string) {
 	if emitter == nil {
 		return
 	}
-	payload := map[string]string{"sessionId": sessionID, "error": message}
-	if err := emitter.Event("kafka/stream/error", payload); err != nil {
+	if err := emitter.Event("kafka/stream/error", streamErrorEventPayload(sessionID, message)); err != nil {
 		log.Printf("[dbx-plugin-kafka] stream error event failed: %v", err)
 	}
+}
+
+// streamErrorEventPayload 构造 kafka/stream/error 载荷（键面由
+// shared/contracts/events.json 注册表 + events_contract_test 钉住）。
+func streamErrorEventPayload(sessionID, message string) map[string]string {
+	return map[string]string{"sessionId": sessionID, "error": message}
 }
 
 // --- 审计与公共 helper ---
@@ -1050,10 +1055,23 @@ func (h *pluginHandler) auditRecord(rec kafkaconn.AuditRecord) {
 	emitter := h.emitter
 	h.mu.Unlock()
 	if emitter != nil {
-		if err := emitter.Event("kafka/audit", rec); err != nil {
+		// KAFKA-EVT2（审计事件漂移，2026-10-03）：事件通道携带与 audit.jsonl
+		// 相同的折算结果（ok|denied|error，契约同 ldap/audit 形状）。此前发
+		// 原始 success|blocked，而前端 normalizeAuditResult 只认 ok|denied、
+		// 其余折算 error——生产中所有成功操作在审计流里显示为错误。mock 与
+		// 单测按 ok|denied 注入，全绿的生产漂移（同 bufferSize 模式）。
+		if err := emitter.Event("kafka/audit", auditEventRecord(rec)); err != nil {
 			log.Printf("[dbx-plugin-kafka] audit event failed: %v", err)
 		}
 	}
+}
+
+// auditEventRecord 构造 kafka/audit 事件载荷：store 通道同款 result 折算
+// （auditResultForStore），其余字段原样（AuditRecord 不含凭据，§6.3）。
+func auditEventRecord(rec kafkaconn.AuditRecord) kafkaconn.AuditRecord {
+	event := rec
+	event.Result = auditResultForStore(rec.Result)
+	return event
 }
 
 // auditAction 统一审计 action 命名（kafka/<action>）。

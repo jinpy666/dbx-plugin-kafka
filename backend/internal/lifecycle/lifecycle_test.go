@@ -205,3 +205,28 @@ func TestAnyToStringMatrix(t *testing.T) {
 		}
 	}
 }
+
+// KAFKA-LC-L1 回归：门禁类布尔的宽容口径（yes/on 认 true，no/off 认 false，
+// 未知串保守 false）——此前 "read_only": "yes" 静默按 false，门禁 fail-open。
+func TestConfigBoolTolerantForms(t *testing.T) {
+	params := &Params{Connection: Connection{ExternalConfig: map[string]any{
+		"a": true,
+		"b": "yes",
+		"c": "ON",
+		"d": "no",
+		"e": "off",
+		"f": "true",
+		"g": "0",
+		"h": "junk",
+		"i": float64(1), // JSON number 形态不在契约内：保守 false
+	}}}
+	cases := map[string]bool{"a": true, "b": true, "c": true, "d": false, "e": false, "f": true, "g": false, "h": false, "i": false}
+	for key, want := range cases {
+		if got := params.ConfigBool(key); got != want {
+			t.Errorf("ConfigBool(%q) = %v, want %v", key, got, want)
+		}
+	}
+	if got := params.ConfigBool("missing"); got {
+		t.Error("ConfigBool(missing) = true, want false")
+	}
+}

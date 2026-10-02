@@ -174,11 +174,13 @@ function onFilterKeydown(event: KeyboardEvent) {
   }
 }
 
-// 全局 "/" 聚焦过滤框（输入控件内不劫持）。
+// 全局 "/" 聚焦过滤框（输入控件内不劫持；L-4 回归：连接弹窗 / 详情抽屉
+// 等弹层在场时让位——按 / 会把焦点移进被遮挡的树过滤框，打破弹窗焦点陷阱）。
 function onGlobalKeydown(event: KeyboardEvent) {
   if (event.key !== "/" || event.ctrlKey || event.metaKey || event.altKey) return;
   const target = event.target as HTMLElement | null;
   if (target && (target.tagName === "INPUT" || target.tagName === "TEXTAREA" || target.tagName === "SELECT" || target.isContentEditable)) return;
+  if (document.querySelector(".workbench .modal-backdrop, body > .modal-backdrop, .workbench .drawer-backdrop")) return;
   if (collapsed.value) setCollapsed(false);
   event.preventDefault();
   // 折叠态先展开再聚焦（v-if 重建输入框，等一帧）。

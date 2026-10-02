@@ -181,6 +181,20 @@ func TestRecordHeadersHelpers(t *testing.T) {
 	if mapped["bin"] != "\uFFFD" {
 		t.Errorf("bin = %q, want replacement char", mapped["bin"])
 	}
+
+	// KAFKA-L3 回归：同 key 多 header 不再静默去重——第 2 条起加 "#2" 后缀。
+	dup := recordHeadersMap([]kgo.RecordHeader{
+		{Key: "trace", Value: []byte("first")},
+		{Key: "trace", Value: []byte("second")},
+		{Key: "trace", Value: []byte("third")},
+		{Key: "solo", Value: []byte("1")},
+	})
+	if dup["trace"] != "first" || dup["trace#2"] != "second" || dup["trace#3"] != "third" {
+		t.Errorf("dup headers = %v, want first/second/third preserved", dup)
+	}
+	if dup["solo"] != "1" {
+		t.Errorf("solo = %q, single-key shape must not change", dup["solo"])
+	}
 }
 
 func TestJSONValueString(t *testing.T) {
@@ -326,5 +340,26 @@ func TestProduceValidationPathsOffline(t *testing.T) {
 				t.Errorf("error = %v, want contains %q", err, tc.wantErrSub)
 			}
 		})
+	}
+}
+
+// KAFKA-PR-M1 回归：契约锚点取最大 offset（count>1 同分区 = 末条；跨分区 =
+// 全局末条写入位置）。此前取完成序首个结果，count>1 系统性偏小。
+func TestProduceAnchorResultTakesMaxOffset(t *testing.T) {
+	record := func(partition int32, offset int64) *kgo.Record {
+		return &kgo.Record{Topic: "t", Partition: partition, Offset: offset}
+	}
+	results := kgo.ProduceResults{
+		{Record: record(0, 100)},
+		{Record: record(1, 57)},
+		{Record: record(0, 104)},
+	}
+	anchor := produceAnchorResult(results)
+	if anchor.Record.Partition != 0 || anchor.Record.Offset != 104 {
+		t.Fatalf("anchor = p%d o%d, want p0 o104 (max offset)", anchor.Record.Partition, anchor.Record.Offset)
+	}
+	single := produceAnchorResult(kgo.ProduceResults{{Record: record(3, 7)}})
+	if single.Record.Offset != 7 {
+		t.Fatalf("single anchor = o%d, want o7", single.Record.Offset)
 	}
 }

@@ -617,7 +617,7 @@ fieldFilters/时间戳或 offset 范围）同给 → `-32602`（commit 与过滤
   "keyBase64": string?,    // 恒完整
   "valueText": string?,    // UTF-8 安全预览（非法字节替换），恒有
   "valueBase64": string,   // 恒完整（base64 保真，二进制不损坏）
-  "headers": map<string,string>,
+  "headers": map<string,string>,  // 同 key 多 header 时第 2 条起加 "#2" 序号后缀
   "committed": bool?,
   "decodeError": string?,  // 二次解码/解压/wire format 解码失败原因
   "truncated": bool,       // 单条消息体超 512KB 时截断并标记
@@ -635,12 +635,16 @@ fieldFilters/时间戳或 offset 范围）同给 → `-32602`（commit 与过滤
 
 ### 6.1 `kafka/stream/messages`
 
-流式消费批量推送（节流：200ms 或 50 条一批）：
+流式消费批量推送（节流：200ms、50 条或单批序列化字节预算 4MiB——三者任一
+先到即推送，预算防止单批超过 SDK 单行上限导致整批事件被丢弃）：
 
 ```
 { "sessionId": string, "messages": MessageView[], "totalScanned": int,
-  "totalMatched": int, "paused": bool }
+  "totalMatched": int, "paused": bool, "bufferSize": int }
 ```
+
+`bufferSize` 是发送时点的 ring 存量快照（容量 10000）：前端据此估算因覆盖
+最旧而被丢弃、未在历史分页中出现的行数。
 
 ### 6.2 `kafka/stream/error`
 
@@ -657,6 +661,19 @@ M0 审计记录（同 ldap/audit 形状）：全部写操作 + 策略拒绝事�
 同时落 `store.AppendAudit`（audit.jsonl）并推送本事件；凭据字段
 （sasl_password、tls_client_key）不进 result。MCP 写路径（M3 起）同条
 携带 `source:"mcp"`（additive 字段；工作台路径不携带）。
+
+事件与 audit.jsonl 两通道同面：
+
+```
+{ "connectionId": string, "action": string, "target": string,
+  "result": "ok" | "denied" | "error", "detail"?: string, "source"?: string }
+```
+
+`result` 是折算后的三值（success→ok、blocked→denied），与 audit.jsonl
+一致——事件载荷形状由 `shared/contracts/events.json` 注册表钉住
+（backend/events_contract_test.go 与前端 eventContract.spec.ts 双侧对拍；
+2026-10-03 修复：事件此前发原始 success|blocked，前端审计流把成功操作
+全部显示为 error）。
 
 ### 6.4 `kafka/ui/intent`（MCP UI intent 通道，M3）
 
