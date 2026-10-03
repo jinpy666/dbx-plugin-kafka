@@ -245,7 +245,7 @@ export const messages = {
       loadNewer: "Newer",
       noMessages: "No messages yet",
       statusError: "Stream error: {error}",
-      sessionHint: "The session keeps consuming in the sidecar until stopped explicitly (or unloaded by a connection switch).",
+      sessionHint: "The session keeps consuming in the sidecar until stopped explicitly (or unloaded by a connection switch); sessions paused for 30 minutes are reaped as idle.",
       sessionsExist: "{count} stream session(s) already exist on this connection — stop the ones you do not need:",
     },
     produce: {
@@ -871,7 +871,7 @@ export const messages = {
       loadNewer: "较新",
       noMessages: "暂无消息",
       statusError: "流式错误：{error}",
-      sessionHint: "会话在 sidecar 侧持续消费，直至显式停止或切换连接触发卸载回收。",
+      sessionHint: "会话在 sidecar 侧持续消费，直至显式停止或切换连接触发卸载回收；暂停超 30 分钟的会话按空闲回收。",
       sessionsExist: "本连接已有 {count} 个流式会话，可停止不需要的：",
     },
     produce: {
@@ -1497,7 +1497,7 @@ export const messages = {
       loadNewer: "較新",
       noMessages: "尚無訊息",
       statusError: "串流錯誤：{error}",
-      sessionHint: "工作階段在 sidecar 側持續消費，直至顯式停止或切換連接觸發卸載回收。",
+      sessionHint: "工作階段在 sidecar 側持續消費，直至顯式停止或切換連接觸發卸載回收；暫停超 30 分鐘的工作階段按閒置回收。",
       sessionsExist: "本連線已有 {count} 個串流工作階段，可停止不需要的：",
     },
     produce: {
@@ -2123,7 +2123,7 @@ export const messages = {
       loadNewer: "Recientes",
       noMessages: "Aún no hay mensajes",
       statusError: "Error del stream: {error}",
-      sessionHint: "La sesión sigue consumiendo en el sidecar hasta detenerla explícitamente (o hasta que un cambio de conexión la descargue).",
+      sessionHint: "La sesión sigue consumiendo en el sidecar hasta detenerla explícitamente (o hasta que un cambio de conexión la descargue); las sesiones en pausa durante 30 minutos se recuperan como inactivas.",
       sessionsExist: "Ya existen {count} sesiones de stream en esta conexión: detenga las que no necesite:",
     },
     produce: {
@@ -2749,7 +2749,7 @@ export const messages = {
       loadNewer: "Successivi",
       noMessages: "Ancora nessun messaggio",
       statusError: "Errore stream: {error}",
-      sessionHint: "La sessione continua a consumare nel sidecar fino all'arresto esplicito (o allo scaricamento per cambio connessione).",
+      sessionHint: "La sessione continua a consumare nel sidecar fino all'arresto esplicito (o allo scaricamento per cambio connessione); le sessioni in pausa da 30 minuti vengono recuperate come inattive.",
       sessionsExist: "Su questa connessione esistono già {count} sessioni di stream: ferma quelle non necessarie:",
     },
     produce: {
@@ -3375,7 +3375,7 @@ export const messages = {
       loadNewer: "次へ",
       noMessages: "まだメッセージがありません",
       statusError: "ストリームエラー：{error}",
-      sessionHint: "セッションは明示的に停止するか（接続切り替えでアンロードされるまで）sidecar 側で消費を続けます。",
+      sessionHint: "セッションは明示的に停止するか（接続切り替えでアンロードされるまで）sidecar 側で消費を続けます。30 分間一時停止されたセッションはアイドル回収されます。",
       sessionsExist: "この接続には既に {count} 個のストリームセッションがあります。不要なものは停止できます：",
     },
     produce: {
@@ -4001,7 +4001,7 @@ export const messages = {
       loadNewer: "Recentes",
       noMessages: "Ainda sem mensagens",
       statusError: "Erro do stream: {error}",
-      sessionHint: "A sessão continua consumindo no sidecar até ser interrompida explicitamente (ou descarregada por uma troca de conexão).",
+      sessionHint: "A sessão continua consumindo no sidecar até ser interrompida explicitamente (ou descarregada por uma troca de conexão); sessões pausadas por 30 minutos são recolhidas como ociosas.",
       sessionsExist: "Já existem {count} sessões de stream nesta conexão — interrompa as desnecessárias:",
     },
     produce: {

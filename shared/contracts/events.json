@@ -9,6 +9,10 @@
       "keys": ["sessionId", "error"],
       "source": "pluginHandler.streamErrorEventPayload"
     },
+    "kafka/ui/intent": {
+      "keys": ["intentId", "action", "params"],
+      "source": "mcp.UiIntentEventPayload（第 4 个 sidecar 事件入册；此前 map 直构内联在 runIntent、键面漂移无测试可拦——readUiIntentEvent 对缺 intentId/action 返回 null，AI intent 全家会静默失效且 CI 全绿）"
+    },
     "kafka/audit": {
       "keys": ["connectionId", "action", "target", "result", "detail", "source"],
       "optionalKeys": ["detail", "source"],

@@ -126,6 +126,9 @@ const foreignSessions = ref<StreamSessionSummary[]>([]);
 async function refreshForeignSessions() {
   try {
     const response = await kafkaApi.streamList();
+    // start 在途时后端可能已建会话而 sessionId 未赋值——此时落地会把自家
+    // 新会话误列为 foreign（可被误停）；start 完成后自有刷新覆盖。
+    if (starting.value) return;
     foreignSessions.value = (response.sessions ?? []).filter((row) => row.sessionId !== sessionId.value);
   } catch {
     foreignSessions.value = [];

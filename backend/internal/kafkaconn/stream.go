@@ -23,6 +23,8 @@ import (
 // 流式会话常量（§5.5）。
 const (
 	StreamMaxSessions    = 20
+	// StreamIdleTimeout 空闲回收阈值。paused 会话同样计时（flush 不刷活性）：
+	// 暂停超阈值视为放弃，resume 已回收会话报 not found。
 	StreamIdleTimeout    = 30 * time.Minute
 	StreamBatchFlush     = 200 * time.Millisecond
 	StreamBatchSize      = 50
@@ -768,7 +770,8 @@ func (r *StreamRegistry) runLoop(session *streamSession) {
 	}
 }
 
-// flush 写 ring + 节流 emit（paused 时只入 ring 不推送）。
+// flush 写 ring + 节流 emit（paused 时只入 ring 不推送、不续命——见下方
+// lastActivityUnixMs 注释）。
 func (r *StreamRegistry) flush(session *streamSession, batch *[]ConsumedMessage) {
 	if batch == nil || len(*batch) == 0 {
 		return
@@ -777,7 +780,13 @@ func (r *StreamRegistry) flush(session *streamSession, batch *[]ConsumedMessage)
 	*batch = make([]ConsumedMessage, 0, StreamBatchSize)
 
 	session.mu.Lock()
-	session.lastActivityUnixMs = time.Now().UnixMilli()
+	// 仅非 paused 时刷活性：paused 会话若停在繁忙 topic 上，无条件刷新会让
+	// 「暂停即放弃」的会话（含刷新/换标签后的孤儿）永不满足 30 分钟空闲回收。
+	// paused 超时被回收后 resume 报 not found，调用方重启会话即可；存活孤儿
+	// 在回收前经 kafka/stream/list 对用户可见。
+	if !session.paused {
+		session.lastActivityUnixMs = time.Now().UnixMilli()
+	}
 	session.ring.appendBatch(msgs)
 	session.ring.trimToBytes(StreamRingByteBudget)
 	paused := session.paused

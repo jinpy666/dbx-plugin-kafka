@@ -702,6 +702,11 @@ sidecar 收到 MCP UI 驱动类工具（`kafka_ui_search` / `kafka_ui_focus` /
 handlers)`；回报走 §3.10 的 `kafka/ui/state/report`。工具面全表与两阶段
 语义见 `docs/MCP.zh-CN.md`。
 
+事件键面已入事件契约注册表 `shared/contracts/events.json`（后端构造点
+`mcp.UiIntentEventPayload`，`backend/events_contract_test.go` 与
+`frontend/src/lib/eventContract.spec.ts` 双端对拍——此前 map 直构内联在
+`runIntent`，键面漂移会让 intent 全家静默失效且 CI 全绿）。
+
 ## 7. 策略语义（policy.go，错误均 `-32000` blocked）
 
 | 配置 | 效果 |

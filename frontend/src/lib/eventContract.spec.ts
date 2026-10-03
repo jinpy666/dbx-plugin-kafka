@@ -14,11 +14,12 @@ const events = contract.events as Record<
 >;
 
 describe("shared/contracts/events.json", () => {
-  it("registers exactly the three sidecar events", () => {
+  it("registers exactly the four sidecar events", () => {
     expect(Object.keys(events).sort()).toEqual([
       "kafka/audit",
       "kafka/stream/error",
       "kafka/stream/messages",
+      "kafka/ui/intent",
     ]);
   });
 
@@ -39,5 +40,27 @@ describe("shared/contracts/events.json", () => {
 
   it("stream messages carries bufferSize (droppedRows estimation source)", () => {
     expect(events["kafka/stream/messages"].keys).toContain("bufferSize");
+  });
+
+  it("ui intent registry keys align with readUiIntentEvent consumption", async () => {
+    // 后端构造点 mcp.UiIntentEventPayload 的键面（后端测试对拍同一份注册表）；
+    // 前端消费假设在此钉住：三个键全部必填、无 optionalKeys。
+    const { readUiIntentEvent } = await import("../../../shared/frontend/uiIntent");
+    const shape = events["kafka/ui/intent"];
+    expect([...shape.keys].sort()).toEqual(["action", "intentId", "params"]);
+    expect(shape.optionalKeys ?? []).toEqual([]);
+    const event = {
+      type: "kafka",
+      method: "kafka/ui/intent",
+      params: { intentId: "i-1", action: "select", params: { partition: 0, offset: 1 } },
+    };
+    expect(readUiIntentEvent(event, "kafka")).toEqual({
+      intentId: "i-1",
+      action: "select",
+      params: { partition: 0, offset: 1 },
+    });
+    // fail-closed：必需键缺失 → null（这正是漂移会让 intent 静默失效的路径）。
+    expect(readUiIntentEvent({ method: "kafka/ui/intent", params: { intentId: "i-1" } }, "kafka")).toBeNull();
+    expect(readUiIntentEvent({ method: "kafka/ui/intent", params: { action: "select" } }, "kafka")).toBeNull();
   });
 });

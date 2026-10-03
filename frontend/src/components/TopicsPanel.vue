@@ -125,30 +125,29 @@ function topicContextMenuItems(row: unknown): GridContextMenuItem[] {
 }
 
 function selectTopic(topic: KafkaTopic | null) {
-  ++detailSeq;
   selected.value = topic;
   partitions.value = [];
   offsetRows.value = [];
   configEntries.value = [];
 }
 
-// 请求序号守卫（同族 BrokersPanel configSeq / StreamPanel pageSeq）：慢响应
-// 落地前校验选中 topic 未变，否则丢弃——否则旧 topic 的分区/位点/配置条目
-// 会渲染在新选中 topic 的标题下。
-let detailSeq = 0;
+// 选中 topic 名比对守卫：慢响应落地前校验选中未变，否则丢弃——否则旧 topic
+// 的分区/位点/配置条目会渲染在新选中 topic 的标题下。用名字而非共享序号：
+// describe/offsets 是同 topic 上的兄弟查询（分区表 + 位点表并存），共享 seq
+// 会让后发查询把先发响应误杀成空态；名字比对只拦真正的跨 topic 串台。
+// （config 弹窗同款守卫在 openConfig，弹窗打开不会被 stale describe 关闭。）
 
 async function describeSelected() {
   if (!selected.value) return;
-  const seq = ++detailSeq;
   const topicName = selected.value.name;
   busy.value = true;
   emit("error", "");
   try {
     const response = await kafkaApi.topicsDescribe(topicName);
-    if (seq !== detailSeq || selected.value?.name !== topicName) return;
+    if (selected.value?.name !== topicName) return;
     partitions.value = response.partitions ?? [];
   } catch (cause) {
-    if (seq !== detailSeq || selected.value?.name !== topicName) return;
+    if (selected.value?.name !== topicName) return;
     emit("error", cause instanceof Error ? cause.message : String(cause));
   } finally {
     busy.value = false;
@@ -246,7 +245,6 @@ async function submitExpand() {
 
 async function queryOffsets() {
   if (!selected.value) return;
-  const seq = ++detailSeq;
   const topicName = selected.value.name;
   busy.value = true;
   emit("error", "");
@@ -254,10 +252,10 @@ async function queryOffsets() {
     const offsetTime =
       offsetTimeMode.value === "custom" ? offsetTimeToParam(offsetCustomTime.value) : (offsetTimeMode.value as string);
     const response = await kafkaApi.topicsOffsetsList([topicName], offsetTime ?? undefined);
-    if (seq !== detailSeq || selected.value?.name !== topicName) return;
+    if (selected.value?.name !== topicName) return;
     offsetRows.value = response.rows ?? [];
   } catch (cause) {
-    if (seq !== detailSeq || selected.value?.name !== topicName) return;
+    if (selected.value?.name !== topicName) return;
     emit("error", cause instanceof Error ? cause.message : String(cause));
   } finally {
     busy.value = false;
@@ -266,17 +264,16 @@ async function queryOffsets() {
 
 async function openConfig(topic: KafkaTopic | null) {
   if (!topic) return;
-  const seq = ++detailSeq;
   selected.value = topic;
   busy.value = true;
   try {
     const response = await kafkaApi.topicsConfigGet(topic.name);
-    if (seq !== detailSeq || selected.value?.name !== topic.name) return;
+    if (selected.value?.name !== topic.name) return;
     configEntries.value = response.entries ?? [];
     configEdits.value = [];
     configOpen.value = true;
   } catch (cause) {
-    if (seq !== detailSeq || selected.value?.name !== topic.name) return;
+    if (selected.value?.name !== topic.name) return;
     emit("error", cause instanceof Error ? cause.message : String(cause));
   } finally {
     busy.value = false;

@@ -210,3 +210,39 @@ func TestRingBufferTrimToBytes(t *testing.T) {
 		t.Errorf("oversized trim len=%d bytes=%d, want 0/0", rb2.Len(), rb2.Bytes())
 	}
 }
+
+// paused 不续命（架构评审 C1 残余）：flush 对 paused 会话只入 ring 不刷
+// lastActivityUnixMs——繁忙 topic 上的暂停会话（含孤儿）也要满足 30 分钟
+// 空闲回收；running 会话照旧续命。
+func TestRegistryFlushPausedDoesNotRefreshActivity(t *testing.T) {
+	registry := NewStreamRegistry()
+	now := int64(1_000_000_000)
+	session := &streamSession{
+		sessionID:          "s1",
+		connectionID:       "c1",
+		closeClient:        func() {},
+		ring:               newRingBuffer(4),
+		partitionOffsets:   map[int32]int64{},
+		lastActivityUnixMs: now,
+		paused:             true,
+	}
+	registry.mu.Lock()
+	registry.sessions["s1"] = session
+	registry.mu.Unlock()
+
+	batch := []ConsumedMessage{{Topic: "t", ValueText: "x"}}
+	registry.flush(session, &batch)
+	if got := session.lastActivityUnixMs; got != now {
+		t.Errorf("paused flush refreshed activity: %d -> %d, want unchanged", now, got)
+	}
+	if session.ring.Len() != 1 {
+		t.Errorf("paused flush should still buffer, ring len = %d", session.ring.Len())
+	}
+
+	session.paused = false
+	batch = []ConsumedMessage{{Topic: "t", ValueText: "x"}} // flush 会清空 batch，重填
+	registry.flush(session, &batch)
+	if got := session.lastActivityUnixMs; got == now {
+		t.Error("running flush should refresh activity")
+	}
+}

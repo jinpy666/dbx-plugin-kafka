@@ -285,6 +285,8 @@ const flowRunning = ref(false);
 // 启动守卫：preflight 含两次 SR RPC，等待窗口内二次点击会各自 setInterval
 // 覆盖 flowTimer 句柄（旧定时器泄漏 → 产速翻倍且跨 Stop 粘性恢复）。
 const flowStarting = ref(false);
+// 启动代际：stopFlow / 新启动 bump，使一切更早的在途启动作废（见 startFlow）。
+let flowStartGen = 0;
 const flowSent = ref(0);
 const flowLastValue = ref("");
 const flowHint = ref("");
@@ -395,9 +397,10 @@ async function preflightFlow(): Promise<{ schemaText: string | null; attachSubje
 }
 
 function stopFlow(reason?: "manual" | "failures" | "readonly" | "records" | "duration") {
-  // 复位启动守卫：preflight 等待期间 topic 切换/readonly/卸载会先走这里，
-  // 待 startFlow 恢复时据此放弃启动（见 startFlow 中的复查）。
+  // 复位启动守卫并 bump 代际：preflight 等待期间 topic 切换/readonly/卸载/
+  // 手动停止都会走这里，在途 startFlow 恢复时据代际作废（见 startFlow）。
   flowStarting.value = false;
+  flowStartGen += 1;
   if (flowTimer) {
     window.clearInterval(flowTimer);
     flowTimer = 0;
@@ -478,6 +481,11 @@ async function runFlowTick(schemaText: string | null, schemaAttach?: SchemaAttac
 async function startFlow() {
   if (flowStarting.value || flowRunning.value || flowDisabled.value) return;
   if (flowTimer) return;
+  // 代际令牌（同族 flowSeq/pageSeq）：共享布尔 flowStarting 会被「stop→再
+  // Start」序列重新置位，骗过在途启动的复位检查，两次 preflight 续体都会
+  // 各自 setInterval 覆盖句柄（泄漏 interval、产速翻倍、跨 Stop 粘性）。
+  // stopFlow 与新启动都会 bump 代际，使一切更早的在途启动作废。
+  const gen = ++flowStartGen;
   flowStarting.value = true;
   emit("error", "");
   let preflight: Awaited<ReturnType<typeof preflightFlow>>;
@@ -490,8 +498,9 @@ async function startFlow() {
     emit("error", cause instanceof Error ? cause.message : String(cause));
     return;
   }
-  // preflight 等待期间被外部 stopFlow（topic 切换 / readonly / 卸载）复位。
-  if (!flowStarting.value) return;
+  // preflight 等待期间被外部 stopFlow（topic 切换 / readonly / 卸载）或新
+  // 启动作废。
+  if (gen !== flowStartGen) return;
   flowStarting.value = false;
   if (preflight === null) return;
   flowSent.value = 0;

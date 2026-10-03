@@ -299,6 +299,18 @@ func locatorOf(args map[string]any) (int, int, error) {
 	return partition, offset, nil
 }
 
+// UiIntentEventPayload 构造 kafka/ui/intent 事件载荷。它是事件契约注册表
+// shared/contracts/events.json 的后端对拍点——此前 map 直构内联在 runIntent，
+// 键面漂移（如 params 改名）会让真实 UI 的 intent 全部静默失效（
+// readUiIntentEvent 对缺 intentId/action 返回 null）而 CI 全绿。
+func UiIntentEventPayload(intentID, action string, params map[string]any) map[string]any {
+	return map[string]any{
+		"intentId": intentID,
+		"action":   action,
+		"params":   params,
+	}
+}
+
 // runIntent intent 发起 + 等待 report。
 func (s *Server) runIntent(action string, params map[string]any) map[string]any {
 	randomID, err := randomHex(8)
@@ -309,11 +321,7 @@ func (s *Server) runIntent(action string, params map[string]any) map[string]any 
 	intentID := "i-" + randomID
 	s.intents.Register(intentID, action, params, s.now())
 	if s.emit != nil {
-		s.emit("kafka/ui/intent", map[string]any{
-			"intentId": intentID,
-			"action":   action,
-			"params":   params,
-		})
+		s.emit("kafka/ui/intent", UiIntentEventPayload(intentID, action, params))
 	}
 	return s.waitIntent(intentID)
 }

@@ -1,10 +1,10 @@
 package main
 
 // events_contract_test.go：事件载荷契约注册表对拍（shared/contracts/events.json
-// 是单一真相）。注册表覆盖三个 sidecar 事件：stream/messages（结构体反射
-// 对拍）、stream/error（载荷构造函数）、audit（反射 json tag + result 折算
-// 枚举）。新增/修改事件载荷时本测试红灯，强制同步注册表——防止再次出现
-// bufferSize / audit result 那类「mock 全绿、生产漂移」的事故。
+// 是单一真相）。注册表覆盖四个 sidecar 事件：stream/messages（结构体反射
+// 对拍）、stream/error 与 ui/intent（载荷构造函数）、audit（反射 json tag +
+// result 折算枚举）。新增/修改事件载荷时本测试红灯，强制同步注册表——防止
+// 再次出现 bufferSize / audit result 那类「mock 全绿、生产漂移」的事故。
 
 import (
 	"encoding/json"
@@ -14,6 +14,7 @@ import (
 	"testing"
 
 	"io.dbx.kafka.plugin/internal/kafkaconn"
+	"io.dbx.kafka.plugin/internal/mcp"
 )
 
 type eventContract struct {
@@ -108,6 +109,21 @@ func TestEventContractRegistry(t *testing.T) {
 		got[key] = true
 	}
 	assertKeysMatch(t, "kafka/stream/error", got, errEvent.Keys)
+
+	// kafka/ui/intent：载荷构造函数键面全等（此前 map 直构内联在 runIntent，
+	// 不在任何测试面上——注册表缺口由架构评审 C3 指出后补齐）。
+	intentEvent, ok := contract.Events["kafka/ui/intent"]
+	if !ok {
+		t.Fatal("kafka/ui/intent missing from registry")
+	}
+	intentGot := map[string]bool{}
+	for key := range mcp.UiIntentEventPayload("i-x", "select", map[string]any{"partition": 0}) {
+		intentGot[key] = true
+	}
+	assertKeysMatch(t, "kafka/ui/intent", intentGot, intentEvent.Keys)
+	if len(intentEvent.OptionalKeys) > 0 {
+		t.Errorf("kafka/ui/intent: registry declares optionalKeys %v, payload has none (readUiIntentEvent fail-closes on missing intentId/action)", intentEvent.OptionalKeys)
+	}
 
 	// kafka/audit：AuditRecord json tag 全等（detail/source 为 omitempty 可选）。
 	audit, ok := contract.Events["kafka/audit"]
