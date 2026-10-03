@@ -22,7 +22,7 @@ import (
 
 // 流式会话常量（§5.5）。
 const (
-	StreamMaxSessions    = 20
+	StreamMaxSessions = 20
 	// StreamIdleTimeout 空闲回收阈值。paused 会话同样计时（flush 不刷活性）：
 	// 暂停超阈值视为放弃，resume 已回收会话报 not found。
 	StreamIdleTimeout    = 30 * time.Minute
