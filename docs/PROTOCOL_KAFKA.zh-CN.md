@@ -335,7 +335,7 @@ Host API 1.0 的 `plugin_connection_params` 只发送 `runtime.host:port`，且
 **`kafka/stream/stop`**
 
 - 请求：`sessionId?:string`（与 `all:true` 二选一；都没有 → `-32602`）。
-- 返回：空 `data`。
+- 返回：`{success:bool}`（恒 true；幂等）。
 
 **`kafka/stream/pause` / `kafka/stream/resume`**
 
@@ -346,7 +346,15 @@ Host API 1.0 的 `plugin_connection_params` 只发送 `runtime.host:port`，且
 **`kafka/stream/status`**
 
 - 请求：`sessionId:string`。
-- 返回：`{paused:bool, totalScanned:int, totalMatched:int, bufferSize:int, partitionOffsets:map<partition,int>}`。
+- 返回：`{status:{sessionId, topic, paused:bool, totalScanned:int, totalMatched:int, bufferSize:int, partitionOffsets:map<partition,int>}}`（未知 sessionId → `-32000`）。
+
+**`kafka/stream/list`**
+
+- 请求：`connectionId?:string`（缺省 = callKafka 自动注入的当前连接；显式空串 =
+  全部连接的会话，排查视图用）。
+- 返回：`{sessions:StreamStatus[]}`（按 sessionId 升序）。
+- 语义：标签页刷新/重开会把 sessionId 随前端内存丢掉，孤儿会话靠本方法重新
+  可见、可停（工作台流面板挂载时拉取并列出本连接内非本面板持有的会话）。
 
 **`kafka/stream/messages`**（方法，非事件）
 

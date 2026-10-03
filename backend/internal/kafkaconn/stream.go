@@ -88,6 +88,11 @@ type StreamMessagesResult struct {
 	Messages []ConsumedMessage `json:"messages"`
 }
 
+// StreamListResult 是 kafka/stream/list 返回（连接内会话枚举）。
+type StreamListResult struct {
+	Sessions []StreamStatus `json:"sessions"`
+}
+
 // ringBuffer 定容环形缓冲（非并发安全；调用方持锁）。bytes 是驻留 wire 字节
 // 记账（consumeWireSizeBytes 口径），支撑 StreamRingByteBudget 逐出。
 type ringBuffer struct {
@@ -421,6 +426,14 @@ func (s *Service) ResumeStream(sessionID string) (*StreamStatus, error) {
 // StreamStatusOf 查询会话状态（kafka/stream/status）。
 func (s *Service) StreamStatusOf(sessionID string) (*StreamStatus, error) {
 	return s.Streams.Status(sessionID)
+}
+
+// StreamList 列出指定连接的全部流式会话（kafka/stream/list；connectionID 空 =
+// 全部连接）。标签页刷新/重开把 sessionId 留在前端内存之外后，孤儿会话此前
+// 在工作台上不可见、不可停，累积到 StreamMaxSessions 后新 start 只报
+// "maximum concurrent stream sessions"（评审架构 C1：会话生命周期不变量）。
+func (s *Service) StreamList(connectionID string) (*StreamListResult, error) {
+	return &StreamListResult{Sessions: s.Streams.StatusesFor(connectionID)}, nil
 }
 
 // StreamMessages ring buffer 历史分页（kafka/stream/messages）。

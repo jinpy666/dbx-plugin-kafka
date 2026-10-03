@@ -1028,6 +1028,17 @@ const invoke: DbxPluginApi["invoke"] = async <T = unknown>(method: string, rawPa
     result = {
       status: { paused: session.paused, totalScanned: session.produced, totalMatched: session.produced, bufferSize: session.buffer.length, partitionOffsets: { "0": session.buffer.length } },
     };
+  } else if (method === "kafka/stream/list") {
+    result = {
+      sessions: [...streams.values()].map((session) => ({
+        sessionId: session.id,
+        topic: session.topic,
+        paused: session.paused,
+        totalScanned: session.produced,
+        totalMatched: session.produced,
+        bufferSize: session.buffer.length,
+      })),
+    };
   } else if (method === "kafka/stream/messages") {
     const session = streams.get(String(input.sessionId ?? ""));
     if (!session) throw new Error("stream session not found (fixture)");

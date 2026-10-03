@@ -74,6 +74,30 @@ jobs:
           fi
           (cd backend && go vet ./... && go test ./...)
 
+  # 唯一打真集群的门禁此前只存在于 ci.yml（push/PR 触发）；release 在 tag 上
+  # 触发，若 tag commit 未经过 CI（或 CI 后改动），SASL/SSL/mTLS、OAUTHBEARER
+  # 握手这些只在容器矩阵暴露的回归会直接产出 5 平台发布资产。这里复刻同一套
+  # 容器冒烟（S1-S19 + MCP K1-K19），build/publish 以它为前置。
+  integration:
+    if: startsWith(github.event.release.tag_name, 'kafka-v')
+    name: Container integration smoke
+    needs: [validate]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version: 1.26.x
+          cache-dependency-path: backend/go.sum
+      - name: Build sidecar
+        run: (cd backend && CGO_ENABLED=0 go build -trimpath -o bin/dbx-plugin-kafka .)
+      - name: Run Kafka container smoke (S1-S19 + MCP K1-K19)
+        env:
+          KAFKA_TEST_REQUIRE: "1"
+          PYTHONUTF8: "1"
+        run: python3 scripts/smoke_container.py
+
   # Build the target-independent UI once; every platform job below unpacks it
   # as ui/ and packages it as-is (DBX_PREBUILT_UI) instead of rerunning the
   # frontend three-step 5x. Typecheck/test stay in the validate gate above.
@@ -106,7 +130,7 @@ jobs:
   build:
     if: startsWith(github.event.release.tag_name, 'kafka-v')
     name: Build ${{ matrix.target }}
-    needs: [validate, frontend]
+    needs: [validate, frontend, integration]
     timeout-minutes: 30
     strategy:
       fail-fast: false

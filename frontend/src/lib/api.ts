@@ -254,6 +254,12 @@ export interface StreamStatus {
   partitionOffsets?: Record<string, number>;
 }
 
+// kafka/stream/list 行（后端 StreamStatus 全形：含会话身份字段）。
+export interface StreamSessionSummary extends StreamStatus {
+  sessionId: string;
+  topic?: string;
+}
+
 export interface KafkaPreset {
   id: string;
   name: string;
@@ -560,6 +566,11 @@ export const kafkaApi = {
   },
   streamStatus(sessionId: string) {
     return callKafka<{ status: StreamStatus }>("kafka/stream/status", { sessionId });
+  },
+  // 本连接（callKafka 自动带 connectionId）的全部流会话：标签页刷新/重开后
+  // sessionId 随前端内存丢失，孤儿会话靠这里重新可见、可停。
+  streamList() {
+    return callKafka<{ sessions: StreamSessionSummary[] }>("kafka/stream/list");
   },
   streamMessages(sessionId: string, offset: number, limit: number) {
     return callKafka<{ messages: KafkaMessage[]; total?: number }>("kafka/stream/messages", { sessionId, offset, limit });

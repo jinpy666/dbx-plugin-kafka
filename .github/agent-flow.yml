@@ -12,9 +12,13 @@ workflow:
     integration: [review]
     verification: [integration]
 ownership:
+  # manifest.json（含 version 等发布元数据）单一归属 contract lane——此前
+  # contract 与 frontend 双写，与 AGENTS.md「integrator owns shared contract
+  # files / 不动版本元数据」矛盾；frontend lane 需要改 manifest 时经 contract
+  # 阶段提需求单。
   contract: [manifest.json, docs/PROTOCOL_KAFKA.zh-CN.md]
   backend: [backend/]
-  frontend: [frontend/, manifest.json]
+  frontend: [frontend/]
   tests: [scripts/]
   integrator: [ui/, dist/, version_metadata, shared_contract_docs]
 validation:

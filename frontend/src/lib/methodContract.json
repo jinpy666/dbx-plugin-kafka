@@ -33,6 +33,7 @@
     "kafka/stream/resume": { "keys": ["status"], "verifiable": false },
     "kafka/stream/status": { "keys": ["status"], "verifiable": false },
     "kafka/stream/messages": { "keys": ["total", "offset", "limit", "messages"], "verifiable": false },
+    "kafka/stream/list": { "keys": ["sessions"], "verifiable": true },
     "kafka/presets/list": { "keys": ["presets"], "verifiable": true },
     "kafka/presets/save": { "keys": ["success", "preset"], "verifiable": true, "params": "{\"preset\":{\"id\":\"contract-probe\",\"name\":\"contract-probe\",\"params\":{}}}" },
     "kafka/presets/remove": { "keys": ["success"], "verifiable": true, "params": "{\"id\":\"contract-probe\"}", "phase": 2 },

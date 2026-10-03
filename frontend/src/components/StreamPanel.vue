@@ -4,12 +4,12 @@
 // 前端展示上限 MAX_ROWS（超出丢最旧并计数 droppedRows 提示，防 OOM）；
 // 消息列表走 DbxAgGrid（与 MessagesPanel 同一套列模型/quickFilter/分页，
 // 虚拟滚动抗高频追加），autoScroll 勾选时每批事件落表后跳到末页最新行。
-import { computed, onBeforeUnmount, ref, shallowRef, watch } from "vue";
+import { computed, onBeforeUnmount, onMounted, ref, shallowRef, watch } from "vue";
 import type { ColDef } from "ag-grid-community";
 import { Download, Pause, Play, Square } from "@lucide/vue";
 import DbxAgGrid from "./DbxAgGrid.vue";
 import MessageDetailDrawer from "./MessageDetailDrawer.vue";
-import { kafkaApi, type KafkaMessage, type KafkaStreamErrorEvent, type KafkaStreamMessagesEvent, type MatchMode, type OffsetStrategy, type SchemaAttach, type SchemaFormat, type SchemaSubject, type StreamStatus } from "../lib/api";
+import { kafkaApi, type KafkaMessage, type KafkaStreamErrorEvent, type KafkaStreamMessagesEvent, type MatchMode, type OffsetStrategy, type SchemaAttach, type SchemaFormat, type SchemaSubject, type StreamSessionSummary, type StreamStatus } from "../lib/api";
 import { appendStreamRows, debounce } from "../lib/uiHelpers";
 import { serializeMessagesToCsv, serializeMessagesToJson, serializeMessagesToTsv } from "../lib/messageExport";
 import { saveTextFile } from "../lib/download";
@@ -116,6 +116,33 @@ function buildSchemaAttach(): SchemaAttach | undefined {
   };
 }
 
+// -- 孤儿会话可见化（架构评审 C1）--------------------------------------------------
+// 标签页刷新/重开把 sessionId 随前端内存丢掉后，后端会话此前不可见也不可停，
+// 累积到上限后新 start 只报 "maximum concurrent stream sessions"。挂载时拉一次
+// 会话清单：本面板未持有的会话（孤儿 + 其它标签页的活跃会话）列出并提供显式
+// 停止入口（多标签共享 sidecar，不能自动停，交用户决定）。
+const foreignSessions = ref<StreamSessionSummary[]>([]);
+
+async function refreshForeignSessions() {
+  try {
+    const response = await kafkaApi.streamList();
+    foreignSessions.value = (response.sessions ?? []).filter((row) => row.sessionId !== sessionId.value);
+  } catch {
+    foreignSessions.value = [];
+  }
+}
+
+async function stopForeignSession(id: string) {
+  try {
+    await kafkaApi.streamStop(id);
+  } catch (cause) {
+    emit("error", cause instanceof Error ? cause.message : String(cause));
+  }
+  void refreshForeignSessions();
+}
+
+onMounted(() => void refreshForeignSessions());
+
 // -- lifecycle ------------------------------------------------------------------
 
 async function start() {
@@ -145,6 +172,7 @@ async function start() {
     totalMatched.value = 0;
     paused.value = false;
     emit("notify", `${t("stream.title")}: ${response.sessionId}`);
+    void refreshForeignSessions();
   } catch (cause) {
     emit("error", cause instanceof Error ? cause.message : String(cause));
   } finally {
@@ -162,6 +190,7 @@ async function stop() {
   } catch (cause) {
     emit("error", cause instanceof Error ? cause.message : String(cause));
   }
+  void refreshForeignSessions();
 }
 
 async function togglePause() {
@@ -378,6 +407,20 @@ defineExpose({ pushEvent });
 
     <p v-if="glueSchemaDisabled" class="hint" style="padding: 0 8px">{{ t("messages.schemaGlueDisabled") }}</p>
     <p class="hint" style="padding: 4px 8px 0">{{ t("stream.sessionHint") }}</p>
+    <!-- 孤儿/跨标签会话：列出并给显式停止入口（多标签共享 sidecar，不能自动停） -->
+    <div v-if="foreignSessions.length > 0" class="stream-orphans" data-testid="stream-orphans">
+      <span class="badge badge-warn">{{ t("stream.sessionsExist", { count: foreignSessions.length }) }}</span>
+      <button
+        v-for="row in foreignSessions"
+        :key="row.sessionId"
+        class="toolbar-button"
+        type="button"
+        :title="`${row.sessionId} · ${row.topic}`"
+        @click="stopForeignSession(row.sessionId)"
+      >
+        <Square aria-hidden="true" /><span class="mono-s">{{ row.sessionId }}</span>
+      </button>
+    </div>
 
     <div class="stream-meta">
       <span class="badge" :class="{ 'badge-ok': sessionActive && !paused, 'badge-warn': sessionActive && paused }">{{ stateLabel }}</span>
@@ -460,6 +503,14 @@ defineExpose({ pushEvent });
   min-height: 32px;
   padding: 4px 14px;
   font-size: 11px;
+}
+/* 孤儿/跨标签会话条：徽标 + 逐会话停止按钮，横向排布可换行。 */
+.stream-orphans {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 8px;
 }
 /* 禁用态通用规则（cursor/复选框）已收敛至全局 style.css，此处不再重复。 */
 </style>

@@ -235,6 +235,8 @@ func (h *pluginHandler) Handle(
 		return h.streamResume(params)
 	case "kafka/stream/status":
 		return h.streamStatus(params)
+	case "kafka/stream/list":
+		return h.streamList(params)
 	case "kafka/stream/messages":
 		return h.streamMessages(params)
 
@@ -687,6 +689,23 @@ func (h *pluginHandler) streamStatus(params json.RawMessage) (any, *dbxpluginsdk
 		return nil, bizError(err)
 	}
 	return map[string]any{"status": status}, nil
+}
+
+func (h *pluginHandler) streamList(params json.RawMessage) (any, *dbxpluginsdk.PluginError) {
+	// connectionId 可选：调用方（工作台/排查）可空查全部连接的会话。
+	var req struct {
+		ConnectionID string `json:"connectionId"`
+	}
+	if len(params) > 0 {
+		if err := json.Unmarshal(params, &req); err != nil {
+			return nil, invalidParams(err)
+		}
+	}
+	result, err := h.svc.StreamList(req.ConnectionID)
+	if err != nil {
+		return nil, bizError(err)
+	}
+	return result, nil
 }
 
 func (h *pluginHandler) streamMessages(params json.RawMessage) (any, *dbxpluginsdk.PluginError) {

@@ -245,7 +245,8 @@ export const messages = {
       loadNewer: "Newer",
       noMessages: "No messages yet",
       statusError: "Stream error: {error}",
-      sessionHint: "The session keeps consuming in the sidecar; closing the panel does not stop it — stop explicitly.",
+      sessionHint: "The session keeps consuming in the sidecar until stopped explicitly (or unloaded by a connection switch).",
+      sessionsExist: "{count} stream session(s) already exist on this connection — stop the ones you do not need:",
     },
     produce: {
       keyPlaceholder: "key (optional)",
@@ -870,7 +871,8 @@ export const messages = {
       loadNewer: "较新",
       noMessages: "暂无消息",
       statusError: "流式错误：{error}",
-      sessionHint: "会话在 sidecar 侧持续消费；关闭面板不会停止，需要显式停止。",
+      sessionHint: "会话在 sidecar 侧持续消费，直至显式停止或切换连接触发卸载回收。",
+      sessionsExist: "本连接已有 {count} 个流式会话，可停止不需要的：",
     },
     produce: {
       keyPlaceholder: "key（可选）",
@@ -1495,7 +1497,8 @@ export const messages = {
       loadNewer: "較新",
       noMessages: "尚無訊息",
       statusError: "串流錯誤：{error}",
-      sessionHint: "工作階段在 sidecar 側持續消費；關閉面板不會停止，需要顯式停止。",
+      sessionHint: "工作階段在 sidecar 側持續消費，直至顯式停止或切換連接觸發卸載回收。",
+      sessionsExist: "本連線已有 {count} 個串流工作階段，可停止不需要的：",
     },
     produce: {
       keyPlaceholder: "key（可選）",
@@ -2120,7 +2123,8 @@ export const messages = {
       loadNewer: "Recientes",
       noMessages: "Aún no hay mensajes",
       statusError: "Error del stream: {error}",
-      sessionHint: "La sesión sigue consumiendo en el sidecar; cerrar el panel no la detiene: deténgala explícitamente.",
+      sessionHint: "La sesión sigue consumiendo en el sidecar hasta detenerla explícitamente (o hasta que un cambio de conexión la descargue).",
+      sessionsExist: "Ya existen {count} sesiones de stream en esta conexión: detenga las que no necesite:",
     },
     produce: {
       keyPlaceholder: "key (opcional)",
@@ -2745,7 +2749,8 @@ export const messages = {
       loadNewer: "Successivi",
       noMessages: "Ancora nessun messaggio",
       statusError: "Errore stream: {error}",
-      sessionHint: "La sessione continua a consumare nel sidecar; chiudere il pannello non la ferma: fermala esplicitamente.",
+      sessionHint: "La sessione continua a consumare nel sidecar fino all'arresto esplicito (o allo scaricamento per cambio connessione).",
+      sessionsExist: "Su questa connessione esistono già {count} sessioni di stream: ferma quelle non necessarie:",
     },
     produce: {
       keyPlaceholder: "key (opzionale)",
@@ -3370,7 +3375,8 @@ export const messages = {
       loadNewer: "次へ",
       noMessages: "まだメッセージがありません",
       statusError: "ストリームエラー：{error}",
-      sessionHint: "セッションは sidecar 側で消費を続けます。パネルを閉じても停止しないため、明示的に停止してください。",
+      sessionHint: "セッションは明示的に停止するか（接続切り替えでアンロードされるまで）sidecar 側で消費を続けます。",
+      sessionsExist: "この接続には既に {count} 個のストリームセッションがあります。不要なものは停止できます：",
     },
     produce: {
       keyPlaceholder: "key（任意）",
@@ -3995,7 +4001,8 @@ export const messages = {
       loadNewer: "Recentes",
       noMessages: "Ainda sem mensagens",
       statusError: "Erro do stream: {error}",
-      sessionHint: "A sessão continua consumindo no sidecar; fechar o painel não a encerra — pare explicitamente.",
+      sessionHint: "A sessão continua consumindo no sidecar até ser interrompida explicitamente (ou descarregada por uma troca de conexão).",
+      sessionsExist: "Já existem {count} sessões de stream nesta conexão — interrompa as desnecessárias:",
     },
     produce: {
       keyPlaceholder: "key (opcional)",
