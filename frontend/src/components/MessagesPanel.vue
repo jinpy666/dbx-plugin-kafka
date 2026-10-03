@@ -329,6 +329,8 @@ async function applyIntentConsume(params: Record<string, unknown>): Promise<UiIn
     partitionOffsetsText: partitionOffsetsText.value,
     hasFilters: hasFilters.value,
   }).map((issue) => t(`messages.${issue.key}`));
+  // intent 路径与手动按钮同校验面：倒序时间范围此前只在 runConsume 拦截。
+  if (tsRangeReversed.value) issues.push(t("messages.uiTimeRangeInvalid"));
   formIssues.value = issues;
   if (issues.length > 0) {
     return { status: "rejected", reason: issues.join("; ") };
@@ -371,7 +373,7 @@ async function applyIntentSelect(params: Record<string, unknown>): Promise<UiInt
   const partition = Number.parseInt(String(params.partition ?? ""), 10);
   const offset = Number.parseInt(String(params.offset ?? ""), 10);
   if (!Number.isFinite(partition) || !Number.isFinite(offset) || partition < 0 || offset < 0) {
-    return { status: "rejected", reason: "partition and offset are required (non-negative integers)" };
+    return { status: "rejected", reason: t("intent.selectInvalid") };
   }
   const topic = String(params.topic ?? "").trim();
   const row = messageRows.value.find(

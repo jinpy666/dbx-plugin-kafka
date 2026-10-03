@@ -31,7 +31,8 @@ jobs:
           version: 11.24.0
       - uses: actions/setup-node@v7
         with:
-          node-version: "22"
+          # Node pin 单一真源是仓库根 .nvmrc（与 ci.yml 同源，commit 2226eb0）。
+          node-version-file: .nvmrc
           cache: pnpm
           cache-dependency-path: frontend/pnpm-lock.yaml
       - uses: actions/setup-go@v7

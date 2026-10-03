@@ -136,7 +136,11 @@ function openContextMenu(event: Parameters<NonNullable<GridOptions["onCellContex
     ? props.cellCopyText(event.node.data, event.colDef.field, event.value)
     : event.value === undefined || event.value === null ? "" : String(event.value);
   const menuWidth = 220;
-  const menuHeight = 38 + (typeof props.contextMenuItems === "function" ? props.contextMenuItems(event.node.data).length : props.contextMenuItems?.length ?? 0) * 30;
+  // 高度按实渲染条目算：contextItems 还含 copy-value/copy-row 两个内建项
+  // （少算 2 会让贴近视口底部的菜单溢出约 60px）。
+  const customCount =
+    typeof props.contextMenuItems === "function" ? props.contextMenuItems(event.node.data).length : props.contextMenuItems?.length ?? 0;
+  const menuHeight = 38 + (customCount + 2) * 30;
   contextMenu.value = {
     x: Math.max(6, Math.min(nativeEvent.clientX, window.innerWidth - menuWidth - 6)),
     y: Math.max(6, Math.min(nativeEvent.clientY, window.innerHeight - menuHeight - 6)),

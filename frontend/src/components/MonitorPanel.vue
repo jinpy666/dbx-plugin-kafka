@@ -184,10 +184,16 @@ async function savePlan() {
   }
 }
 
+// 请求序号守卫（同族 useConsumeForm.applyPresetSeq / TopicsPanel detailSeq）：
+// 快速连选两个方案时，presetsList 慢响应落地会覆盖后选方案的表单值。
+let applyPlanSeq = 0;
+
 async function applyPlan(id: string) {
   if (!id) return;
+  const seq = ++applyPlanSeq;
   try {
     const response = await kafkaApi.presetsList();
+    if (seq !== applyPlanSeq) return;
     const preset = (response.presets ?? []).find((row) => row.id === id);
     const monitor = preset?.params?.monitor;
     if (!monitor) return;
@@ -197,6 +203,7 @@ async function applyPlan(id: string) {
     threshold.value = String(monitor.threshold ?? 0);
     emit("notify", t("monitor.planApplied"));
   } catch (cause) {
+    if (seq !== applyPlanSeq) return;
     emit("error", cause instanceof Error ? cause.message : String(cause));
   }
 }

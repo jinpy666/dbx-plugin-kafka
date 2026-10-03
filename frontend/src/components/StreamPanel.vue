@@ -269,6 +269,9 @@ watch(sessionActive, (active) => {
 onBeforeUnmount(() => {
   window.clearInterval(statusTimer);
   applyQuickFilter.cancel();
+  // 卸载即停后端会话：broker 常驻 consumer + ring buffer 只靠 30 分钟空闲
+  // 回收兜底（连接切换时 App 重置 visitedPanels 会重建本组件）。
+  if (sessionId.value) void kafkaApi.streamStop(sessionId.value).catch(() => {});
 });
 
 // -- 即时搜索（F6-1）：语义对齐 Messages 表的 quickFilter——输入防抖 150ms

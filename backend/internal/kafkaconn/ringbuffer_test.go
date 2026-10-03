@@ -169,3 +169,44 @@ func TestRegistryMaxSessions(t *testing.T) {
 		t.Errorf("throttle = %v/%d, want 200ms/50", StreamBatchFlush, StreamBatchSize)
 	}
 }
+
+// 字节预算逐出（评审 M-2）：超预算从最旧端弹出直至回落；单条超预算不留存。
+func TestRingBufferTrimToBytes(t *testing.T) {
+	rb := newRingBuffer(10)
+	// 3 条 × ~356B（两通道 + 256 保守底数），预算 800 → 弹出最旧 2 条后回落。
+	small := ConsumedMessage{ValueText: "abcdefgh", ValueBase64: "YWJjZGVmZ2g="}
+	for i := 0; i < 3; i++ {
+		rb.append(small)
+	}
+	before := rb.Len()
+	evicted := rb.trimToBytes(800)
+	if evicted == 0 || rb.Len() >= before {
+		t.Fatalf("trim evicted=%d len=%d->%d, want eviction below budget", evicted, before, rb.Len())
+	}
+	if rb.Bytes() > 800 {
+		t.Errorf("bytes=%d still above budget 800", rb.Bytes())
+	}
+	// 覆盖最旧路径的字节记账：写满 10 条（3 已在）后 bytes 应与重算一致。
+	for i := 0; i < 9; i++ {
+		rb.append(small)
+	}
+	if rb.Len() != rb.Cap() {
+		t.Fatalf("len=%d want full %d", rb.Len(), rb.Cap())
+	}
+	var want int64
+	for i := 0; i < rb.Len(); i++ {
+		want += int64(consumeWireSizeBytes(rb.Page(i, 1)[0]))
+	}
+	if rb.Bytes() != want {
+		t.Errorf("bytes=%d, recomputed=%d", rb.Bytes(), want)
+	}
+	// 单条超预算：trim 把 ring 弹空（不留存超预算巨条）。
+	huge := ConsumedMessage{ValueText: string(make([]byte, 4096))}
+	rb2 := newRingBuffer(4)
+	rb2.append(huge)
+	rb2.append(small)
+	rb2.trimToBytes(100)
+	if rb2.Len() != 0 || rb2.Bytes() != 0 {
+		t.Errorf("oversized trim len=%d bytes=%d, want 0/0", rb2.Len(), rb2.Bytes())
+	}
+}

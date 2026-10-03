@@ -11,6 +11,7 @@ package kafkaconn
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sort"
 	"sync"
@@ -39,6 +40,12 @@ const (
 	// 单条消息 wire ≤ ~1.05MB（value 512KB 上限的双通道），预算必然装得下
 	// 至少 3 条，不存在「单条永远发不出」的死锁。
 	StreamBatchByteBudget = 4 << 20
+	// StreamRingByteBudget 单会话 ring 的驻留字节预算（KAFKA-H3）：ring 只有
+	// 条数上限 10000，双通道大消息单条 wire 可达 ~2MB，纯条数上限理论驻留
+	// 20GB+/会话。超预算从最旧端弹出直至回落——与环形覆盖「丢最旧」语义
+	// 一致，前端按 bufferSize 快照重算丢弃数，分页不受影响。20 会话最坏
+	// 640MiB，与一次性消费的 256MiB 预算同一量级。
+	StreamRingByteBudget = 32 << 20
 )
 
 // StreamEmitter 是流式事件出口（main 注入 SDK emitter 适配器）。
@@ -81,12 +88,14 @@ type StreamMessagesResult struct {
 	Messages []ConsumedMessage `json:"messages"`
 }
 
-// ringBuffer 定容环形缓冲（非并发安全；调用方持锁）。
+// ringBuffer 定容环形缓冲（非并发安全；调用方持锁）。bytes 是驻留 wire 字节
+// 记账（consumeWireSizeBytes 口径），支撑 StreamRingByteBudget 逐出。
 type ringBuffer struct {
 	data     []ConsumedMessage
 	head     int // 下一写入位
 	size     int
 	capacity int
+	bytes    int64
 }
 
 func newRingBuffer(capacity int) *ringBuffer {
@@ -98,11 +107,15 @@ func newRingBuffer(capacity int) *ringBuffer {
 
 // append 写入单条，满则覆盖最旧。
 func (rb *ringBuffer) append(msg ConsumedMessage) {
-	rb.data[rb.head] = msg
-	rb.head = (rb.head + 1) % rb.capacity
-	if rb.size < rb.capacity {
+	if rb.size == rb.capacity {
+		// head 即最旧位置：先记出被覆盖消息的字节。
+		rb.bytes -= int64(consumeWireSizeBytes(rb.data[rb.head]))
+	} else {
 		rb.size++
 	}
+	rb.data[rb.head] = msg
+	rb.bytes += int64(consumeWireSizeBytes(msg))
+	rb.head = (rb.head + 1) % rb.capacity
 }
 
 // appendBatch 批量写入。
@@ -112,11 +125,28 @@ func (rb *ringBuffer) appendBatch(msgs []ConsumedMessage) {
 	}
 }
 
+// trimToBytes 超预算时从最旧端弹出直至回落预算内，返回弹出条数。
+// 单条自身超预算时会把 ring 弹空（该条不留存）。
+func (rb *ringBuffer) trimToBytes(budget int64) int {
+	evicted := 0
+	for rb.size > 0 && rb.bytes > budget {
+		oldest := (rb.head - rb.size + rb.capacity) % rb.capacity
+		rb.bytes -= int64(consumeWireSizeBytes(rb.data[oldest]))
+		rb.data[oldest] = ConsumedMessage{}
+		rb.size--
+		evicted++
+	}
+	return evicted
+}
+
 // Len 当前条数。
 func (rb *ringBuffer) Len() int { return rb.size }
 
 // Cap 容量。
 func (rb *ringBuffer) Cap() int { return rb.capacity }
+
+// Bytes 当前驻留 wire 字节。
+func (rb *ringBuffer) Bytes() int64 { return rb.bytes }
 
 // Page 返回 [offset, offset+limit) 快照（拷贝副本，最旧在前）。
 func (rb *ringBuffer) Page(offset, limit int) []ConsumedMessage {
@@ -629,6 +659,12 @@ func (r *StreamRegistry) runLoop(session *streamSession) {
 		fetches := session.client.PollRecords(pollCtx, StreamBatchSize)
 		pollCancel()
 		if fetchErr := fetches.Err(); fetchErr != nil && !isDeadline(fetchErr) {
+			// 会话已在停止中（shutdown 先 cancel 后关 client）：关闭与阻塞中
+			// 的 poll 竞态可能返回 ErrClientClosed——按真实 fetch 错误处理会
+			// 向前端发一条假的 kafka/stream/error。静默返回，会话即将摘除。
+			if session.ctx.Err() != nil || errors.Is(fetchErr, kgo.ErrClientClosed) {
+				return
+			}
 			// 连续错误熔断（评审 L）：topic 永久不可达时指数退避只封频率不封
 			// 次数，每周期向前端 spam 一次错误直至 30 分钟空闲回收。连续 8 次
 			//（500ms→30s 退避，跨度约 1 分钟）后停止会话；退出统一经
@@ -730,6 +766,7 @@ func (r *StreamRegistry) flush(session *streamSession, batch *[]ConsumedMessage)
 	session.mu.Lock()
 	session.lastActivityUnixMs = time.Now().UnixMilli()
 	session.ring.appendBatch(msgs)
+	session.ring.trimToBytes(StreamRingByteBudget)
 	paused := session.paused
 	totalScanned := session.totalScanned
 	totalMatched := session.totalMatched

@@ -282,6 +282,9 @@ const flowCountText = ref("1");
 const flowIntervalText = ref("1000");
 const flowTemplateText = ref("");
 const flowRunning = ref(false);
+// 启动守卫：preflight 含两次 SR RPC，等待窗口内二次点击会各自 setInterval
+// 覆盖 flowTimer 句柄（旧定时器泄漏 → 产速翻倍且跨 Stop 粘性恢复）。
+const flowStarting = ref(false);
 const flowSent = ref(0);
 const flowLastValue = ref("");
 const flowHint = ref("");
@@ -392,6 +395,9 @@ async function preflightFlow(): Promise<{ schemaText: string | null; attachSubje
 }
 
 function stopFlow(reason?: "manual" | "failures" | "readonly" | "records" | "duration") {
+  // 复位启动守卫：preflight 等待期间 topic 切换/readonly/卸载会先走这里，
+  // 待 startFlow 恢复时据此放弃启动（见 startFlow 中的复查）。
+  flowStarting.value = false;
   if (flowTimer) {
     window.clearInterval(flowTimer);
     flowTimer = 0;
@@ -470,7 +476,9 @@ async function runFlowTick(schemaText: string | null, schemaAttach?: SchemaAttac
 }
 
 async function startFlow() {
-  if (flowRunning.value || flowDisabled.value) return;
+  if (flowStarting.value || flowRunning.value || flowDisabled.value) return;
+  if (flowTimer) return;
+  flowStarting.value = true;
   emit("error", "");
   let preflight: Awaited<ReturnType<typeof preflightFlow>>;
   try {
@@ -478,9 +486,13 @@ async function startFlow() {
   } catch (cause) {
     // SR 请求失败（subjects/list、schema/get）此前一路 reject 成未捕获异常：
     // 点击「开始」后无任何反馈。走统一错误横幅（与 runFlowTick 同一口径）。
+    flowStarting.value = false;
     emit("error", cause instanceof Error ? cause.message : String(cause));
     return;
   }
+  // preflight 等待期间被外部 stopFlow（topic 切换 / readonly / 卸载）复位。
+  if (!flowStarting.value) return;
+  flowStarting.value = false;
   if (preflight === null) return;
   flowSent.value = 0;
   flowLastValue.value = "";
@@ -674,7 +686,7 @@ onBeforeUnmount(() => stopFlow());
           </span>
           <span v-if="flowRunning" class="produce-flow-counter">{{ t("produce.flowSent", { count: flowSent }) }}</span>
           <span class="produce-head-spacer"></span>
-          <button v-if="!flowRunning" class="qb-add" type="button" :disabled="flowDisabled" :title="t('produce.flowStart')" data-testid="flow-start" @click="startFlow">
+          <button v-if="!flowRunning" class="qb-add" type="button" :disabled="flowDisabled || flowStarting" :title="t('produce.flowStart')" data-testid="flow-start" @click="startFlow">
             <Play aria-hidden="true" />{{ t("produce.flowStart") }}
           </button>
           <button v-else class="qb-add" type="button" :title="t('produce.flowStop')" data-testid="flow-stop" @click="stopFlow('manual')">

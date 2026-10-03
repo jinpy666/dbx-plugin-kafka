@@ -1116,13 +1116,22 @@ func (s *Server) ensureDeleteAllowed(connectionID, action string) error {
 // topicNotFoundish 报告错误文本是否表示 topic 不存在（kafkaconn "topic %q
 // not found" 与 kadm UNKNOWN_TOPIC_OR_PARTITION 两种来源；匹配保持宽松，
 // 文本随上游版本变化时在此单点调整）。
+//
+// 裸 "not found" / "does not exist" 必须叠加 topic 语境：Schema Registry 的
+// 404（"Schema not found" / "Subject 'x' not found."）同样流经
+// annotateClusterError，宽松命中会把 AI 引向「核对 topic 名」的无关排查。
 func topicNotFoundish(message string) bool {
 	lowered := strings.ToLower(message)
-	return strings.Contains(lowered, "unknown topic") ||
+	if strings.Contains(lowered, "unknown topic") ||
 		strings.Contains(lowered, "unknown_topic") ||
 		strings.Contains(lowered, "topic not found") ||
-		strings.Contains(lowered, "not found") ||
-		strings.Contains(lowered, "does not host") ||
+		strings.Contains(lowered, "does not host") {
+		return true
+	}
+	if !strings.Contains(lowered, "topic") {
+		return false
+	}
+	return strings.Contains(lowered, "not found") ||
 		strings.Contains(lowered, "does not exist")
 }
 

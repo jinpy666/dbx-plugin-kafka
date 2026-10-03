@@ -180,7 +180,10 @@ function onGlobalKeydown(event: KeyboardEvent) {
   if (event.key !== "/" || event.ctrlKey || event.metaKey || event.altKey) return;
   const target = event.target as HTMLElement | null;
   if (target && (target.tagName === "INPUT" || target.tagName === "TEXTAREA" || target.tagName === "SELECT" || target.isContentEditable)) return;
-  if (document.querySelector(".workbench .modal-backdrop, body > .modal-backdrop, .workbench .drawer-backdrop")) return;
+  // 弹层让位：modal-backdrop 与 drawer-backdrop 均 teleport 到 body（旧写法
+  // 的 .workbench 祖先 / body > 前缀逐个拼选择器，drawer 一支全不命中成死代码），
+  // 直接全局类名查询，覆盖任意挂载形态。
+  if (document.querySelector(".modal-backdrop, .drawer-backdrop")) return;
   if (collapsed.value) setCollapsed(false);
   event.preventDefault();
   // 折叠态先展开再聚焦（v-if 重建输入框，等一帧）。

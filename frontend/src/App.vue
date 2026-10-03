@@ -154,16 +154,27 @@ const canDelete = computed(() => canWrite.value && backendAllowDelete.value);
 // 各面板按 confluent 处理；Glue 下消息面板的 schema 挂载区禁用 + 提示）。
 const srProvider = ref<"confluent" | "glue" | "">("");
 
+// 请求序号守卫：连接切换时旧连接的慢 statuses 响应此前会把新连接的策略
+// 重置为放行默认并清空 srProvider（Glue 连接的 schema 挂载区因此错误启用）。
+// 响应落地前校验序号与当前连接；statuses 里未命中本连接的响应整体丢弃、
+// 保持现状（后端策略层仍兜底拦截），不做 permissive 重置。
+let policySeq = 0;
+
 async function refreshBackendPolicy() {
+  const seq = ++policySeq;
+  const wanted = connectionId.value;
   try {
     const result = await kafkaApi.connectionStatuses();
-    const mine = (result.statuses || []).find((row) => row.connectionId === connectionId.value);
-    backendReadOnly.value = mine?.readOnly === true;
+    if (seq !== policySeq || wanted !== connectionId.value) return;
+    const mine = (result.statuses || []).find((row) => row.connectionId === wanted);
+    if (!mine) return;
+    backendReadOnly.value = mine.readOnly === true;
     // 旧 sidecar 缺 allowDelete 字段时不主动禁用删除按钮（后端仍会拒绝）。
-    backendAllowDelete.value = mine?.allowDelete !== false;
-    const provider = mine?.schemaRegistry?.provider;
+    backendAllowDelete.value = mine.allowDelete !== false;
+    const provider = mine.schemaRegistry?.provider;
     srProvider.value = provider === "confluent" || provider === "glue" ? provider : "";
   } catch {
+    if (seq !== policySeq || wanted !== connectionId.value) return;
     backendReadOnly.value = false;
     backendAllowDelete.value = true;
     srProvider.value = "";
@@ -291,8 +302,10 @@ function forwardStreamEvent(params: KafkaStreamMessagesEvent | KafkaStreamErrorE
 }
 
 function flushStreamEvents() {
-  while (pendingStreamEvents.length > 0 && !streamPanelHidden.value) {
-    streamRef.value?.pushEvent(pendingStreamEvents.shift()!);
+  // 面板 ref 未就绪（首次挂载的渲染周期边界）时不消费缓冲，等挂载后补发；
+  // 否则 shift 后静默丢弃（与下方缓冲丢弃可见化语义相悖）。
+  while (pendingStreamEvents.length > 0 && streamRef.value && !streamPanelHidden.value) {
+    streamRef.value.pushEvent(pendingStreamEvents.shift()!);
   }
   // 缓冲丢弃可见化（§8.3 遗留收口）：切走面板期间超出后台缓冲上限的事件此前
   // 只静默计数，用户回来后无从知晓丢了消息；按序补发完成后一次性提示。
@@ -404,6 +417,21 @@ onMounted(() => {
   });
 });
 
+// 初始化失败恢复：宿主晚就绪 / context 缺 connectionId 此前永久停在错误行、
+// 无出口。重跑前先摘旧订阅（initialize 每次都会重新注册 env/event 监听，
+// 否则重试一次就叠一层回调），成功时 initError 已清空、ready 重新置位。
+async function retryInitialize() {
+  for (const dispose of [...unsubscribeEnvironment, ...unsubscribeEvent]) dispose();
+  unsubscribeEnvironment.length = 0;
+  unsubscribeEvent.length = 0;
+  initError.value = "";
+  try {
+    await initialize();
+  } catch (cause) {
+    initError.value = cause instanceof Error ? cause.message : String(cause);
+  }
+}
+
 onBeforeUnmount(() => {
   document.removeEventListener("visibilitychange", onVisibilityChange);
   document.removeEventListener("contextmenu", preventNativeContextMenu, true);
@@ -435,7 +463,10 @@ onBeforeUnmount(() => {
       </div>
     </header>
 
-    <div v-if="initError" class="tree-state">{{ initError }}</div>
+    <div v-if="initError" class="tree-state">
+      <span>{{ initError }}</span>
+      <button type="button" class="qb-add" data-testid="init-retry" @click="retryInitialize">{{ t("retry") }}</button>
+    </div>
     <div v-else-if="!ready" class="tree-state">{{ t("tree.loading") }}</div>
 
     <template v-else>
@@ -481,6 +512,7 @@ onBeforeUnmount(() => {
             v-if="hasVisited('stream')"
             v-show="activePanel === 'stream'"
             ref="streamRef"
+            @vue:mounted="flushStreamEvents"
             :topic="selectedTopic"
             :can-write="canWrite"
             :sr-provider="srProvider"

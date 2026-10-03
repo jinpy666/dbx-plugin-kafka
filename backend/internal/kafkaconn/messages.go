@@ -828,6 +828,12 @@ func (s *Service) consumeMessages(ctx context.Context, params ConsumeParams) (co
 // validateConsumeParams 参数校验：commit×过滤互斥、partitions×groupId 互斥、
 // strategy=offset 必填 partitionOffsets、范围字段大小关系。
 func validateConsumeParams(params ConsumeParams) error {
+	// partitions/partitionOffsets 与 groupId 互斥（与 MCP 工具 schema 声明
+	// 一致）：分区直读路径从不注册 ConsumerGroup，groupID 非空时
+	// DisableAutoCommit 会让 franz-go 拒建 client，报错与真实原因无关。
+	if trimSpace(params.GroupID) != "" && (len(params.Partitions) > 0 || len(params.PartitionOffsets) > 0) {
+		return errf("groupId cannot be combined with partitions or partitionOffsets")
+	}
 	if err := validateRange(params.TimestampFrom, params.TimestampTo, "timestamp"); err != nil {
 		return err
 	}
@@ -1004,12 +1010,10 @@ func buildConsumeOpts(params ConsumeParams, topic, groupID string, partitions []
 	var opts []kgo.Opt
 	recentWindow := int64(consumeMaxScanRecords(params.Limit, params.MaxScanRecords))
 	opts = append(opts, kgo.FetchIsolationLevel(isolation))
-	// 禁自动提交仅 group 模式有意义（franz-go 对无 group 的
-	// DisableAutoCommit 直接拒建 client）；commit=true 场景必有 groupId
-	//（validateConsumeParams 校验）。
-	if groupID != "" {
-		opts = append(opts, kgo.DisableAutoCommit())
-	}
+	// 注意：DisableAutoCommit 必须与 ConsumerGroup 同生共死（franz-go 对
+	// 「禁自动提交但未指定 group」直接拒建 client）。group 模式仅存在于
+	// 无分区分支；partitions/partitionOffsets 直读路径与 groupId 互斥，
+	// 由 validateConsumeParams 把门。
 	if len(partitions) > 0 {
 		if usesExactOffsets(params.OffsetStrategy, partitionOffsets) {
 			topicPartitions := make(map[int32]kgo.Offset, len(partitions))
@@ -1043,7 +1047,7 @@ func buildConsumeOpts(params ConsumeParams, topic, groupID string, partitions []
 		}
 		opts = append(opts, kgo.ConsumeTopics(topic))
 		if groupID != "" {
-			opts = append(opts, kgo.ConsumerGroup(groupID))
+			opts = append(opts, kgo.ConsumerGroup(groupID), kgo.DisableAutoCommit())
 		}
 		if trimSpace(params.OffsetStrategy) != "" && normalizeOffsetStrategyName(params.OffsetStrategy) != "default" {
 			offset, err := consumeOffset(params.OffsetStrategy, params.OffsetTime, groupID != "", false, recentWindow)

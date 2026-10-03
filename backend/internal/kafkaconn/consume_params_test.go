@@ -493,3 +493,25 @@ func TestConsumeWireSizeEstimateCoversPayload(t *testing.T) {
 		t.Fatalf("wire estimate %d inflated beyond fixed overhead cap %d", wire, cap)
 	}
 }
+
+// groupId×partitions 互斥门（评审 M-1）：分区直读路径从不注册 ConsumerGroup，
+// groupID 非空 + DisableAutoCommit 会让 franz-go 拒建 client 且报错误导。
+func TestValidateConsumeParamsGroupIdPartitionsExclusive(t *testing.T) {
+	withGroupPartitions := ConsumeParams{ConnectionID: "c1", Topic: "orders", GroupID: "g1", Partitions: []int32{0}}
+	if err := validateConsumeParams(withGroupPartitions); err == nil {
+		t.Error("groupId + partitions expected error")
+	}
+	withGroupOffsets := ConsumeParams{ConnectionID: "c1", Topic: "orders", GroupID: "g1", PartitionOffsets: map[int32]int64{0: 5}}
+	if err := validateConsumeParams(withGroupOffsets); err == nil {
+		t.Error("groupId + partitionOffsets expected error")
+	}
+	// 仅 groupId（无分区）仍合法；仅 partitions（无 groupId）仍合法。
+	onlyGroup := ConsumeParams{ConnectionID: "c1", Topic: "orders", GroupID: "g1"}
+	if err := validateConsumeParams(onlyGroup); err != nil {
+		t.Errorf("groupId only error = %v", err)
+	}
+	onlyPartitions := ConsumeParams{ConnectionID: "c1", Topic: "orders", Partitions: []int32{0}}
+	if err := validateConsumeParams(onlyPartitions); err != nil {
+		t.Errorf("partitions only error = %v", err)
+	}
+}

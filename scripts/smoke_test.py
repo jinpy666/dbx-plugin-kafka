@@ -502,7 +502,9 @@ def run_s10(client: SidecarClient) -> None:
         results = result.get("results", [])
         if not results or results[0].get("ok") is not True:
             raise AssertionError(f"topics/delete with confirmTopic failed: {result}")
-        deadline_attempts = 10
+        # 删除传播在宿主高负载时可能超过数秒（实测本地满载时 >5s），
+        # 窗口放宽到 30s，避免把环境抖动当成回归。
+        deadline_attempts = 60
         for _ in range(deadline_attempts):
             if topic not in topic_names(client, includeInternal=True):
                 return

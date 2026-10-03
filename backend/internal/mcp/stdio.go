@@ -676,23 +676,23 @@ func (s *StdioServer) pooledConnectionID(inline inlineConn) (string, error) {
 		s.mu.Unlock()
 		return id, nil
 	}
-	var evicted []string
 	for len(s.hash) >= inlinePoolCap {
 		oldest := s.order[0]
 		s.order = s.order[1:]
 		if staleID, ok := s.hash[oldest]; ok {
 			delete(s.hash, oldest)
 			delete(s.ids, staleID)
-			evicted = append(evicted, staleID)
+			// 池锁内断开：解锁后断会与「并发同参数重建」竞态——重建方先
+			// Connect（幂等覆盖注册）后发布，锁外 Disconnect 会误杀刚重建
+			// 的连接。Disconnect 只关内存资源（流会话/消费池/连接），无
+			// 拨号不阻塞；锁序恒为 stdio.mu → service.mu，无反向路径。
+			s.svc.Disconnect(staleID)
 		}
 	}
 	s.hash[id] = id
 	s.ids[id] = struct{}{}
 	s.order = append(s.order, id)
 	s.mu.Unlock()
-	for _, stale := range evicted {
-		s.svc.Disconnect(stale)
-	}
 	return id, nil
 }
 
