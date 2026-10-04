@@ -41,6 +41,14 @@ const createOpen = ref(false);
 const createForm = ref<KafkaAcl>({ resourceType: "TOPIC", resourceName: "", principal: "", host: "*", operation: "READ", permission: "ALLOW", patternType: "LITERAL" });
 
 const deleteOpen = ref(false);
+// 删除目标开窗时定格（评审 L-5）：确认期间编辑过滤器输入会让实际删除
+// 范围偏离可见行；快照让对话框预览与真实删除范围严格一致。
+const deleteFilter = ref<AclFilter | null>(null);
+
+function openDelete() {
+  deleteFilter.value = cleanFilter(filter.value);
+  deleteOpen.value = true;
+}
 
 // 弹层行为统一接入（UI 扫描第 2 轮 P1-5）：详情抽屉 / 创建 / 删除弹窗均支持
 // Esc 关闭 + Tab 焦点陷阱 + 关闭归还触发元素（决策逻辑 lib/modalBehavior）。
@@ -108,7 +116,8 @@ async function submitCreate() {
 async function submitDelete() {
   busy.value = true;
   try {
-    const response = await kafkaApi.aclsDelete(cleanFilter(filter.value));
+    const target = deleteFilter.value ?? cleanFilter(filter.value);
+    const response = await kafkaApi.aclsDelete(target);
     // matched 是逐条删除结果数组（评审 M-4）：计数取无 error 的成功条数。
     const matched = Array.isArray(response.matched) ? response.matched : [];
     const deleted = matched.filter((binding) => !binding.error).length;
@@ -172,7 +181,7 @@ onMounted(() => {
       <button class="toolbar-button" type="button" :disabled="!canWrite" :title="canWrite ? t('acls.create') : t('readOnly')" @click="createOpen = true">
         <Plus aria-hidden="true" /><span>{{ t("acls.create") }}</span>
       </button>
-      <button class="danger-button compact" type="button" :disabled="!canDelete || acls.length === 0" :title="canDelete ? t('acls.delete') : t('noDelete')" @click="deleteOpen = true">
+      <button class="danger-button compact" type="button" :disabled="!canDelete || acls.length === 0" :title="canDelete ? t('acls.delete') : t('noDelete')" @click="openDelete">
         <Trash2 aria-hidden="true" /><span>{{ t("acls.delete") }}</span>
       </button>
     </div>
@@ -286,7 +295,7 @@ onMounted(() => {
             <div class="destructive-icon"><Trash2 aria-hidden="true" /></div>
             <div>
               <strong>{{ t("acls.deleteTitle") }}</strong>
-              <p class="mono-s">{{ JSON.stringify(cleanFilter(filter)) }}</p>
+              <p class="mono-s">{{ JSON.stringify(deleteFilter ?? cleanFilter(filter)) }}</p>
             </div>
           </div>
           <footer>

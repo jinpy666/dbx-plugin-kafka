@@ -165,6 +165,37 @@ func TestConfigBoolStringAndFallback(t *testing.T) {
 	}
 }
 
+func TestConfigBoolGateConservativeOnGarbage(t *testing.T) {
+	// 评审 L-2：门禁版对不可解析的非空字符串宁封勿放——read_only 撞上
+	// 垃圾值此前 fail-open 成可写；合法形态/yes-no/缺省行为与 ConfigBool
+	// 一致。
+	params := mustParse(t, `{"connection":{"external_config":{
+		"read_only": "read-only",
+		"yes_form": "YES",
+		"no_form": "off",
+		"empty": "",
+		"typed": true
+	}}}`)
+	if !params.ConfigBoolGate("read_only") {
+		t.Error(`ConfigBoolGate("read-only") = false, want true (fail-closed)`)
+	}
+	if !params.ConfigBoolGate("yes_form") {
+		t.Error(`ConfigBoolGate("YES") = false, want true`)
+	}
+	if params.ConfigBoolGate("no_form") {
+		t.Error(`ConfigBoolGate("off") = true, want false`)
+	}
+	if params.ConfigBoolGate("empty") {
+		t.Error(`ConfigBoolGate("") = true, want false`)
+	}
+	if !params.ConfigBoolGate("typed") {
+		t.Error(`ConfigBoolGate(true) = false, want true`)
+	}
+	if params.ConfigBoolGate("missing") {
+		t.Error("ConfigBoolGate(missing) = true, want false")
+	}
+}
+
 func TestConfigIntMatrix(t *testing.T) {
 	params := mustParse(t, `{"connection":{"external_config":{
 		"timeout_ms": 5000,

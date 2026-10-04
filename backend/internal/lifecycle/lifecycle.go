@@ -146,6 +146,30 @@ func (p *Params) ConfigBool(key string) bool {
 	}
 }
 
+// ConfigBoolGate 门禁版 ConfigBool（评审 L-2）：非空字符串解析失败时返回
+// true——「true 更保守」的门禁键（read_only）宁可误封不可误放；此前一切
+// 解析失败统一 false，read_only 撞上垃圾字符串会 fail-open 成可写。
+// 「false 更保守」的键（allow_delete / tls_insecure_skip_verify）继续用
+// ConfigBool（垃圾值 → false 已是安全方向）。
+func (p *Params) ConfigBoolGate(key string) bool {
+	if value, ok := p.Connection.ExternalConfig[key]; ok {
+		if text, isStr := value.(string); isStr {
+			trimmed := strings.TrimSpace(text)
+			if _, err := strconv.ParseBool(trimmed); err != nil {
+				switch strings.ToLower(trimmed) {
+				case "no", "off":
+					return false
+				case "":
+					return false
+				default:
+					return true
+				}
+			}
+		}
+	}
+	return p.ConfigBool(key)
+}
+
 // ConfigInt 取 external_config 中的整数值。
 func (p *Params) ConfigInt(key string) int {
 	switch value := p.Connection.ExternalConfig[key].(type) {

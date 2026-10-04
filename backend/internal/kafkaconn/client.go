@@ -604,8 +604,9 @@ func NewProfileFromLifecycle(params *lifecycle.Params) (Profile, connSecrets, er
 		MSKAccessKeyID:   params.ConfigString("msk_access_key_id"),
 	}
 	profile.TLSInsecureSkipVerify = params.ConfigBool("tls_insecure_skip_verify")
-	// 只读门禁收敛：连接表单 read_only ∥ 宿主标准 read_only。
-	profile.ReadOnly = params.ConfigBool("read_only") || params.Connection.ReadOnly
+	// 只读门禁收敛：连接表单 read_only ∥ 宿主标准 read_only。门禁版解析：
+	// 非法字符串宁封勿放（评审 L-2）。
+	profile.ReadOnly = params.ConfigBoolGate("read_only") || params.Connection.ReadOnly
 	profile.AllowDelete = params.ConfigBool("allow_delete")
 
 	secrets := connSecrets{
