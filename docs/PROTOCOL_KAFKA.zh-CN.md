@@ -250,7 +250,9 @@ Host API 1.0 的 `plugin_connection_params` 只发送 `runtime.host:port`，且
 **`kafka/messages/produce`**
 
 - 请求：`topic:string`、`key?:string`、`value:string`（必填，与
-  `valueBase64` **二选一**，同给 → `-32602`）、`keyBase64?:string`
+  `valueBase64` **二选一**，同给 → `-32602`；纯空白文本视同未填 →
+  `value (or valueBase64) is required`，空白/空载荷请走 `valueBase64`
+  通道）、`keyBase64?:string`
   （二进制 key 保真，与 `key` 二选一）、`headers?:map<string,string>`、
   `partition?:int`、`count?:int`（批量条数，≤1000，默认 1）、
   `compression?:"gzip"|"lz4"|"zstd"|"snappy"`、
@@ -563,7 +565,10 @@ AWS Glue schema management is available"；双配置歧义/未知 registry →
 
 - ring buffer 固定容量 **10000** 条（事件 + `kafka/stream/messages` 分页共用）；
 - 并发会话上限 **20**；
-- 空闲 **30 分钟**自动回收；
+- 空闲 **30 分钟**自动回收：以**客户端关注**为唯一信号——`kafka/stream/status`
+  / `kafka/stream/messages` 命中即续命（工作台面板存活期间 5s 轮询 status，
+  天然表达「用户还在」）；无人轮询的孤儿（标签页刷新/宿主强杀 webview 后的
+  残留）即使 topic 繁忙也到点回收。被回收会话发一条 `kafka/stream/error`；
 - `kafka/stream/stop` 可取消进行中的 fetch；
 - fetch 错误指数退避 **500ms → 30s**；
 - **read_only 策略下禁止 commit**（`ConsumeParams.commit=true` → `-32000`）。
@@ -660,8 +665,11 @@ fieldFilters/时间戳或 offset 范围）同给 → `-32602`（commit 与过滤
 { "sessionId": string, "error": string }
 ```
 
-fetch 循环按指数退避（500ms→30s）重试；不可恢复错误（topic 删除、
-会话被回收）随后由宿主主动 stop。
+fetch 循环按指数退避（500ms→30s）重试，连续错误熔断后停止会话并摘除注册。
+两类事件都会到达：① fetch/入口校验错误；② 空闲回收（§3.9「30 分钟无客户端
+关注」）——回收时注册表移除会话并发本事件，持 sessionId 的前端应对后续
+`kafka/stream/status` 的「not found」复位面板（宿主无从感知回收，此前文档
+「宿主主动 stop」与实现不符，已更正）。
 
 ### 6.3 `kafka/audit`
 

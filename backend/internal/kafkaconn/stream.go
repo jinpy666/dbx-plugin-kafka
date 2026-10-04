@@ -23,8 +23,12 @@ import (
 // 流式会话常量（§5.5）。
 const (
 	StreamMaxSessions = 20
-	// StreamIdleTimeout 空闲回收阈值。paused 会话同样计时（flush 不刷活性）：
-	// 暂停超阈值视为放弃，resume 已回收会话报 not found。
+	// StreamIdleTimeout 空闲回收阈值（架构评审 H-1）。「空闲」以客户端关注为
+	// 准：kafka/stream/status|messages 命中即续命——面板开着就 5s 轮询 status，
+	// 天然表达「用户还在看」。无人轮询的孤儿（标签页刷新/宿主强杀 webview 后
+	// 的残留）即使 topic 繁忙、ring 在增长也到点一律回收，不再有永生会话。
+	// flush 只刷消息流动（lastActivityUnixMs），不参与回收判定；paused 会话的
+	// flush 不计活动（「暂停即放弃」语义保持，resume 已回收会话报 not found）。
 	StreamIdleTimeout    = 30 * time.Minute
 	StreamBatchFlush     = 200 * time.Millisecond
 	StreamBatchSize      = 50
@@ -198,6 +202,10 @@ type streamSession struct {
 	totalMatched       int64
 	paused             bool
 	lastActivityUnixMs int64
+	// lastAttentionUnixMs 客户端关注时间：kafka/stream/status|messages 命中即
+	// 刷新，是空闲回收的唯一判定信号（见 StreamIdleTimeout）。零值视作「从未
+	// 被关注」，测试直构夹具需显式设置。
+	lastAttentionUnixMs int64
 }
 
 // StreamRegistry 管理全部流式会话。
@@ -299,13 +307,22 @@ func (s *Service) StartStream(params ConsumeParams) (*StreamStatus, error) {
 	if !ok {
 		return nil, errf("maximum %d concurrent stream sessions reached", StreamMaxSessions)
 	}
+	// panic 安全（评审 M-2）：SDK 每请求 recover 不杀进程，build 段 panic 会让
+	// reserved 永久 +1 蚕食 20 上限且无法自愈——admit 之前的任何退出路径统一
+	// 在此释放，与本仓其余路径的 defer 收尾风格对齐。
+	admitted := false
+	defer func() {
+		if !admitted {
+			s.Streams.releaseStreamSlot()
+		}
+	}()
 
 	session, err := s.buildStreamSession(sessionID, profile, params, topic)
 	if err != nil {
-		s.Streams.releaseStreamSlot()
 		return nil, err
 	}
 	s.Streams.admitStreamSlot(sessionID, session)
+	admitted = true
 
 	go s.Streams.runLoop(session)
 	return s.Streams.Status(sessionID)
@@ -358,18 +375,19 @@ func (s *Service) buildStreamSession(sessionID string, profile Profile, params C
 	sessionCtx, cancel := context.WithCancel(context.Background())
 	now := time.Now().UnixMilli()
 	return &streamSession{
-		sessionID:          sessionID,
-		connectionID:       params.ConnectionID,
-		topic:              topic,
-		client:             client,
-		closeClient:        closeClient,
-		req:                params,
-		ctx:                sessionCtx,
-		cancel:             cancel,
-		schemaClient:       schemaClient,
-		ring:               newRingBuffer(StreamRingCapacity),
-		partitionOffsets:   map[int32]int64{},
-		lastActivityUnixMs: now,
+		sessionID:           sessionID,
+		connectionID:        params.ConnectionID,
+		topic:               topic,
+		client:              client,
+		closeClient:         closeClient,
+		req:                 params,
+		ctx:                 sessionCtx,
+		cancel:              cancel,
+		schemaClient:        schemaClient,
+		ring:                newRingBuffer(StreamRingCapacity),
+		partitionOffsets:    map[int32]int64{},
+		lastActivityUnixMs:  now,
+		lastAttentionUnixMs: now,
 	}, nil
 }
 
@@ -448,6 +466,8 @@ func (s *Service) StreamMessages(sessionID string, offset, limit int) (*StreamMe
 		limit = 100
 	}
 	session.mu.Lock()
+	// 历史分页同样是客户端关注信号（回收判定见 StreamIdleTimeout/EvictIdle）。
+	session.lastAttentionUnixMs = time.Now().UnixMilli()
 	total := session.ring.Len()
 	msgs := session.ring.Page(offset, limit)
 	session.mu.Unlock()
@@ -525,16 +545,19 @@ func (r *StreamRegistry) StopAllForConnection(connectionID string) {
 	}
 }
 
-// EvictIdle 回收空闲会话（idle 超时；nowMs 注入便于测试）。
+// EvictIdle 回收空闲会话：客户端关注（status/messages 轮询）超时即回收
+// （架构评审 H-1；nowMs 注入便于测试）。消息流动不参与判定——无人轮询的
+// 忙 topic 孤儿同样到点回收。被回收会话发 kafka/stream/error——回收此前
+// 完全静默，持 sessionId 的前端把「已回收」误读成 Running 并永久轮询死会话。
 func (r *StreamRegistry) EvictIdle(nowMs int64) []string {
 	r.mu.Lock()
 	var evict []*streamSession
 	var ids []string
 	for id, session := range r.sessions {
 		session.mu.Lock()
-		last := session.lastActivityUnixMs
+		idle := nowMs-session.lastAttentionUnixMs > StreamIdleTimeout.Milliseconds()
 		session.mu.Unlock()
-		if nowMs-last > StreamIdleTimeout.Milliseconds() {
+		if idle {
 			ids = append(ids, id)
 			evict = append(evict, session)
 			delete(r.sessions, id)
@@ -543,6 +566,7 @@ func (r *StreamRegistry) EvictIdle(nowMs int64) []string {
 	r.mu.Unlock()
 	for _, session := range evict {
 		shutdownSession(session)
+		r.emitError(session, "stream session reaped: idle timeout (no client polling for 30 minutes)")
 	}
 	return ids
 }
@@ -567,6 +591,9 @@ func (r *StreamRegistry) Status(sessionID string) (*StreamStatus, error) {
 	}
 	session.mu.Lock()
 	defer session.mu.Unlock()
+	// 关注续命（评审架构 H-1）：面板开着就轮询 status，命中即视为「用户还在」；
+	// 无人轮询的孤儿不受益（回收判定见 EvictIdle）。
+	session.lastAttentionUnixMs = time.Now().UnixMilli()
 	offsets := make(map[int32]int64, len(session.partitionOffsets))
 	for k, v := range session.partitionOffsets {
 		offsets[k] = v
@@ -770,8 +797,8 @@ func (r *StreamRegistry) runLoop(session *streamSession) {
 	}
 }
 
-// flush 写 ring + 节流 emit（paused 时只入 ring 不推送、不续命——见下方
-// lastActivityUnixMs 注释）。
+// flush 写 ring + 节流 emit。paused 时只入 ring 不推送、也不计活动
+// （lastActivityUnixMs，仅消息流动记录，不参与回收判定——见 EvictIdle）。
 func (r *StreamRegistry) flush(session *streamSession, batch *[]ConsumedMessage) {
 	if batch == nil || len(*batch) == 0 {
 		return

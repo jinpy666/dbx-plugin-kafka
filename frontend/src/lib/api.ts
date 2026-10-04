@@ -675,7 +675,7 @@ export interface KafkaStreamMessagesEvent {
   totalMatched?: number;
   paused?: boolean;
   /** 当前 sidecar ring buffer 内的消息数（前端 dropped 估算用）。 */
-  bufferSize?: number;
+  bufferSize: number;
 }
 
 export interface KafkaStreamErrorEvent {

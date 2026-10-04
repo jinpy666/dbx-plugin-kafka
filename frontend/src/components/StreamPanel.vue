@@ -171,6 +171,7 @@ async function start() {
     rebuildMessageRows();
     droppedRows.value = 0;
     historyOffset.value = 0;
+    viewingHistory.value = false;
     totalScanned.value = 0;
     totalMatched.value = 0;
     paused.value = false;
@@ -211,9 +212,20 @@ async function refreshStatus() {
   try {
     const response = await kafkaApi.streamStatus(sessionId.value);
     applyStatus(response.status ?? {});
-  } catch {
-    // 状态轮询失败不打断流；错误经事件通道到达。
+  } catch (cause) {
+    // 会话已不存在（空闲回收/他端停止）：复位到 idle，不再永久轮询死会话
+    // （评审架构 H-1——回收原因已经 kafka/stream/error 事件先行到达）。其余
+    // 错误（连接未就绪等）不打断流，连接恢复后 status 自行续上。
+    if (/not found/i.test(cause instanceof Error ? cause.message : String(cause))) resetToIdle();
   }
+}
+
+function resetToIdle() {
+  sessionId.value = "";
+  paused.value = false;
+  historyOffset.value = 0;
+  viewingHistory.value = false;
+  void refreshForeignSessions();
 }
 
 function applyStatus(status: StreamStatus) {
@@ -239,7 +251,9 @@ function pushEvent(event: KafkaStreamMessagesEvent | KafkaStreamErrorEvent) {
     totalMatched: event.totalMatched,
     bufferSize: event.bufferSize,
   });
-  if (Array.isArray(event.messages) && event.messages.length > 0) {
+  // 历史窗口冻结（评审 L-4）：计数照常更新，行不追加，避免翻页窗口被
+  // live 事件冲乱；回到尾部（「较新」）恢复。
+  if (!viewingHistory.value && Array.isArray(event.messages) && event.messages.length > 0) {
     const appended = appendStreamRows(rows.value, event.messages, MAX_ROWS, droppedRows.value);
     rows.value = appended.rows;
     droppedRows.value = appended.dropped;
@@ -257,6 +271,11 @@ const stateLabel = computed(() => {
 // -- history paging（环形缓冲分页；historyOffset 为当前展示窗口起点）--------------
 
 const historyOffset = ref(0);
+// 历史窗口（评审 L-4）：翻到非 live 尾部时冻结行追加与 dropped 估算——翻页后
+// 旧实现把「前端 1000 行窗口丢弃数」与「ring 窗口外估算」两套语义混在同一
+// droppedRows 徽标上，live 事件还会继续追加进历史窗口。冻结后新消息只经
+// bufferSize 徽标可见，点「较新」回到尾部自动恢复实时视图。
+const viewingHistory = ref(false);
 
 async function loadOlder() {
   await pageHistory(-1);
@@ -282,8 +301,12 @@ async function pageHistory(direction: number) {
     if (seq !== pageSeq || sessionId.value !== requestSessionId) return;
     if (Array.isArray(response.messages)) {
       rows.value = response.messages.slice(-MAX_ROWS);
-      droppedRows.value = Math.max(0, bufferSize.value - historyOffset.value - rows.value.length);
       rebuildMessageRows();
+      // 不在尾部 = 历史窗口：dropped 徽标（live 视图的前端丢弃计数）在翻页
+      // 语义下停用；回到尾部清零重来。
+      const total = typeof response.total === "number" ? response.total : bufferSize.value;
+      viewingHistory.value = historyOffset.value + rows.value.length < total;
+      if (!viewingHistory.value) droppedRows.value = 0;
     }
   } catch (cause) {
     if (seq !== pageSeq || sessionId.value !== requestSessionId) return;
@@ -433,7 +456,8 @@ defineExpose({ pushEvent });
       <span>{{ t("stream.scanned", { count: totalScanned }) }}</span>
       <span>{{ t("stream.matched", { count: totalMatched }) }}</span>
       <span>{{ t("stream.buffer", { count: bufferSize }) }}</span>
-      <span v-if="droppedRows > 0" class="badge badge-warn">{{ t("stream.dropped", { count: droppedRows }) }}</span>
+      <span v-if="viewingHistory" class="badge">{{ t("stream.historyWindow") }}</span>
+      <span v-else-if="droppedRows > 0" class="badge badge-warn">{{ t("stream.dropped", { count: droppedRows }) }}</span>
       <span class="tab-spacer" />
       <!-- F6-1：即时搜索（只过滤已加载行，防抖 150ms） -->
       <input

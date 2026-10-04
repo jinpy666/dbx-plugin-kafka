@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+	"time"
 )
 
 // fakeStreamEmitter 捕获 emit 事件。
@@ -131,13 +132,58 @@ func TestStreamStopAllForConnectionAndEvict(t *testing.T) {
 		t.Errorf("b1 should survive: %v", err)
 	}
 
-	// 空闲回收：超时被回收，活跃保留。
-	ids := service.Streams.EvictIdle(StreamIdleTimeout.Milliseconds() + 1)
+	// 空闲回收（双信号）：b1 此前被 status 命中（关注已续命到当前时点），推进
+	// 到「活动与关注同时超时」的未来时点才回收。
+	ids := service.Streams.EvictIdle(time.Now().UnixMilli() + StreamIdleTimeout.Milliseconds() + 1)
 	if len(ids) != 1 || ids[0] != "b1" {
 		t.Errorf("evicted = %v, want [b1]", ids)
 	}
 	if ids := service.Streams.EvictIdle(0); len(ids) != 0 {
 		t.Errorf("second evict = %v, want empty", ids)
+	}
+}
+
+// 空闲回收可观测（架构评审 H-1 回归）：EvictIdle 对每个被回收会话发
+// kafka/stream/error——此前回收完全静默，前端把已回收会话误读成 Running。
+func TestRegistryEvictIdleEmitsError(t *testing.T) {
+	service := NewService()
+	emitter := &fakeStreamEmitter{}
+	service.Streams.Emitter = emitter
+	session := newTestSession("e1", "conn-a", "orders")
+	service.Streams.inject(session)
+
+	ids := service.Streams.EvictIdle(time.Now().UnixMilli() + StreamIdleTimeout.Milliseconds() + 1)
+	if len(ids) != 1 || ids[0] != "e1" {
+		t.Fatalf("evicted = %v, want [e1]", ids)
+	}
+	if len(emitter.errors) != 1 || !strings.HasPrefix(emitter.errors[0], "e1:") {
+		t.Fatalf("errors = %v, want exactly one idle-timeout event for e1", emitter.errors)
+	}
+}
+
+// 关注续命（架构评审 H-1 回归）：回收以客户端关注为唯一信号——status 命中
+// 续命的会话不被回收；繁忙 topic 上无人轮询的孤儿（活动新鲜也无效）到点
+// 回收。关注随后过期才轮到它被回收。
+func TestRegistryAttentionKeepsSessionAlive(t *testing.T) {
+	service := NewService()
+	service.Streams.inject(newTestSession("att", "conn-a", "quiet"))
+	service.Streams.inject(newTestSession("busy", "conn-a", "hot"))
+
+	far := time.Now().UnixMilli() + StreamIdleTimeout.Milliseconds() + 1
+	service.Streams.mu.Lock()
+	// att：面板在轮询——status 命中把关注刷到阈值内（活动已停更）。
+	service.Streams.sessions["att"].lastAttentionUnixMs = far - StreamIdleTimeout.Milliseconds() + 1000
+	// busy：繁忙 topic 上的孤儿——非 paused flush 一直续命活动，但无人轮询。
+	service.Streams.sessions["busy"].lastActivityUnixMs = far - 1000
+	service.Streams.mu.Unlock()
+
+	ids := service.Streams.EvictIdle(far)
+	if len(ids) != 1 || ids[0] != "busy" {
+		t.Fatalf("evicted = %v, want [busy] (attended session must survive, busy orphan must go)", ids)
+	}
+	// 关注同样过期后（面板关掉），att 在下一轮扫描被回收。
+	if ids := service.Streams.EvictIdle(far + StreamIdleTimeout.Milliseconds()); len(ids) != 1 || ids[0] != "att" {
+		t.Fatalf("second evict = %v, want [att]", ids)
 	}
 }
 

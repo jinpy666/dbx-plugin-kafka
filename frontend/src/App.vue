@@ -12,7 +12,7 @@ import { kafkaApi, setKafkaConnectionId, type KafkaStreamErrorEvent, type KafkaS
 import { friendlyKafkaError } from "./lib/kafkaErrors";
 import { decideConnectRetry } from "./lib/connectRetry";
 import { parseAuditEvent, pushAuditItem, type AuditFeedItem } from "./lib/auditFeed";
-import { useUiIntent, type UiIntentOutcome } from "../../shared/frontend/uiIntent";
+import { useUiIntent, type UiIntentOutcome, type UseUiIntentResult } from "../../shared/frontend/uiIntent";
 import { applyAppearanceColorVars, subscribeHostEnvironment } from "../../shared/frontend/hostThemeRuntime";
 import TopicTree from "./components/TopicTree.vue";
 import MessagesPanel from "./components/MessagesPanel.vue";
@@ -65,7 +65,7 @@ function openPanel(key: PanelKey) {
   visitedPanels.value.add(key);
   activePanel.value = key;
   // MCP UI 快照（M3）：面板切换后主动上报（无 intentId，sidecar 覆盖最新快照）。
-  uiIntent.reportSnapshot({ panel: key, topic: selectedTopic.value || undefined });
+  uiIntentChannel.reportSnapshot({ panel: key, topic: selectedTopic.value || undefined });
 }
 
 const topics = ref<KafkaTopic[]>([]);
@@ -124,7 +124,12 @@ const uiIntentHandlers = {
 
 // intent 处理器引用 openPanel/selectTopic（上方函数声明提升），声明后装配；
 // 快照型 report 的上报点：面板切换（openPanel）、topic 选中（selectTopic）。
-const uiIntent = useUiIntent("kafka", uiIntentHandlers);
+// intent 通道句柄：宿主桥可能晚于模块求值注入（waitForHostApi 的存在即承认
+// 该场景），而 useUiIntent 在 setup 期一次性捕获 window.dbxPlugin——桥未就绪
+// 时事件订阅永久缺失且 report 静默丢弃，MCP kafka_ui_* 全部 pending 超时且
+// 无声（评审 M-1，mock 在模块求值前同步注入桥所以 CI 不设防）。initialize()
+// 在桥就绪后重建订阅；重试与卸载经 stop 成对摘除，不叠层。
+let uiIntentChannel: UseUiIntentResult = useUiIntent("kafka", uiIntentHandlers);
 
 // -- 连接弹窗交互 ----------------------------------------------------------------
 // H-1 回归（2026-10-02）：壳层不再监听 keydown——ConnectionsPanel 内部已有
@@ -321,7 +326,7 @@ async function reconnectConnection() {
 function selectTopic(topic: string) {
   selectedTopic.value = topic;
   // MCP UI 快照（M3）：topic 选中后上报（consume-bar 下拉/树选中同源）。
-  uiIntent.reportSnapshot({ panel: activePanel.value, topic: topic || undefined });
+  uiIntentChannel.reportSnapshot({ panel: activePanel.value, topic: topic || undefined });
 }
 
 // 树快捷动作（对齐 Confluent IDE 右键打开 Producer/Consumer）：先保证 topic
@@ -411,6 +416,10 @@ async function waitForHostApi(timeoutMs = 8000) {
 
 async function initialize() {
   const api = await waitForHostApi();
+  // 桥已就绪，重建 intent 订阅（评审 M-1）：setup 期桥缺失时订阅从未挂上，
+  // kafka/ui/intent 事件在此前会永久丢失。
+  uiIntentChannel.stop();
+  uiIntentChannel = useUiIntent("kafka", uiIntentHandlers);
   // 竞速超时兜底（评审 LOW-2）：宿主 request 挂起时界面此前永久 Loading
   // 且无错误出口——8s（与 waitForHostApi 同额）后取 ready/超时错误。
   hostContext.value = await Promise.any([
@@ -498,7 +507,7 @@ onBeforeUnmount(() => {
   // 连接弹窗 keydown 由 ConnectionsPanel 自管（open watch 成对挂摘，
   // H-1 回归后壳层不再持有监听）。
   window.clearTimeout(noticeTimer);
-  uiIntent.stop();
+  uiIntentChannel.stop();
   // 取消未决的 topics 重试循环（boot/手动窗口可能还有几十秒的定时睡眠）。
   loadTopicsSeq++;
   for (const dispose of [...unsubscribeEnvironment, ...unsubscribeEvent]) dispose();

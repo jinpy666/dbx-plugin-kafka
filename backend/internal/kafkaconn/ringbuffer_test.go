@@ -72,12 +72,13 @@ func TestRegistryEvictIdle(t *testing.T) {
 	registry := NewStreamRegistry()
 	now := int64(1_000_000_000)
 	session := &streamSession{
-		sessionID:          "s1",
-		connectionID:       "c1",
-		closeClient:        func() {},
-		ring:               newRingBuffer(4),
-		partitionOffsets:   map[int32]int64{},
-		lastActivityUnixMs: now,
+		sessionID:           "s1",
+		connectionID:        "c1",
+		closeClient:         func() {},
+		ring:                newRingBuffer(4),
+		partitionOffsets:    map[int32]int64{},
+		lastActivityUnixMs:  now,
+		lastAttentionUnixMs: now, // 回收以客户端关注为唯一信号（架构评审 H-1）
 	}
 	registry.mu.Lock()
 	registry.sessions["s1"] = session
@@ -110,9 +111,10 @@ func TestRegistryEvictLoop(t *testing.T) {
 	}()
 
 	session := &streamSession{
-		sessionID:          "idle-loop-1",
-		closeClient:        func() {},
-		lastActivityUnixMs: time.Now().UnixMilli() - (31 * 60 * 1000), // 已空闲 >30min
+		sessionID:           "idle-loop-1",
+		closeClient:         func() {},
+		lastActivityUnixMs:  time.Now().UnixMilli() - (31 * 60 * 1000), // 已空闲 >30min
+		lastAttentionUnixMs: time.Now().UnixMilli() - (31 * 60 * 1000), // 无人轮询 >30min
 	}
 	registry.mu.Lock()
 	registry.sessions["idle-loop-1"] = session

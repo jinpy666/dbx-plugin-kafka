@@ -112,7 +112,8 @@ async function sample() {
     if (limit > 0 && totalLag.value > limit && !breached.value) {
       breached.value = true;
       emit("alert", t("monitor.thresholdBreached", { lag: totalLag.value, threshold: limit }));
-    } else if (totalLag.value <= limit && breached.value) {
+    } else if ((limit <= 0 || totalLag.value <= limit) && breached.value) {
+      // 阈值调 0 = 关闭告警：立即复位徽标，不等 lag 落回阈值之下（评审 L-1）。
       breached.value = false;
     }
   } catch (cause) {

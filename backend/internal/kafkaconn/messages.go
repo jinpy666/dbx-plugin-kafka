@@ -1694,6 +1694,17 @@ func decodeConsumeValue(value []byte, decodeMethod, decompressMethod string) ([]
 	return decompressed, true, ""
 }
 
+// sharedZstdDecoder 包级共享解码器（评审 L-2）：DecodeAll 并发安全，窗口表
+// 初始化不便宜，构建一次全进程复用；与进程同寿，不 Close。
+var sharedZstdDecoder = sync.OnceValue(func() *zstd.Decoder {
+	decoder, err := zstd.NewReader(nil, zstd.WithDecoderMaxMemory(maxDecodedBytes))
+	if err != nil {
+		// 仅 option 非法才会失败：返回 nil，调用方退化为显式错误而非 panic。
+		return nil
+	}
+	return decoder
+})
+
 func decompressPayload(value []byte, method string) ([]byte, error) {
 	switch strings.ToLower(trimSpace(method)) {
 	case "gzip":
@@ -1708,12 +1719,11 @@ func decompressPayload(value []byte, method string) ([]byte, error) {
 		return readBounded(reader)
 	case "zstd":
 		// WithDecoderMaxMemory 兜底 DecodeAll 内部分配；输出长度再显式校验
-		//（KAFKA-H1：恶意帧可声明超大内容尺寸）。
-		decoder, err := zstd.NewReader(nil, zstd.WithDecoderMaxMemory(maxDecodedBytes))
-		if err != nil {
-			return nil, err
+		//（KAFKA-H1：恶意帧可声明超大内容尺寸）。解码器为包级共享单例。
+		decoder := sharedZstdDecoder()
+		if decoder == nil {
+			return nil, errf("zstd decoder unavailable")
 		}
-		defer decoder.Close()
 		decoded, decodeAllErr := decoder.DecodeAll(value, nil)
 		if decodeAllErr != nil {
 			return nil, decodeAllErr
