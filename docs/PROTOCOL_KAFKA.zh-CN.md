@@ -221,9 +221,9 @@ Host API 1.0 的 `plugin_connection_params` 只发送 `runtime.host:port`，且
   嵌套 topic 维度以支持多 topic 组；单 topic 场景可只写一个键）。
 - 返回：`rows[]{topic, partition:int, ok:bool, error?}`。
 - 错误：read_only → `-32000`（blocked）；组合参数缺失/冲突 → `-32602`；
-  组不存在 → `-32000`（`consumer group … not found`：CommitOffsets 对未知
-  组会静默建出空组标记，与 kafka-consumer-groups.sh 的拒绝语义相反，
-  重置前做 ListGroups 存在性预检）；审计。
+  审计。组不存在时 reset 会经 CommitOffsets 建出该组——「对新组名 reset
+  播种 committed offsets」是受支持用法，创建事实记入审计明细
+  （`group created by reset`）。
 
 ### 3.4 acls
 

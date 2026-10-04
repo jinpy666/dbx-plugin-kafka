@@ -204,29 +204,27 @@ func (s *Service) ResetGroupOffsets(ctx context.Context, req GroupOffsetResetReq
 	}
 
 	var result OffsetResetResult
+	// 存在性观察（评审 L-1）：CommitOffsets 对不存在的组会静默建出空组标记
+	// ——拼写错误的组名「重置成功」且 broker 凭空多出消费组。产品面（MCP/
+	// 工作台）把「对新组名 reset 播种 committed offsets」当作受支持的用法
+	// （smoke_mcp K11/K15 验收面：生成全新组名直接 resetTo=latest/timestamp），
+	// 因此不拒绝而是记录创建事实、写进成功审计明细，可观测而非静默。
+	groupCreated := false
 	err = s.withAdmin(req.ConnectionID, func(client *kgo.Client) error {
 		admin := kadm.NewClient(client)
 		ctx, cancel := context.WithTimeout(ctx, adminTimeout)
 		defer cancel()
 
-		// 存在性预检（评审 L-1）：对不存在的组 CommitOffsets 会静默建出空组
-		// 标记——拼写错误的组名此前「重置成功」且 broker 凭空多出消费组，
-		// 与 kafka-consumer-groups.sh --reset-offsets 的拒绝语义相反。
-		// ListGroups 全态枚举里没有即视为不存在；已存在但无成员的组
-		// （Empty，有提交历史的合法形态）仍允许重置。
 		listed, listErr := admin.ListGroups(ctx)
 		if listErr != nil {
 			return listErr
 		}
-		found := false
+		groupCreated = true
 		for _, listedGroup := range listed.Sorted() {
 			if listedGroup.Group == group {
-				found = true
+				groupCreated = false
 				break
 			}
-		}
-		if !found {
-			return errf("consumer group %q not found", group)
 		}
 
 		// 目标 offsets：先列出再提交。
@@ -284,7 +282,11 @@ func (s *Service) ResetGroupOffsets(ctx context.Context, req GroupOffsetResetReq
 		s.emitAuditSource(req.Source, req.ConnectionID, "group-offsets-reset", group, "error", err.Error())
 		return nil, err
 	}
-	s.emitAuditSource(req.Source, req.ConnectionID, "group-offsets-reset", group, "success", sprintf("resetTo=%s", mode))
+	detail := sprintf("resetTo=%s", mode)
+	if groupCreated {
+		detail += "; group created by reset (did not exist before)"
+	}
+	s.emitAuditSource(req.Source, req.ConnectionID, "group-offsets-reset", group, "success", detail)
 	return &result, nil
 }
 
