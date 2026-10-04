@@ -131,16 +131,34 @@ const headersInvalid = computed(() => {
 
 const sendCount = computed(() => positiveInt(count.value, 1000, 1));
 
+// 版本下拉（评审 L-1）：SR 硬删版本后 latest 不连续（版本 [1,3] 的
+// latest=3，latest..1 枚举会给出不存在的 2）——优先用 versions/list 的
+// 真实版本号倒序；列表不可得时回退 latest..1 枚举。
+const schemaVersionNumbers = ref<number[]>([]);
+
 const schemaVersions = computed(() => {
+  if (schemaVersionNumbers.value.length > 0) return [...schemaVersionNumbers.value].sort((a, b) => b - a);
   const subject = schemaSubjects.value.find((row) => row.subject === schemaSubject.value);
   const latest = subject?.latestVersion ?? 0;
   return Array.from({ length: Math.max(latest, 0) }, (_unused, index) => latest - index);
 });
 
-watch(schemaSubject, () => {
+watch(schemaSubject, async (subject) => {
   schemaVersionText.value = "";
-  const found = schemaSubjects.value.find((row) => row.subject === schemaSubject.value);
+  schemaVersionNumbers.value = [];
+  const found = schemaSubjects.value.find((row) => row.subject === subject);
   if (found?.formats?.length) schemaFormat.value = (found.formats[0] as SchemaFormat) ?? "avro";
+  if (!subject) return;
+  try {
+    const response = await kafkaApi.schemaVersionsList(subject, props.srProvider === "confluent" || props.srProvider === "glue" ? props.srProvider : undefined);
+    if (schemaSubject.value !== subject) return;
+    schemaVersionNumbers.value = (response.versions ?? [])
+      .map((row) => Number(row.version))
+      .filter((version) => Number.isFinite(version) && version > 0);
+  } catch {
+    if (schemaSubject.value !== subject) return;
+    schemaVersionNumbers.value = []; // 回退 latest..1 枚举
+  }
 });
 
 const disabled = computed(() => !props.canWrite || sending.value || !props.topic);

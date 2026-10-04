@@ -428,8 +428,87 @@ def run_s7(client: SidecarClient) -> None:
         texts = [m.get("valueText") or "" for m in payload.get("messages", [])]
         if not any(marker in text for text in texts):
             raise AssertionError(f"stream event did not carry the produced marker: {texts[:5]}")
+
+        # S7 附加面（评审 L-3）：status/pause/resume 此前零 smoke 覆盖。
+        status = data_of(domain(client, "kafka/stream/status", {"sessionId": session_id}))
+        session_status = status.get("status") or {}
+        if session_status.get("sessionId") != session_id:
+            raise AssertionError(f"stream/status returned wrong session: {status}")
+        paused = data_of(domain(client, "kafka/stream/pause", {"sessionId": session_id}))
+        if not (paused.get("status") or {}).get("paused"):
+            raise AssertionError(f"stream/pause did not report paused: {paused}")
+        resumed = data_of(domain(client, "kafka/stream/resume", {"sessionId": session_id}))
+        if (resumed.get("status") or {}).get("paused"):
+            raise AssertionError(f"stream/resume still paused: {resumed}")
     finally:
         data_of(domain(client, "kafka/stream/stop", {"sessionId": session_id}))
+
+
+@scenario("S20", "acls create -> minimal-filter list -> delete lifecycle")
+def run_s20(client: SidecarClient) -> None:
+    """S20 ACL 端到端（有 authorizer 的容器才跑，S6 同款 skip 判别）。
+
+    最小过滤 {resourceType}（principal/host/permission/patternType 全缺省）
+    必须能列出并删除新建 ACL：这些空字段曾被 kadm MaybeX("")/Topics("")
+    钉成字面空串精确匹配（评审 H-1）——broker 端永不相中，list 恒空、
+    delete 静默 no-op 还记成功审计。本场景是该回归的端到端探针。
+    """
+    principal = "User:smoke-acl-probe"
+    acl = {
+        "resourceType": "topic",
+        # ACL 不要求 topic 存在；复用流式夹具名即可。
+        "resourceName": TOPIC_STREAM,
+        "patternType": "LITERAL",
+        "principal": principal,
+        "host": "*",
+        "operation": "READ",
+        "permission": "ALLOW",
+    }
+
+    def probe(filter_overrides: dict) -> list:
+        listing = data_of(domain(client, "kafka/acls/list",
+                                 {"filter": {"resourceType": "topic", **filter_overrides}}))
+        rows = listing.get("acls")
+        if not isinstance(rows, list):
+            raise AssertionError(f"acls/list did not return a list: {listing}")
+        return [row for row in rows if row.get("principal") == principal and not row.get("error")]
+
+    created = False
+    try:
+        try:
+            data_of(domain(client, "kafka/acls/create", {"acl": acl}))
+            created = True
+        except SidecarError as cause:
+            lowered = str(cause).lower()
+            if any(marker in lowered for marker in ("acl", "authoriz", "authoris", "security", "unsupported", "not enabled")):
+                raise SkipScenario(f"test container has no ACL authorizer: {cause}")
+            raise
+
+        if not probe({}):
+            raise AssertionError(
+                "created ACL not visible under minimal {resourceType} filter "
+                "(empty-filter pin regression, review H-1)"
+            )
+        if probe({"permission": "DENY"}):
+            raise AssertionError("ALLOW probe visible under DENY-filtered listing")
+
+        deleted = data_of(domain(client, "kafka/acls/delete",
+                                 {"filter": {"resourceType": "topic", "principal": principal}}))
+        matched = deleted.get("matched")
+        if not isinstance(matched, list) or not any(
+            row.get("principal") == principal and not row.get("error") for row in matched
+        ):
+            raise AssertionError(f"acls/delete did not report the probe binding: {deleted}")
+        if probe({}):
+            raise AssertionError("probe ACL still listed after delete")
+    finally:
+        # 失败路径也尽力清场，不给容器留探针 ACL。
+        if created:
+            try:
+                data_of(domain(client, "kafka/acls/delete",
+                               {"filter": {"resourceType": "topic", "principal": principal}}))
+            except Exception:  # noqa: BLE001 - 清场尽力而为
+                pass
 
 
 @scenario("S8", "export json + csv")
@@ -1525,6 +1604,7 @@ def main() -> int:
         ("S17", "TLS/mTLS matrix: CA verify, wrong CA, no client cert, insecure", run_s17),
         ("S18", "runtime SOCKS5 proxy route: dial, auth, data path, failure modes", run_s18),
         ("S19", "consume cancel: mid-flight stop returns cancelled partial result", run_s19),
+        ("S20", "acls create -> minimal-filter list -> delete lifecycle", run_s20),
     ]
 
     ok, reason = kafka_reachable()

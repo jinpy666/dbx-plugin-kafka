@@ -209,6 +209,26 @@ func (s *Service) ResetGroupOffsets(ctx context.Context, req GroupOffsetResetReq
 		ctx, cancel := context.WithTimeout(ctx, adminTimeout)
 		defer cancel()
 
+		// 存在性预检（评审 L-1）：对不存在的组 CommitOffsets 会静默建出空组
+		// 标记——拼写错误的组名此前「重置成功」且 broker 凭空多出消费组，
+		// 与 kafka-consumer-groups.sh --reset-offsets 的拒绝语义相反。
+		// ListGroups 全态枚举里没有即视为不存在；已存在但无成员的组
+		// （Empty，有提交历史的合法形态）仍允许重置。
+		listed, listErr := admin.ListGroups(ctx)
+		if listErr != nil {
+			return listErr
+		}
+		found := false
+		for _, listedGroup := range listed.Sorted() {
+			if listedGroup.Group == group {
+				found = true
+				break
+			}
+		}
+		if !found {
+			return errf("consumer group %q not found", group)
+		}
+
 		// 目标 offsets：先列出再提交。
 		var targets kadm.Offsets
 		switch mode {
