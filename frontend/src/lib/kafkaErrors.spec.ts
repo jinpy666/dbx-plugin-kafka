@@ -23,6 +23,14 @@ describe("friendlyKafkaError", () => {
     expect(friendlyKafkaError(raw)).toBe(raw);
   });
 
+  // 「连接未就绪」（web/docker 刷新恢复撞上宿主 connect 重放晚到）映射为
+  // 可行动指引，先于网络类（原始串含 "connection" 不得被 err.network 吞掉）。
+  it("maps connection-inactive errors to the reopen guidance before network rules", () => {
+    expect(friendlyKafkaError('connection "conn-test" is not connected; call connection/connect first')).toBe(t("err.connectionInactive"));
+    expect(friendlyKafkaError("Connection is not active")).toBe(t("err.connectionInactive"));
+    expect(t("err.connectionInactive")).toContain("DBX");
+  });
+
   // Phase 3 F2（§12.7）：MSK/OAUTHBEARER 失败类（无凭据/region 缺失）先于通用
   // SASL 认证类给出针对性可行动文案。
   it("maps msk/oauth failure classes with actionable text (Phase 3 F2)", () => {

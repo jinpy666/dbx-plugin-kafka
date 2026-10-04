@@ -7,6 +7,7 @@
  * 与后端 policy.go 的错误码语义（blocked）对应。
  */
 import { t } from "./i18n";
+import { isConnectionInactiveError } from "./connectRetry";
 
 const RULES: ReadonlyArray<{ pattern: RegExp; key: string }> = [
   // 门禁类（policy.go）：先于网络类匹配
@@ -50,6 +51,12 @@ const RULES: ReadonlyArray<{ pattern: RegExp; key: string }> = [
 
 export const friendlyKafkaError = (message: string): string => {
   const raw = String(message ?? "");
+  // 「连接未就绪」（sidecar 注册表未命中/宿主 Connection is not active）先于
+  // 全部规则：原始串是「connection "x" is not connected; call connection/
+  // connect first」这类开发者向措辞，且必须给「关闭页签、从 DBX 左侧连接
+  // 列表重新打开」的指引（web/docker 刷新恢复场景，见 connectRetry.ts）。
+  // 判定单一来源是 isConnectionInactiveError（与重试窗口同源，不重复正则）。
+  if (isConnectionInactiveError(raw)) return t("err.connectionInactive");
   for (const rule of RULES) {
     if (rule.pattern.test(raw)) return t(rule.key);
   }
