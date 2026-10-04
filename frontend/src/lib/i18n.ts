@@ -27,6 +27,7 @@ export const messages = {
       noMessagesPanel: "Messages panel is not ready yet",
     },
     err: {
+      connectionInactive: "Connection not ready: use Reconnect to ask the host to reopen it; if that fails, close this tab and reopen the connection from the DBX sidebar.",
       auth: "Authentication failed: check SASL user, password and mechanism",
       tls: "TLS certificate check failed: install the CA in connection settings or disable certificate verification",
       readOnly: "Blocked: this connection is read-only",
@@ -654,6 +655,7 @@ export const messages = {
       noMessagesPanel: "消息面板尚未就绪",
     },
     err: {
+      connectionInactive: "连接尚未就绪：点「重新连接」请宿主重开；若仍失败，关闭本页签，再从 DBX 左侧连接列表重新打开",
       auth: "认证失败：请检查 SASL 用户名、密码与机制",
       tls: "TLS 证书校验失败：可在连接配置安装 CA 证书，或关闭“跳过 TLS 校验”",
       readOnly: "已被拒绝：当前连接为只读模式",
@@ -1281,6 +1283,7 @@ export const messages = {
       noMessagesPanel: "訊息面板尚未就緒",
     },
     err: {
+      connectionInactive: "連線尚未就緒：點「重新連線」請宿主重開；若仍失敗，關閉本分頁，再從 DBX 左側連線清單重新開啟",
       auth: "認證失敗：請檢查 SASL 使用者名稱、密碼與機制",
       tls: "TLS 憑證驗證失敗：可在連線設定安裝 CA 憑證，或關閉「跳過 TLS 驗證」",
       readOnly: "已被拒絕：目前連線為唯讀模式",
@@ -1908,6 +1911,7 @@ export const messages = {
       noMessagesPanel: "El panel de mensajes aún no está listo",
     },
     err: {
+      connectionInactive: "Conexión no lista: usa «Reconectar» para que el host la reabra; si falla, cierra esta pestaña y vuelve a abrir la conexión desde la barra lateral de DBX",
       auth: "Falló la autenticación: revise el usuario, la contraseña y el mecanismo SASL",
       tls: "Falló la verificación del certificado TLS: instale la CA en la configuración de conexión o desactive la verificación",
       readOnly: "Bloqueado: esta conexión es de solo lectura",
@@ -2535,6 +2539,7 @@ export const messages = {
       noMessagesPanel: "Il pannello messaggi non è ancora pronto",
     },
     err: {
+      connectionInactive: "Connessione non pronta: usa «Riconnetti» per farla riaprire dall'host; se non basta, chiudi questa scheda e riapri la connessione dall'elenco laterale di DBX",
       auth: "Autenticazione non riuscita: verifica utente, password e meccanismo SASL",
       tls: "Verifica del certificato TLS non riuscita: installa la CA nelle impostazioni di connessione o disattiva la verifica",
       readOnly: "Bloccato: questa connessione è in sola lettura",
@@ -3162,6 +3167,7 @@ export const messages = {
       noMessagesPanel: "メッセージパネルはまだ準備ができていません",
     },
     err: {
+      connectionInactive: "接続の準備ができていません：「再接続」でホストに再オープンを依頼してください。改善しない場合は、このタブを閉じて DBX 左側の接続一覧から開き直してください",
       auth: "認証に失敗しました：SASL ユーザー・パスワード・メカニズムを確認してください",
       tls: "TLS 証明書の検証に失敗しました：接続設定で CA 証明書を導入するか、証明書検証を無効にしてください",
       readOnly: "拒否されました：この接続は読み取り専用です",
@@ -3789,6 +3795,7 @@ export const messages = {
       noMessagesPanel: "O painel de mensagens ainda não está pronto",
     },
     err: {
+      connectionInactive: "Conexão não pronta: use «Reconectar» para que o host a reabra; se não resolver, feche esta aba e reabra a conexão pela lista lateral do DBX",
       auth: "Falha na autenticação: verifique o usuário, a senha e o mecanismo SASL",
       tls: "Falha na verificação do certificado TLS: instale a CA nas configurações de conexão ou desative a verificação",
       readOnly: "Bloqueado: esta conexão é somente leitura",
