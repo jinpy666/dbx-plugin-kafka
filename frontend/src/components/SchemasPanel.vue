@@ -277,6 +277,9 @@ async function loadCompat(subject: string | undefined) {
     compatScope.value = response.scope ?? "";
     compatChoice.value = (response.level as SchemaCompatibilityLevel) || "BACKWARD";
   } catch (cause) {
+    // await 期间已切换 subject 时丢弃旧失败，不把旧 subject 的错误落到新
+    // 选择下（try 分支同款守卫；评审 M-2——本文件最后一个未设防的异步）。
+    if (subject !== selectedSubject.value) return;
     emit("error", cause instanceof Error ? cause.message : String(cause));
   }
 }
@@ -389,16 +392,22 @@ function openRegister() {
 // 预填注册弹窗，subject 默认原值可改。
 async function cloneVersion(row: SchemaVersionVm) {
   if (!selectedSubject.value) return;
+  // subject/registry 在 await 前定格（评审 L-2）：切换后旧克隆数据不预填进
+  // 新选择的注册弹窗（注册目标以弹窗内可编辑值为准，此处只防混淆）。
+  const subject = selectedSubject.value;
+  const registryName = registry.value;
   emit("error", "");
   try {
-    const detailRow = await kafkaApi.schemaGet(selectedSubject.value, row.version, registry.value);
-    registerSubject.value = selectedSubject.value;
+    const detailRow = await kafkaApi.schemaGet(subject, row.version, registryName);
+    if (subject !== selectedSubject.value || registryName !== registry.value) return;
+    registerSubject.value = subject;
     registerFormat.value = (["avro", "json", "protobuf"].includes(detailRow.format) ? detailRow.format : "avro") as SchemaFormat;
     registerSchemaText.value = detailRow.schema ?? "";
     registerNormalize.value = false;
     registerClonedFrom.value = row.version;
     registerOpen.value = true;
   } catch (cause) {
+    if (subject !== selectedSubject.value || registryName !== registry.value) return;
     emit("error", cause instanceof Error ? cause.message : String(cause));
   }
 }

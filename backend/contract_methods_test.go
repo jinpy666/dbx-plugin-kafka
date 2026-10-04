@@ -3,7 +3,9 @@ package main
 // contract_methods_test.go：工作台方法契约守护（评审 2026-09-26 WATCH：方法
 // 名↔响应形状此前靠人工四方同步——backend Handle switch / frontend api.ts /
 // mockDbxHost / 协议文档——且 presets 响应形状已实际漂移过，mock 与前端类型
-// 同源造假让测试全绿）。单一事实源是 ../frontend/src/lib/methodContract.json。
+// 同源造假让测试全绿）。单一事实源是 ../shared/contracts/methods.json
+//（评审架构 M-1：原在 frontend/src/lib/ 下，backend lane 改方法必须跨 lane
+// 改 frontend 独占路径，违反 agent-flow 所有权拓扑）。
 //
 // 本文件守护 backend 侧：
 //  1. main.go Handle switch 的方法面（AST 提取 case 字符串字面量）与
@@ -45,9 +47,9 @@ type methodContract struct {
 
 func loadMethodContract(t *testing.T) methodContract {
 	t.Helper()
-	data, err := os.ReadFile("../frontend/src/lib/methodContract.json")
+	data, err := os.ReadFile("../shared/contracts/methods.json")
 	if err != nil {
-		t.Fatalf("read method contract: %v — frontend/src/lib/methodContract.json is the single source of truth", err)
+		t.Fatalf("read method contract: %v — shared/contracts/methods.json is the single source of truth", err)
 	}
 	var contract methodContract
 	if err := json.Unmarshal(data, &contract); err != nil {

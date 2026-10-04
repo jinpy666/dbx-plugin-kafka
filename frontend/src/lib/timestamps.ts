@@ -30,6 +30,19 @@ export function timestampIso(ms: number | undefined): string {
   return Number.isNaN(date.getTime()) ? String(ms) : date.toISOString();
 }
 
+// RelativeTimeFormat 构造成本高且连接列表逐行、逐渲染调用——按 locale 缓存
+//（评审 L-6；格式化器是无状态幂等对象，跨调用共享安全）。
+const relativeFormatterCache = new Map<string, Intl.RelativeTimeFormat>();
+
+function relativeFormatterFor(locale: string): Intl.RelativeTimeFormat {
+  let formatter = relativeFormatterCache.get(locale);
+  if (!formatter) {
+    formatter = new Intl.RelativeTimeFormat(locale, { numeric: "auto" });
+    relativeFormatterCache.set(locale, formatter);
+  }
+  return formatter;
+}
+
 /**
  * unix ms → 相对时间文本（连接列表「最近使用」等场景）：一分钟内「刚刚/just now」，
  * 之后按分钟/小时/天聚合，超过 30 天回落绝对日期。locale 跟随工作台语言，
@@ -39,7 +52,7 @@ export function formatRelativeTime(ms: number | string | undefined, locale = "zh
   if (ms === undefined || ms === null || ms === "") return "";
   const parsed = typeof ms === "number" ? ms : Date.parse(ms);
   if (!Number.isFinite(parsed)) return String(ms);
-  const formatter = new Intl.RelativeTimeFormat(locale, { numeric: "auto" });
+  const formatter = relativeFormatterFor(locale);
   const diffMinutes = Math.round((parsed - nowMs) / 60_000);
   if (Math.abs(diffMinutes) < 1) return formatter.format(0, "minute");
   if (Math.abs(diffMinutes) < 60) return formatter.format(diffMinutes, "minute");

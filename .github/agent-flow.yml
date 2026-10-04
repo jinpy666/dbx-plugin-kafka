@@ -16,7 +16,7 @@ ownership:
   # contract 与 frontend 双写，与 AGENTS.md「integrator owns shared contract
   # files / 不动版本元数据」矛盾；frontend lane 需要改 manifest 时经 contract
   # 阶段提需求单。
-  contract: [manifest.json, docs/PROTOCOL_KAFKA.zh-CN.md]
+  contract: [manifest.json, docs/PROTOCOL_KAFKA.zh-CN.md, shared/contracts/]
   backend: [backend/]
   frontend: [frontend/]
   tests: [scripts/]

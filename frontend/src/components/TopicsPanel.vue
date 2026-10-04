@@ -177,7 +177,14 @@ async function submitCreate() {
   }
   busy.value = true;
   try {
-    await kafkaApi.topicsCreate([name], partitionsCount, replication, config.headers);
+    const response = await kafkaApi.topicsCreate([name], partitionsCount, replication, config.headers);
+    // 单 topic 失败（如已存在）以 in-band results[].ok=false 返回而非拒绝
+    // RPC——不检查会把失败当成功提示（评审 H-1，submitConfig 同款模式）。
+    const failures = (response.results ?? []).filter((entry) => !entry.ok);
+    if (failures.length > 0) {
+      emit("error", failures.map((entry) => entry.error || entry.topic).join("; "));
+      return;
+    }
     createOpen.value = false;
     emit("notify", `${t("topics.created")}: ${name}`);
     emit("refresh");
@@ -202,7 +209,14 @@ async function submitDelete() {
   if (busy.value) return;
   busy.value = true;
   try {
-    await kafkaApi.topicsDelete([deleteTarget.value], deleteConfirmText.value.trim());
+    const response = await kafkaApi.topicsDelete([deleteTarget.value], deleteConfirmText.value.trim());
+    const failures = (response.results ?? []).filter((entry) => !entry.ok);
+    if (failures.length > 0) {
+      // 失败（如已被别处删除）不关弹窗不清选中：保留现场供重试/取消。
+      emit("error", failures.map((entry) => entry.error || entry.topic).join("; "));
+      emit("refresh");
+      return;
+    }
     deleteOpen.value = false;
     emit("notify", `${t("topics.deleted")}: ${deleteTarget.value}`);
     if (selected.value?.name === deleteTarget.value) selected.value = null;
@@ -232,7 +246,13 @@ async function submitExpand() {
   }
   busy.value = true;
   try {
-    await kafkaApi.topicsPartitionsUpdate({ [selected.value.name]: next });
+    const response = await kafkaApi.topicsPartitionsUpdate({ [selected.value.name]: next });
+    const failures = (response.results ?? []).filter((entry) => !entry.ok);
+    if (failures.length > 0) {
+      emit("error", failures.map((entry) => entry.error || entry.topic).join("; "));
+      emit("refresh");
+      return;
+    }
     expandOpen.value = false;
     emit("notify", t("topics.expanded"));
     emit("refresh");
@@ -249,9 +269,20 @@ async function queryOffsets() {
   busy.value = true;
   emit("error", "");
   try {
-    const offsetTime =
-      offsetTimeMode.value === "custom" ? offsetTimeToParam(offsetCustomTime.value) : (offsetTimeMode.value as string);
-    const response = await kafkaApi.topicsOffsetsList([topicName], offsetTime ?? undefined);
+    let offsetTime: string | undefined;
+    if (offsetTimeMode.value === "custom") {
+      const parsed = offsetTimeToParam(offsetCustomTime.value);
+      if (!parsed) {
+        // 自定义时间解析失败此前静默落回缺省（看似查询成功、实为 latest
+        // 语义）——行内报错阻断（评审 L-4）。
+        emit("error", t("topics.offsetTimeInvalid"));
+        return;
+      }
+      offsetTime = parsed;
+    } else {
+      offsetTime = offsetTimeMode.value;
+    }
+    const response = await kafkaApi.topicsOffsetsList([topicName], offsetTime);
     if (selected.value?.name !== topicName) return;
     offsetRows.value = response.rows ?? [];
   } catch (cause) {
@@ -302,10 +333,12 @@ async function submitConfig() {
     const failures = (response.results ?? []).filter((entry) => !entry.ok);
     if (failures.length > 0) {
       emit("error", failures.map((entry) => entry.error || entry.topic).join("; "));
+    } else {
+      // 部分失败时不叠加成功提示，避免混合信号（评审 L-3）。
+      emit("notify", t("topics.altered"));
     }
     configEntries.value = (await kafkaApi.topicsConfigGet(selected.value.name)).entries ?? [];
     configEdits.value = [];
-    emit("notify", t("topics.altered"));
   } catch (cause) {
     emit("error", cause instanceof Error ? cause.message : String(cause));
   } finally {

@@ -25,7 +25,7 @@ func TestACLBuilderFromFilterMatrix(t *testing.T) {
 		{name: "topic by name", filter: ACLFilter{ResourceType: "topic", ResourceName: "orders"}, wantAny: true},
 		{name: "group only", filter: ACLFilter{ResourceType: "group"}, wantAny: true},
 		{name: "any type by name plus principal", filter: ACLFilter{ResourceType: "any", ResourceName: "orders", Principal: "alice"}, wantAny: true},
-		{name: "any type by name plus operation", filter: ACLFilter{ResourceType: "any", ResourceName: "orders", Operation: "read"}},
+		{name: "any type by name plus operation", filter: ACLFilter{ResourceType: "any", ResourceName: "orders", Operation: "read"}, wantAny: true}, // patternType 空 = ANY（评审 H-1 同族：不限语义）
 		{name: "explicit any operation", filter: ACLFilter{ResourceType: "topic"}, wantAny: true},
 		{name: "resourceType required", filter: ACLFilter{ResourceName: "x"}, wantErrSub: "resourceType must be"},
 		{name: "any without name too broad", filter: ACLFilter{ResourceType: "any"}, wantErrSub: "filter is too broad"},
@@ -72,6 +72,7 @@ func TestACLBuilderFromACLMatrix(t *testing.T) {
 		{name: "create rejects any resourceType", acl: ACLBinding{ResourceType: "any", ResourceName: "x", Operation: "read", Principal: "a"}, create: true, wantErrSub: "must be a concrete type"},
 		{name: "create rejects empty name", acl: ACLBinding{ResourceType: "topic", Operation: "read", Principal: "a"}, create: true, wantErrSub: "resourceName is required"},
 		{name: "create rejects any operation", acl: ACLBinding{ResourceType: "topic", ResourceName: "x", Operation: "any", Principal: "a"}, create: true, wantErrSub: "must be a concrete operation"},
+		{name: "create rejects any permission", acl: ACLBinding{ResourceType: "topic", ResourceName: "x", Operation: "read", Permission: "any", Principal: "a"}, create: true, wantErrSub: "must be a concrete permission"},
 		{name: "create rejects missing principal", acl: ACLBinding{ResourceType: "topic", ResourceName: "x", Operation: "read"}, create: true, wantErrSub: "principal is required"},
 		{name: "bogus operation", acl: ACLBinding{ResourceType: "topic", ResourceName: "x", Operation: "bogus", Principal: "a"}, create: true, wantErrSub: "operation must be"},
 		{name: "bogus pattern", acl: ACLBinding{ResourceType: "topic", ResourceName: "x", PatternType: "bogus", Operation: "read", Principal: "a"}, create: true, wantErrSub: "patternType must be"},
@@ -142,11 +143,136 @@ func TestApplyACLPermissionAllowAndDeny(t *testing.T) {
 		t.Error("deny: HasPrincipals = false, want true")
 	}
 
-	// 默认分支（unknown permission）走 allow 同路。
+	// unknown permission 兜底走 any 语义（双侧挂载，零参 = any）。
 	builder = kadm.NewACLs()
 	applyACLPermission(builder, kmsg.ACLPermissionType(0), "User:x", "")
 	if !builder.HasPrincipals() {
 		t.Error("default: HasPrincipals = false, want true")
+	}
+}
+
+// recordingACLBuilder 记录挂载调用序列（评审 H-1 回归钉的测试缝）：kadm 的
+// 导出 getter（HasAnyFilter 等）区分不了「钉死空串」与「零参 any」——正是
+// 旧缺陷逃过全部测试的原因，所以在挂载层直接断言。
+type recordingACLBuilder struct{ calls []string }
+
+func (r *recordingACLBuilder) record(name string, args ...string) {
+	r.calls = append(r.calls, name+"("+strings.Join(args, ",")+")")
+}
+
+func (r *recordingACLBuilder) AnyResource(name ...string) *kadm.ACLBuilder {
+	r.record("AnyResource", name...)
+	return nil
+}
+func (r *recordingACLBuilder) Topics(t ...string) *kadm.ACLBuilder {
+	r.record("Topics", t...)
+	return nil
+}
+func (r *recordingACLBuilder) Groups(g ...string) *kadm.ACLBuilder {
+	r.record("Groups", g...)
+	return nil
+}
+func (r *recordingACLBuilder) Clusters() *kadm.ACLBuilder { r.record("Clusters"); return nil }
+func (r *recordingACLBuilder) TransactionalIDs(x ...string) *kadm.ACLBuilder {
+	r.record("TransactionalIDs", x...)
+	return nil
+}
+func (r *recordingACLBuilder) DelegationTokens(t ...string) *kadm.ACLBuilder {
+	r.record("DelegationTokens", t...)
+	return nil
+}
+func (r *recordingACLBuilder) ResourcePatternType(pattern kmsg.ACLResourcePatternType) *kadm.ACLBuilder {
+	r.record("ResourcePatternType", pattern.String())
+	return nil
+}
+func (r *recordingACLBuilder) Allow(principals ...string) *kadm.ACLBuilder {
+	r.record("Allow", principals...)
+	return nil
+}
+func (r *recordingACLBuilder) AllowHosts(hosts ...string) *kadm.ACLBuilder {
+	r.record("AllowHosts", hosts...)
+	return nil
+}
+func (r *recordingACLBuilder) Deny(principals ...string) *kadm.ACLBuilder {
+	r.record("Deny", principals...)
+	return nil
+}
+func (r *recordingACLBuilder) DenyHosts(hosts ...string) *kadm.ACLBuilder {
+	r.record("DenyHosts", hosts...)
+	return nil
+}
+func (r *recordingACLBuilder) PrefixUserExcept(except ...string) {
+	r.record("PrefixUserExcept", except...)
+}
+
+// TestACLFilterEmptyFieldsMountAsAny 钉死 H-1 修复的挂载决策：空 name/
+// principal/host 必须落成零参调用（kadm any），绝不以空串实参出现——空串
+// 会被钉成字面精确匹配，acls/list 恒空、acls/delete 静默 no-op；permission
+// 过滤空 = ANY（双侧），create 的空 host 展开为 kadm 文档默认 "*"。
+func TestACLFilterEmptyFieldsMountAsAny(t *testing.T) {
+	rec := &recordingACLBuilder{}
+	applyACLResource(rec, kmsg.ACLResourceTypeTopic, "", kmsg.ACLResourcePatternTypeAny)
+	applyACLPermission(rec, kmsg.ACLPermissionTypeAny, "", "")
+	want := strings.Join([]string{
+		"ResourcePatternType(ANY)",
+		"Topics()",
+		"Allow()",
+		"AllowHosts()",
+		"Deny()",
+		"DenyHosts()",
+		"PrefixUserExcept(User:,Group:,ANONYMOUS)",
+	}, " ")
+	if got := strings.Join(rec.calls, " "); got != want {
+		t.Fatalf("calls = %q, want %q", got, want)
+	}
+
+	// 全字段钉死：精确匹配逐字出现，permission=deny 只挂 deny 侧。
+	rec = &recordingACLBuilder{}
+	applyACLResource(rec, kmsg.ACLResourceTypeTopic, "orders", kmsg.ACLResourcePatternTypeLiteral)
+	applyACLPermission(rec, kmsg.ACLPermissionTypeDeny, "User:mallory", "host-1")
+	want = strings.Join([]string{
+		"ResourcePatternType(LITERAL)",
+		"Topics(orders)",
+		"Deny(User:mallory)",
+		"DenyHosts(host-1)",
+		"PrefixUserExcept(User:,Group:,ANONYMOUS)",
+	}, " ")
+	if got := strings.Join(rec.calls, " "); got != want {
+		t.Fatalf("pinned calls = %q, want %q", got, want)
+	}
+
+	// permission=any + 钉死 principal：Allow+Deny 两侧都钉（broker 无「双侧」
+	// 单值），host 保持零参 any。
+	rec = &recordingACLBuilder{}
+	applyACLPermission(rec, kmsg.ACLPermissionTypeAny, "User:alice", "")
+	want = strings.Join([]string{
+		"Allow(User:alice)",
+		"AllowHosts()",
+		"Deny(User:alice)",
+		"DenyHosts()",
+		"PrefixUserExcept(User:,Group:,ANONYMOUS)",
+	}, " ")
+	if got := strings.Join(rec.calls, " "); got != want {
+		t.Fatalf("any-permission calls = %q, want %q", got, want)
+	}
+}
+
+// TestACLFilterMapperDefaults 钉死过滤路径的空值映射：permission/patternType
+// 空 = 不限（create 路径保持「空 = allow/literal」默认）。
+func TestACLFilterMapperDefaults(t *testing.T) {
+	permission, err := aclFilterPermissionType("")
+	if err != nil || permission != kmsg.ACLPermissionTypeAny {
+		t.Fatalf("filter permission(\"\") = %v, %v; want ANY", permission, err)
+	}
+	if permission, err = aclFilterPermissionType("deny"); err != nil || permission != kmsg.ACLPermissionTypeDeny {
+		t.Fatalf("filter permission(deny) = %v, %v; want DENY", permission, err)
+	}
+	pattern, err := aclFilterPatternType("")
+	if err != nil || pattern != kmsg.ACLResourcePatternTypeAny {
+		t.Fatalf("filter patternType(\"\") = %v, %v; want ANY", pattern, err)
+	}
+	if pattern, err = aclFilterPatternType("prefixed"); err != nil || pattern != kmsg.ACLResourcePatternTypePrefixed {
+		t.Fatalf("filter patternType(prefixed) = %v, %v; want PREFIXED", pattern, err)
 	}
 }
 

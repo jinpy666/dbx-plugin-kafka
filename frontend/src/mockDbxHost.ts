@@ -875,10 +875,17 @@ const invoke: DbxPluginApi["invoke"] = async <T = unknown>(method: string, rawPa
   } else if (method === "kafka/groups/delete") {
     const group = String(input.group ?? "");
     guardWrite("groups-delete", group, { critical: true });
-    result = { success: groups.delete(group) };
+    // 对照真实后端：未知组拒绝（评审 M-3——此前静默 success:false，演示环境
+    // 把删除失败呈现成成功）。
+    if (!groups.has(group)) throw new Error(`consumer group '${group}' not found (fixture)`);
+    groups.delete(group);
+    result = { success: true };
   } else if (method === "kafka/groups/offsets/reset") {
-    const group = groups.get(String(input.group ?? ""));
-    guardWrite("group-offsets-reset", String(input.group ?? ""));
+    const groupName = String(input.group ?? "");
+    const group = groups.get(groupName);
+    guardWrite("group-offsets-reset", groupName);
+    // 对照真实后端：未知组拒绝（真实 CommitOffsets 会静默建出空组标记）。
+    if (!group) throw new Error(`consumer group '${groupName}' not found (fixture)`);
     const topicsArg = ((input.topics ?? []) as string[]).filter(Boolean);
     const rows: Array<Record<string, unknown>> = [];
     if (group) {
@@ -1103,7 +1110,9 @@ const invoke: DbxPluginApi["invoke"] = async <T = unknown>(method: string, rawPa
       subjects: providerSubjects(wanted).map((subject) => ({
         subject: subject.subject,
         formats: subject.formats,
-        latestVersion: subject.versions.length,
+        // 真实 SR 硬删版本后 latest 不回退——取最大版本号而非数组长度
+        //（评审 L-1：版本 [1,3] 的 length=2 会给出不存在的 latest=2）。
+        latestVersion: subject.versions.reduce((max, version) => Math.max(max, Number(version.version)), 0),
         compatibilityLevel: subject.compatibilityLevel,
       })),
     };
@@ -1208,7 +1217,7 @@ const invoke: DbxPluginApi["invoke"] = async <T = unknown>(method: string, rawPa
     throw new Error(`unknown method (fixture): ${method}`);
   }
   // kafka/audit 不在路由里：它是 sidecar→宿主的事件通道（emitter.Event），
-  // mock 侧同样经 emitEvent 注入，方法契约（methodContract.json）只管方法面。
+  // mock 侧同样经 emitEvent 注入，方法契约（shared/contracts/methods.json）只管方法面。
   return result as T;
 };
 

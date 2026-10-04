@@ -275,7 +275,8 @@ func aclOperationType(value string) (kmsg.ACLOperation, error) {
 	}
 }
 
-// aclPermissionType 归一化 ACL permission。
+// aclPermissionType 归一化 ACL permission（create 路径语义：空 = 默认 allow；
+// 过滤路径用 aclFilterPermissionType——空 = 不限）。
 func aclPermissionType(value string) (kmsg.ACLPermissionType, error) {
 	switch strings.ToLower(trimSpace(value)) {
 	case "any":
@@ -287,4 +288,23 @@ func aclPermissionType(value string) (kmsg.ACLPermissionType, error) {
 	default:
 		return kmsg.ACLPermissionType(0), errf("permission must be any, allow, or deny")
 	}
+}
+
+// aclFilterPermissionType 过滤路径的 permission：空 = 不限（ANY）。UI「不限」
+// 选项发的是缺省值，沿用 create 路径的「空 = allow」会让 DENY ACL 在默认
+// 过滤下不可见、acls/delete 删不到（评审 H-1 同族）。
+func aclFilterPermissionType(value string) (kmsg.ACLPermissionType, error) {
+	if trimSpace(value) == "" {
+		return kmsg.ACLPermissionTypeAny, nil
+	}
+	return aclPermissionType(value)
+}
+
+// aclFilterPatternType 过滤路径的 patternType：空 = ANY——沿用 create 的
+// 「空 = literal」会使 PREFIXED ACL 在默认过滤下不可见（评审 H-1 同族）。
+func aclFilterPatternType(value string) (kmsg.ACLResourcePatternType, error) {
+	if trimSpace(value) == "" {
+		return kmsg.ACLResourcePatternTypeAny, nil
+	}
+	return aclPatternType(value)
 }

@@ -235,10 +235,15 @@ async function send() {
     return;
   }
   sending.value = true;
+  // 发送目标与历史预览在 await 前定格（评审 M-1）：await 期间切走 topic 或
+  // 编辑草稿时，旧响应/空预览不得落到新 topic 的面板状态上（Topics/Groups/
+  // Schemas 面板均已用同款守卫，此处是最后一个缺口）。
+  const topic = props.topic;
+  const previews = historyPreviews(key.value, value.value);
   try {
     const schema = buildSchemaAttach();
     const result = await kafkaApi.messagesProduce({
-      topic: props.topic,
+      topic,
       ...(key.value
         ? keyIsBase64.value
           ? { keyBase64: key.value }
@@ -253,15 +258,17 @@ async function send() {
       ...(!idempotence.value ? { enableIdempotence: false } : {}),
       ...(schema ? { schema } : {}),
     });
+    if (props.topic !== topic) return;
     lastResult.value = result;
-    recordSent({ ok: true, ...historyPreviews(key.value, value.value), partition: result.partition, offset: result.offset });
+    recordSent({ ok: true, ...previews, partition: result.partition, offset: result.offset });
     emit(
       "notify",
       `${t("produce.sent")} · ${t("produce.sentTo", { partition: lastResult.value.partition, offset: lastResult.value.offset })}`,
     );
   } catch (cause) {
+    if (props.topic !== topic) return;
     const message = cause instanceof Error ? cause.message : String(cause);
-    recordSent({ ok: false, ...historyPreviews(key.value, value.value), error: message });
+    recordSent({ ok: false, ...previews, error: message });
     emit("error", message);
   } finally {
     sending.value = false;

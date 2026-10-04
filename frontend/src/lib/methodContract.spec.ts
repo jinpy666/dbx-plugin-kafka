@@ -1,16 +1,17 @@
 // @vitest-environment happy-dom
 // 方法契约守护（frontend 侧）：backend/contract_methods_test.go 已用 AST 守护
 // main.go 方法面并实调 verifiable 方法对比响应键；本文件以同一份
-// methodContract.json 守护 frontend——
+// shared/contracts/methods.json（评审架构 M-1 迁入 shared/contracts，与
+// events.json 同侧，归 contract lane）守护 frontend——
 //  1. mockDbxHost 的方法面 ⊆ 契约（mock 不能虚构方法/漂移出未登记方法，
 //     presets 响应形状漂移被掩盖的根因正是 mock 与前端类型同源造假）；
 //  2. 契约 ∩ mock 面的 verifiable 方法实调（走真实 window.dbxPlugin.invoke
 //     分发），返回顶层键 ⊆ 契约 keys——mock 返回形状漂移即红灯；
-//  3. api.ts 的 callKafka 方法面 ⊆ 契约（2026-09 评审：config/alter、
-//     schema/test、schema/delete 三处漂移正是在此前的守护盲区合入——
-//     契约文件自述"frontend 侧由本 spec 守护"，但正则只扫得到 mock）。
+//  3. api.ts 的方法面 ⊆ 契约（2026-09 评审：config/alter、schema/test、
+//     schema/delete 三处漂移正是在此前的守护盲区合入——契约文件自述
+//     "frontend 侧由本 spec 守护"，但正则只扫得到 mock）。
 import { describe, expect, it } from "vitest";
-import contract from "./methodContract.json";
+import contract from "../../../shared/contracts/methods.json";
 import mockSource from "../mockDbxHost.ts?raw";
 import apiSource from "./api.ts?raw";
 import "../mockDbxHost";
@@ -24,18 +25,23 @@ interface ContractEntry {
 
 const methods = contract.methods as unknown as Record<string, ContractEntry>;
 
+// 注释剥离后再提取（评审 M-4）：注释里提到的方法名（漂移复盘等）不得计入
+// 方法面，否则守护面被注释措辞污染。
+const stripComments = (source: string) => source.replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/.*$/gm, "");
+
 // mock 源码里的方法字面量（`method === "kafka/..."` / `method === "connection/..."`）。
 const mockMethods = new Set(
-  [...mockSource.matchAll(/method === "([^"]+)"/g)]
+  [...stripComments(mockSource).matchAll(/method === "([^"]+)"/g)]
     .map((match) => match[1])
     .filter((method) => method.startsWith("kafka/") || method.startsWith("connection/")),
 );
 
-// api.ts 源码里的方法字面量（`callKafka<...>("kafka/..."`）。
+// api.ts 全文提取 wire 方法字面量（评审 M-4）：只匹配 callKafka( 调用位的话，
+// 把方法串抽成常量或包装函数的无害重构会静默缩水守护面（size>0 挡不住
+// 「缩到剩一个」）；字面量无论内联还是常量都留在本文件里，全文提取对两类
+// 写法同样生效。
 const apiMethods = new Set(
-  [...apiSource.matchAll(/callKafka[^("]*\(\s*"([^"]+)"/g)]
-    .map((match) => match[1])
-    .filter((method) => method.startsWith("kafka/") || method.startsWith("connection/")),
+  [...stripComments(apiSource).matchAll(/"((?:kafka|connection)\/[a-z0-9/]+)"/g)].map((match) => match[1]),
 );
 
 describe("method contract (frontend side)", () => {

@@ -146,7 +146,8 @@ func (s *Service) DeleteACLs(ctx context.Context, req ACLsDeleteRequest) (*ACLsD
 }
 
 // aclBuilderFromFilter 组装 describe/delete 过滤 builder（tinyrdm
-// applyKafkaACLAllowFilter 语义：空 principal/host = 任意）。
+// applyKafkaACLAllowFilter 语义：空 principal/host = 任意——评审 H-1 起才
+// 真正成立，此前空串被 kadm MaybeX("") 钉成字面精确匹配）。
 func aclBuilderFromFilter(filter ACLFilter, create bool) (*kadm.ACLBuilder, error) {
 	resourceType, err := aclResourceType(filter.ResourceType)
 	if err != nil {
@@ -167,11 +168,11 @@ func aclBuilderFromFilter(filter ACLFilter, create bool) (*kadm.ACLBuilder, erro
 	if err != nil {
 		return nil, err
 	}
-	pattern, err := aclPatternType(filter.PatternType)
+	pattern, err := aclFilterPatternType(filter.PatternType)
 	if err != nil {
 		return nil, err
 	}
-	permission, err := aclPermissionType(filter.Permission)
+	permission, err := aclFilterPermissionType(filter.Permission)
 	if err != nil {
 		return nil, err
 	}
@@ -210,6 +211,11 @@ func aclBuilderFromACL(acl ACLBinding, create bool) (*kadm.ACLBuilder, error) {
 	if err != nil {
 		return nil, err
 	}
+	if create && permission == kmsg.ACLPermissionTypeAny {
+		// 创建「不限权限」的 ACL 无意义：kadm 的 any 展开成 allow 侧（评审
+		// M-1），显式拒绝，与 operation=any 同款门禁。
+		return nil, errf("acl.permission must be a concrete permission (not any)")
+	}
 	if trimSpace(acl.Principal) == "" {
 		return nil, errf("acl.principal is required")
 	}
@@ -221,34 +227,81 @@ func aclBuilderFromACL(acl ACLBinding, create bool) (*kadm.ACLBuilder, error) {
 	return builder, nil
 }
 
+// aclBuilderMounts 是 kadm.ACLBuilder 挂载面的最小子集（*kadm.ACLBuilder
+// 天然满足，生产路径零适配）。抽接口只为给离线回归钉一个记录调用序列的
+// 测试缝：断言「空字段 = 零参 any」这一挂载决策（评审 H-1）。
+type aclBuilderMounts interface {
+	AnyResource(name ...string) *kadm.ACLBuilder
+	Topics(t ...string) *kadm.ACLBuilder
+	Groups(g ...string) *kadm.ACLBuilder
+	Clusters() *kadm.ACLBuilder
+	TransactionalIDs(x ...string) *kadm.ACLBuilder
+	DelegationTokens(t ...string) *kadm.ACLBuilder
+	ResourcePatternType(pattern kmsg.ACLResourcePatternType) *kadm.ACLBuilder
+	Allow(principals ...string) *kadm.ACLBuilder
+	AllowHosts(hosts ...string) *kadm.ACLBuilder
+	Deny(principals ...string) *kadm.ACLBuilder
+	DenyHosts(hosts ...string) *kadm.ACLBuilder
+	PrefixUserExcept(except ...string)
+}
+
+// mountNames 名称维度统一挂载：空 = 零参调用（任意），非空 = 精确匹配
+// （评审 H-1：kadm v1.19.0 的 Topics("") 会把空串原样钉进请求过滤的
+// ResourceName——broker 端按字面匹配，空的 principal/host 永不相中，
+// acls/list 恒空、acls/delete 静默 no-op）。
+func mountNames(mount func(...string) *kadm.ACLBuilder, name string) {
+	if trimSpace(name) == "" {
+		mount()
+		return
+	}
+	mount(name)
+}
+
 // applyACLResource 按资源类型挂载（builder 方法族不可参数化，逐类分发）。
-func applyACLResource(builder *kadm.ACLBuilder, resourceType kmsg.ACLResourceType, name string, pattern kmsg.ACLResourcePatternType) {
+func applyACLResource(builder aclBuilderMounts, resourceType kmsg.ACLResourceType, name string, pattern kmsg.ACLResourcePatternType) {
 	builder.ResourcePatternType(pattern)
 	switch resourceType {
 	case kmsg.ACLResourceTypeTopic:
-		builder.Topics(name)
+		mountNames(builder.Topics, name)
 	case kmsg.ACLResourceTypeGroup:
-		builder.Groups(name)
+		mountNames(builder.Groups, name)
 	case kmsg.ACLResourceTypeCluster:
-		builder.Clusters()
+		builder.Clusters() // cluster 无名称维度
 	case kmsg.ACLResourceTypeTransactionalId:
-		builder.TransactionalIDs(name)
+		mountNames(builder.TransactionalIDs, name)
 	case kmsg.ACLResourceTypeDelegationToken:
-		builder.DelegationTokens(name)
+		mountNames(builder.DelegationTokens, name)
 	default: // any / user
-		builder.AnyResource(name)
+		mountNames(builder.AnyResource, name)
 	}
 }
 
-// applyACLPermission 权限与 principal/host（空 = 任意，tinyrdm 同款）。
-func applyACLPermission(builder *kadm.ACLBuilder, permission kmsg.ACLPermissionType, principal, host string) {
+// applyACLPermission 权限与 principal/host：空 = 任意（零参），非空 = 精确。
+// Allow/Deny 只挂对应侧；Any 两侧都挂——kadm 在「双侧全 any」时折叠成单条
+// PermissionType=Any 的过滤，钉了 principal/host 时展开为 Allow+Deny 两条
+// （broker 的 permission 过滤没有「双侧」单值）。create 的 host 留空走零参，
+// kadm 建档时按文档默认展开为 "*"。
+func applyACLPermission(builder aclBuilderMounts, permission kmsg.ACLPermissionType, principal, host string) {
+	principalArg := []string(nil)
+	if p := trimSpace(principal); p != "" {
+		principalArg = []string{p}
+	}
+	hostArg := []string(nil)
+	if h := trimSpace(host); h != "" {
+		hostArg = []string{h}
+	}
 	switch permission {
 	case kmsg.ACLPermissionTypeDeny:
-		builder.MaybeDeny(principal)
-		builder.MaybeDenyHosts(host)
-	default:
-		builder.MaybeAllow(principal)
-		builder.MaybeAllowHosts(host)
+		builder.Deny(principalArg...)
+		builder.DenyHosts(hostArg...)
+	case kmsg.ACLPermissionTypeAllow:
+		builder.Allow(principalArg...)
+		builder.AllowHosts(hostArg...)
+	default: // any（含 unknown 兜底）
+		builder.Allow(principalArg...)
+		builder.AllowHosts(hostArg...)
+		builder.Deny(principalArg...)
+		builder.DenyHosts(hostArg...)
 	}
 	builder.PrefixUserExcept("User:", "Group:", "ANONYMOUS")
 }
