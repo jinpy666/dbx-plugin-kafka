@@ -13,6 +13,7 @@ import { filterTopics, sortTopicsPinned } from "../lib/topics";
 import { isFavoriteTopic, toggleTopicFavorite, topicFavorites } from "../lib/topicFavorites";
 import { SHOW_INTERNAL_KEY, TREE_COLLAPSED_KEY, TREE_WIDTH_KEY, pluginStore } from "../lib/pluginStore";
 import { friendlyKafkaError } from "../lib/kafkaErrors";
+import { isConnectionInactiveError } from "../lib/connectRetry";
 import { t } from "../lib/i18n";
 
 const props = defineProps<{
@@ -29,6 +30,10 @@ const emit = defineEmits<{
   // 切换由父级（App）统一接线（selectTopic + openPanel 单一来源）。
   (e: "openProduce", topic: string): void;
   (e: "openConsume", topic: string): void;
+  // 连接未就绪（boot 恢复撞上宿主 connect 重放 / 连接在侧边栏被重开）时的
+  // 恢复出口：请宿主按最新配置重开连接后再试。重试窗口耗尽落错误态后，
+  // 这是唯一的页内出口（刷新只会重复失败）。
+  (e: "reconnect"): void;
 }>();
 
 // -- 侧栏宽度 / 折叠（pluginStore 记忆：宿主 storage → localStorage 降级）--------
@@ -144,6 +149,8 @@ const visible = computed(() =>
 // 未覆盖/与原文不同时把原始串留在 title 悬停里供排查。
 const friendlyError = computed(() => (props.error ? friendlyKafkaError(props.error) : ""));
 const errorDetail = computed(() => (props.error && friendlyError.value !== props.error ? props.error : ""));
+// 「连接未就绪」类错误单独给重连出口（分支B：请求宿主重开连接后重试）。
+const inactiveError = computed(() => (props.error ? isConnectionInactiveError(props.error) : false));
 
 function isInternal(topic: KafkaTopic): boolean {
   return topic.isInternal === true || topic.name.startsWith("_");
@@ -315,7 +322,12 @@ onBeforeUnmount(() => window.removeEventListener("keydown", onGlobalKeydown));
              直达树行，不会先误停在清除钮上；键盘清空走既有 Esc 路径。 -->
         <button v-if="keyword" class="icon-button" tabindex="-1" :title="t('close')" :aria-label="t('close')" @click="clearFilter"><X /></button>
       </div>
-      <div v-if="error" class="tree-error" :title="errorDetail">{{ friendlyError }}</div>
+      <div v-if="error" class="tree-error" :title="errorDetail">
+        <span>{{ friendlyError }}</span>
+        <button v-if="inactiveError" type="button" class="tree-reconnect" data-testid="tree-reconnect" @click="emit('reconnect')">
+          <RefreshCw aria-hidden="true" /> {{ t("tree.reconnect") }}
+        </button>
+      </div>
       <div v-else-if="loading && topics.length === 0" class="tree-state">{{ t("tree.loading") }}</div>
       <div v-else-if="visible.length === 0" class="tree-state">
         {{ keyword ? t("tree.noMatch", { keyword }) : t("tree.empty") }}
@@ -425,5 +437,27 @@ onBeforeUnmount(() => window.removeEventListener("keydown", onGlobalKeydown));
 }
 .tree-quick:hover {
   color: var(--primary);
+}
+
+/* 错误区的「重新连接」出口：小号描边钮，随 .tree-error 布局内联。 */
+.tree-reconnect {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-top: 4px;
+  padding: 2px 8px;
+  border: 1px solid color-mix(in srgb, var(--destructive) 45%, transparent);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--destructive);
+  font-size: 11px;
+  cursor: pointer;
+}
+.tree-reconnect svg {
+  width: 12px;
+  height: 12px;
+}
+.tree-reconnect:hover {
+  background: color-mix(in srgb, var(--destructive) 10%, transparent);
 }
 </style>
