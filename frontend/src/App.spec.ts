@@ -7,6 +7,7 @@ import { flushPromises, mount } from "@vue/test-utils";
 import App from "./App.vue";
 import MessagesPanel from "./components/MessagesPanel.vue";
 import { setKafkaConnectionId } from "./lib/api";
+import { BOOT_RESTORE_RETRY_DELAY_MS, BOOT_RESTORE_RETRY_MAX } from "./lib/connectRetry";
 
 const invokeMock = vi.fn();
 // 宿主桥事件监听器列表（App壳 handleEvent 与 useUiIntent 各订阅一份）。
@@ -151,6 +152,70 @@ describe("App stream backpressure visibility (§8.3 遗留收口)", () => {
     await flushPromises();
     expect(wrapper.find(".notice").exists()).toBe(false);
     wrapper.unmount();
+  });
+});
+
+describe("App boot restore retry (web/docker 恢复自愈)", () => {
+  const INACTIVE = `connection "conn-test" is not connected; call connection/connect first`;
+
+  function mockTopics(handler: (calls: number) => { topics: unknown[] } | Error) {
+    let calls = 0;
+    invokeMock.mockImplementation(async (method: string) => {
+      if (method === "kafka/topics/list") {
+        calls += 1;
+        const result = handler(calls);
+        if (result instanceof Error) throw result;
+        return result;
+      }
+      if (method === "kafka/connections/statuses") return { statuses: [] };
+      if (method === "kafka/presets/list") return { presets: [] };
+      throw new Error(`unhandled method: ${method}`);
+    });
+    return () => calls;
+  }
+
+  it("absorbs the connect-replay race: first topics load failing as not-connected retries and self-heals", async () => {
+    vi.useFakeTimers();
+    const getCalls = mockTopics((calls) => (calls === 1 ? new Error(INACTIVE) : { topics: [] }));
+    const wrapper = mount(App);
+    await flushPromises();
+    // 首拍撞上未回填的注册表：进入 boot 窗口轮询而非落错误终态。
+    expect(getCalls()).toBe(1);
+    expect(wrapper.find(".tree-error").exists()).toBe(false);
+    await vi.advanceTimersByTimeAsync(BOOT_RESTORE_RETRY_DELAY_MS);
+    await flushPromises();
+    // 重放晚到（第二拍成功）：恢复页自愈，无错误卡。
+    expect(getCalls()).toBe(2);
+    expect(wrapper.find(".tree-error").exists()).toBe(false);
+    wrapper.unmount();
+    vi.useRealTimers();
+  });
+
+  it("stops after the bounded boot window and surfaces the error", async () => {
+    vi.useFakeTimers();
+    const getCalls = mockTopics(() => new Error(INACTIVE));
+    const wrapper = mount(App);
+    await flushPromises();
+    await vi.advanceTimersByTimeAsync(BOOT_RESTORE_RETRY_MAX * BOOT_RESTORE_RETRY_DELAY_MS);
+    await flushPromises();
+    // 窗口耗尽落终态：调用次数有界（首拍 + 12 轮），不再无限轮询。
+    expect(getCalls()).toBe(BOOT_RESTORE_RETRY_MAX + 1);
+    expect(wrapper.find(".tree-error").exists()).toBe(true);
+    wrapper.unmount();
+    vi.useRealTimers();
+  });
+
+  it("fails a real transport error on the first attempt without retrying", async () => {
+    vi.useFakeTimers();
+    const getCalls = mockTopics(() => new Error("dial tcp: connection refused"));
+    const wrapper = mount(App);
+    await flushPromises();
+    await vi.advanceTimersByTimeAsync(3 * BOOT_RESTORE_RETRY_DELAY_MS);
+    await flushPromises();
+    expect(getCalls()).toBe(1);
+    expect(wrapper.find(".tree-error").exists()).toBe(true);
+    wrapper.unmount();
+    vi.useRealTimers();
   });
 });
 
