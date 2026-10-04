@@ -295,6 +295,29 @@ async function loadTopics() {
   }
 }
 
+// -- 手动重连 -------------------------------------------------------------------
+// 「连接未就绪」（boot 恢复撞上宿主 connect 重放晚到 / 重试窗口耗尽落错误态）
+// 的页内恢复出口：先请宿主按当前最新配置重开连接（宿主以打开连接的同款流程
+// 重新下发配置并 connect，sidecar 注册表随之回填），再重试 topics 加载——
+// loadTopics 的手动窗口（3s×10）给宿主重开/connect 重放留时间，重开后自愈。
+// 旧宿主无 reopenConnection 方法也无 host.reopenConnection 路由：请求报错
+// 静默忽略，行为退化为仅重试——用户从 DBX 左侧连接列表重新打开后轮询自愈。
+async function requestHostReopenConnection() {
+  if (!connectionId.value) return;
+  try {
+    const api = window.dbxPlugin;
+    if (api.reopenConnection) await api.reopenConnection(connectionId.value);
+    else await api.request("host.reopenConnection", { connectionId: connectionId.value });
+  } catch {
+    // 旧宿主无此方法。
+  }
+}
+
+async function reconnectConnection() {
+  await requestHostReopenConnection();
+  void loadTopics();
+}
+
 function selectTopic(topic: string) {
   selectedTopic.value = topic;
   // MCP UI 快照（M3）：topic 选中后上报（consume-bar 下拉/树选中同源）。
@@ -533,6 +556,7 @@ onBeforeUnmount(() => {
           @select="selectTopic"
           @open-produce="(topic) => openTopicPanel(topic, 'produce')"
           @open-consume="(topic) => openTopicPanel(topic, 'messages')"
+          @reconnect="reconnectConnection"
         />
         <div class="divider" />
         <main class="main-pane">

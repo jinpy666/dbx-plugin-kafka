@@ -66,6 +66,7 @@ export const messages = {
       unhealthyTitle: "{count} partition(s) unhealthy",
       openProduce: "Open producer",
       openConsume: "Open consumer",
+      reconnect: "Reconnect",
     },
     messages: {
       topic: "Topic",
@@ -692,6 +693,7 @@ export const messages = {
       unhealthyTitle: "{count} 个分区不健康",
       openProduce: "打开生产",
       openConsume: "打开消费",
+      reconnect: "重新连接",
     },
     messages: {
       topic: "Topic",
@@ -1318,6 +1320,7 @@ export const messages = {
       unhealthyTitle: "{count} 個分區不健康",
       openProduce: "開啟生產",
       openConsume: "開啟消費",
+      reconnect: "重新連線",
     },
     messages: {
       topic: "Topic",
@@ -1944,6 +1947,7 @@ export const messages = {
       unhealthyTitle: "{count} partición(es) en mal estado",
       openProduce: "Abrir productor",
       openConsume: "Abrir consumidor",
+      reconnect: "Reconectar",
     },
     messages: {
       topic: "Topic",
@@ -2570,6 +2574,7 @@ export const messages = {
       unhealthyTitle: "{count} partizione/i non integre",
       openProduce: "Apri producer",
       openConsume: "Apri consumer",
+      reconnect: "Riconnetti",
     },
     messages: {
       topic: "Topic",
@@ -3196,6 +3201,7 @@ export const messages = {
       unhealthyTitle: "{count} 個のパーティションが不健全",
       openProduce: "プロデューサーを開く",
       openConsume: "コンシューマーを開く",
+      reconnect: "再接続",
     },
     messages: {
       topic: "Topic",
@@ -3822,6 +3828,7 @@ export const messages = {
       unhealthyTitle: "{count} partição(ões) fora do estado saudável",
       openProduce: "Abrir produtor",
       openConsume: "Abrir consumidor",
+      reconnect: "Reconectar",
     },
     messages: {
       topic: "Tópico",

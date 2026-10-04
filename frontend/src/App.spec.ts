@@ -219,6 +219,70 @@ describe("App boot restore retry (web/docker 恢复自愈)", () => {
   });
 });
 
+describe("App manual reconnect entry (web/docker 恢复自愈)", () => {
+  const INACTIVE = `connection "conn-test" is not connected; call connection/connect first`;
+
+  function mockInactiveTopics() {
+    let calls = 0;
+    invokeMock.mockImplementation(async (method: string) => {
+      if (method === "kafka/topics/list") {
+        calls += 1;
+        throw new Error(INACTIVE);
+      }
+      if (method === "kafka/connections/statuses") return { statuses: [] };
+      if (method === "kafka/presets/list") return { presets: [] };
+      throw new Error(`unhandled method: ${method}`);
+    });
+    return () => calls;
+  }
+
+  it("asks the host to reopen the connection and retries via the manual window", async () => {
+    vi.useFakeTimers();
+    const getCalls = mockInactiveTopics();
+    // request 通道单独记录（host.reopenConnection 回退走 api.request，不经 invoke）。
+    const requestCalls: Array<[string, unknown]> = [];
+    (window as unknown as { dbxPlugin: { request: unknown } }).dbxPlugin.request = async (method: string, params?: unknown) => {
+      requestCalls.push([method, params]);
+      if (method === "host.getContext") return { connectionId: "conn-test" };
+      return {};
+    };
+    const wrapper = mount(App);
+    await flushPromises();
+    // boot 窗口耗尽落错误态,树错误区出现重连出口。
+    await vi.advanceTimersByTimeAsync(BOOT_RESTORE_RETRY_MAX * BOOT_RESTORE_RETRY_DELAY_MS);
+    await flushPromises();
+    expect(wrapper.find("[data-testid=tree-reconnect]").exists()).toBe(true);
+    const before = getCalls();
+    await wrapper.find("[data-testid=tree-reconnect]").trigger("click");
+    await flushPromises();
+    // 旧宿主回退路径:无 reopenConnection 直通方法 → host.reopenConnection 请求。
+    expect(requestCalls).toContainEqual(["host.reopenConnection", { connectionId: "conn-test" }]);
+    // 重连后走手动窗口(3s×10)轮询重试。
+    await vi.advanceTimersByTimeAsync(3000);
+    await flushPromises();
+    expect(getCalls()).toBeGreaterThan(before);
+    wrapper.unmount();
+    vi.useRealTimers();
+  });
+
+  it("uses the direct reopenConnection bridge method when the host provides it", async () => {
+    vi.useFakeTimers();
+    mockInactiveTopics();
+    const reopen = vi.fn(async () => undefined);
+    (window as unknown as { dbxPlugin: { reopenConnection?: unknown } }).dbxPlugin.reopenConnection = reopen;
+    const wrapper = mount(App);
+    await flushPromises();
+    await vi.advanceTimersByTimeAsync(BOOT_RESTORE_RETRY_MAX * BOOT_RESTORE_RETRY_DELAY_MS);
+    await flushPromises();
+    await wrapper.find("[data-testid=tree-reconnect]").trigger("click");
+    await flushPromises();
+    expect(reopen).toHaveBeenCalledWith("conn-test");
+    expect(invokeMock.mock.calls.some(([method]) => method === "host.reopenConnection")).toBe(false);
+    wrapper.unmount();
+    vi.useRealTimers();
+  });
+});
+
 describe("App MCP UI intent wiring (M3)", () => {
   it("applies a focus intent by switching panels and reports through kafka/ui/state/report", async () => {
     const wrapper = await mountApp();

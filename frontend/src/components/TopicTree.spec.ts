@@ -40,6 +40,24 @@ describe("TopicTree", () => {
     expect(wrapper.find(".tree-error").text()).toBe("boom");
   });
 
+  // 重连出口（web/docker 恢复自愈）：仅「连接未就绪」类错误给页内重连按钮，
+  // 点击 emit reconnect（由 App 请宿主重开连接后再试）；其他错误不给出口。
+  it("shows the reconnect exit only for connection-inactive errors and emits reconnect", async () => {
+    const inactive = mount(TopicTree, {
+      props: { topics: [], loading: false, error: 'connection "conn-test" is not connected; call connection/connect first', selectedTopic: "" },
+    });
+    const button = inactive.find("[data-testid=tree-reconnect]");
+    expect(button.exists()).toBe(true);
+    expect(button.text()).toContain(t("tree.reconnect"));
+    await button.trigger("click");
+    expect(inactive.emitted("reconnect")).toHaveLength(1);
+    inactive.unmount();
+
+    const other = mount(TopicTree, { props: { topics: [], loading: false, error: "connection lost (fixture error injection)", selectedTopic: "" } });
+    expect(other.find("[data-testid=tree-reconnect]").exists()).toBe(false);
+    other.unmount();
+  });
+
   // P2-18：树错误区与错误横幅同源 friendlyKafkaError——夹具/网络类错误本地化，
   // 原始串留在 title 悬停；未覆盖错误原文透传且无 title。
   it("friendly-maps connection errors and keeps the raw string in the title (P2-18)", () => {

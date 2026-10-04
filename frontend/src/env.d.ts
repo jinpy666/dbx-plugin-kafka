@@ -94,6 +94,11 @@ interface DbxPluginApi {
     delete(key: string): Promise<unknown>;
   };
   request<T = unknown>(method: string, params?: unknown): Promise<T>;
+  /**
+   * 请宿主按当前最新配置重开连接（新版宿主直通方法；旧宿主缺省——
+   * 调用方回退 host.reopenConnection 请求，再旧则报错静默忽略）。
+   */
+  reopenConnection?(connectionId: string): Promise<void>;
   invoke<T = unknown>(method: string, params?: unknown, options?: { timeoutMs?: number }): Promise<T>;
   notify(method: string, params?: unknown): Promise<void>;
   sendBinary(channel: string, data: Uint8Array | ArrayBuffer | string): Promise<void>;
