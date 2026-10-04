@@ -10,6 +10,7 @@ import { isDbxPluginTheme, onHostThemeChange, themeToAppearance } from "./lib/ho
 import { setWorkbenchLocale, t } from "./lib/i18n";
 import { kafkaApi, setKafkaConnectionId, type KafkaStreamErrorEvent, type KafkaStreamMessagesEvent, type KafkaTopic } from "./lib/api";
 import { friendlyKafkaError } from "./lib/kafkaErrors";
+import { decideConnectRetry } from "./lib/connectRetry";
 import { parseAuditEvent, pushAuditItem, type AuditFeedItem } from "./lib/auditFeed";
 import { useUiIntent, type UiIntentOutcome } from "../../shared/frontend/uiIntent";
 import { applyAppearanceColorVars, subscribeHostEnvironment } from "../../shared/frontend/hostThemeRuntime";
@@ -244,17 +245,53 @@ function colorWithAlpha(color: string, alpha: number) {
 
 // -- topics ---------------------------------------------------------------------
 
+// -- topics ---------------------------------------------------------------------
+
+// boot 恢复自愈（web/docker 刷新恢复场景）：工作台生命周期内的首次 topics
+// 加载（initialize 调起）属于 boot 恢复路径——整页刷新/宿主重启后重建的
+// iframe 可能跑赢宿主的 connect 重放，sidecar 以「connection … is not
+// connected」拒绝。decideConnectRetry 对该类错误给有界固定节奏窗口，重放
+// 晚到时自愈；真实失败（认证/网络/超时）保持直接报错。seq 取代 loading 标志
+// 作并发守卫：boot 窗口轮询期间用户点刷新/重连要能打断旧循环（旧 loading
+// 守卫会把这些入口静默吞掉），新调用递增 seq、旧循环醒来即弃。
+
+let bootTopicsLoaded = false;
+let loadTopicsSeq = 0;
+
 async function loadTopics() {
-  if (topicsLoading.value) return;
+  const seq = ++loadTopicsSeq;
+  const bootRestore = !bootTopicsLoaded;
   topicsLoading.value = true;
   topicsError.value = "";
   try {
-    const response = await kafkaApi.topicsList(true);
-    topics.value = Array.isArray(response.topics) ? response.topics : [];
-  } catch (cause) {
-    topicsError.value = cause instanceof Error ? cause.message : String(cause);
+    let attempt = 0;
+    for (;;) {
+      let cause: unknown;
+      try {
+        const response = await kafkaApi.topicsList(true);
+        if (seq !== loadTopicsSeq) return;
+        topics.value = Array.isArray(response.topics) ? response.topics : [];
+        bootTopicsLoaded = true;
+        return;
+      } catch (caught) {
+        cause = caught;
+      }
+      const decision = decideConnectRetry({ cause, attempt, bootRestore });
+      if (decision.kind === "fail") {
+        if (seq === loadTopicsSeq) topicsError.value = cause instanceof Error ? cause.message : String(cause);
+        return;
+      }
+      if (seq !== loadTopicsSeq) return;
+      attempt = decision.attempt;
+      await new Promise((resolve) => setTimeout(resolve, decision.delayMs));
+    }
   } finally {
-    topicsLoading.value = false;
+    if (seq === loadTopicsSeq) {
+      topicsLoading.value = false;
+      // boot 窗口结束（成功或耗尽）后，后续手动刷新走手动窗口（3s×10，
+      // 给「从 DBX 左侧连接列表重新打开」留操作时间）。
+      bootTopicsLoaded = true;
+    }
   }
 }
 
@@ -439,6 +476,8 @@ onBeforeUnmount(() => {
   // H-1 回归后壳层不再持有监听）。
   window.clearTimeout(noticeTimer);
   uiIntent.stop();
+  // 取消未决的 topics 重试循环（boot/手动窗口可能还有几十秒的定时睡眠）。
+  loadTopicsSeq++;
   for (const dispose of [...unsubscribeEnvironment, ...unsubscribeEvent]) dispose();
 });
 </script>
