@@ -3,7 +3,7 @@
   "manifest_version": 1,
   "id": "io.dbx.kafka",
   "name": "Kafka Studio",
-  "version": "0.1.53",
+  "version": "0.1.54-beta.1",
   "publisher": "jinpy",
   "description": "Operate Apache Kafka from one DBX workspace: inspect topics, brokers, and consumer lag; search, stream, and produce messages with multi-channel filters and payload decoding; manage offsets, ACLs, and Schema Registry. Read-only by default, with guarded writes and 11 MCP tools for AI automation.",
   "source": "https://github.com/jinpy666/dbx-plugin-kafka",
