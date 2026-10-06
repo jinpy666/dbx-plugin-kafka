@@ -16,7 +16,7 @@ require (
 	github.com/linkedin/goavro/v2 v2.15.0
 	github.com/pierrec/lz4/v4 v4.1.30
 	github.com/t8y2/dbx/plugins/sdk/go/dbx-plugin-sdk v0.0.0-00010101000000-000000000000
-	github.com/twmb/franz-go v1.22.0
+	github.com/twmb/franz-go v1.22.1
 	github.com/twmb/franz-go/pkg/kadm v1.19.0
 	github.com/twmb/franz-go/pkg/kmsg v1.14.0
 	github.com/twmb/franz-go/pkg/sasl/kerberos v1.1.0
