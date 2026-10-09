@@ -827,6 +827,21 @@ type ConsumePreset struct {
 	Params ConsumeParams `json:"params"`
 }
 
+// MonitorParams 是监控方案（kafka/presets/*，params.type="monitor"）的
+// 载荷（Phase 2 MonitorPanel；issue #75）：MonitorPanel 保存/恢复所用的
+// 最小快照，字段形状与前端 MonitorPresetParams 一致。监控方案不绑定
+// connection（跨连接复用），凭据不落盘。
+type MonitorParams struct {
+	// Group 消费组（空 = 未选，应用方案时由用户补选）。
+	Group string `json:"group,omitempty"`
+	// Topics 监控的 topic 名列表。
+	Topics []string `json:"topics,omitempty"`
+	// IntervalSec 采样间隔秒数（5–60，与 MonitorPanel clampInterval 同界）。
+	IntervalSec int `json:"intervalSec,omitempty"`
+	// Threshold 总 lag 告警阈值（0 = 关闭告警）。
+	Threshold int `json:"threshold,omitempty"`
+}
+
 // PresetStore 是预设持久化接口（main.go 注入 store-backed 实现；
 // Service.Presets 为 nil 时 kafka/presets/* 返回业务错误）。
 type PresetStore interface {

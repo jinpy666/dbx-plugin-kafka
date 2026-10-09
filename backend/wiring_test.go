@@ -228,6 +228,74 @@ func TestPresetsLifecycleOffline(t *testing.T) {
 	}
 }
 
+// TestMonitorPresetWireRoundTrip（issue #75）锁定监控方案的保存→加载 wire
+// 往返：MonitorPanel 走 kafka/presets/save 下发 params.type="monitor" +
+// monitor 载荷（前端 KafkaPreset.params 的扩展形状）。ConsumeParams 若缺
+// type/monitor 字段，encoding/json 会静默丢弃未知键——save 返回 success
+// 但 presets.json 里只剩 topic/offsetStrategy，presets/list 回来后前端按
+// params.type==="monitor" 过滤全部落空，下拉列表恒空。
+func TestMonitorPresetWireRoundTrip(t *testing.T) {
+	h := newTestHandler(t)
+
+	// 请求 JSON 与 MonitorPanel.savePlan 下发形状逐字段一致。
+	saveBody := `{"preset":{"id":"monitor-1759900000000","name":"orders-lag",` +
+		`"params":{"topic":"","offsetStrategy":"latest","type":"monitor",` +
+		`"monitor":{"group":"payment-gateway","topics":["order-events","payment-gateway"],` +
+		`"intervalSec":10,"threshold":1000}}}}`
+	res, perr := callHandle(h, "kafka/presets/save", saveBody, nil)
+	if perr != nil {
+		t.Fatalf("save: %v", perr)
+	}
+	saved := res.(map[string]any)["preset"].(*kafkaconn.ConsumePreset)
+	if saved.Params.Type != "monitor" {
+		t.Fatalf("saved params.type = %q, want %q (wire field dropped?)", saved.Params.Type, "monitor")
+	}
+	if saved.Params.Monitor == nil {
+		t.Fatal("saved params.monitor = nil, want payload kept")
+	}
+	want := kafkaconn.MonitorParams{
+		Group:       "payment-gateway",
+		Topics:      []string{"order-events", "payment-gateway"},
+		IntervalSec: 10,
+		Threshold:   1000,
+	}
+	if got := *saved.Params.Monitor; len(got.Topics) != len(want.Topics) || got.Group != want.Group ||
+		got.IntervalSec != want.IntervalSec || got.Threshold != want.Threshold {
+		t.Fatalf("saved monitor = %+v, want %+v", got, want)
+	}
+
+	// list 路径：落盘再读回（走 store presets.json 全量序列化），字段必须仍在。
+	res, _ = callHandle(h, "kafka/presets/list", `{}`, nil)
+	presets := res.(map[string]any)["presets"].([]kafkaconn.ConsumePreset)
+	if len(presets) != 1 {
+		t.Fatalf("list = %d presets, want 1", len(presets))
+	}
+	preset := presets[0]
+	if preset.Params.Type != "monitor" || preset.Params.Monitor == nil {
+		t.Fatalf("listed preset params = %+v, want type=monitor + monitor payload kept", preset.Params)
+	}
+	if got := *preset.Params.Monitor; got.Group != want.Group || got.IntervalSec != want.IntervalSec ||
+		got.Threshold != want.Threshold || len(got.Topics) != 2 {
+		t.Fatalf("listed monitor = %+v, want %+v", got, want)
+	}
+
+	// 消费预设互不误伤：不带 type 的预设照旧可存可列（缺省空串）。
+	if _, perr = callHandle(h, "kafka/presets/save",
+		`{"preset":{"name":"hourly","params":{"topic":"t1","offsetStrategy":"latest"}}}`, nil); perr != nil {
+		t.Fatalf("save consume preset: %v", perr)
+	}
+	res, _ = callHandle(h, "kafka/presets/list", `{}`, nil)
+	presets = res.(map[string]any)["presets"].([]kafkaconn.ConsumePreset)
+	if len(presets) != 2 {
+		t.Fatalf("list = %d presets, want 2", len(presets))
+	}
+	for _, preset := range presets {
+		if preset.Name == "hourly" && preset.Params.Type != "" {
+			t.Fatalf("consume preset params.type = %q, want empty", preset.Params.Type)
+		}
+	}
+}
+
 func TestMCPFaceOffline(t *testing.T) {
 	h := newTestHandler(t)
 

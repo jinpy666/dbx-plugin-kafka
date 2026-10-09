@@ -107,6 +107,16 @@ type ConsumeParams struct {
 	// JSON 文本；命中消息附加 schemaId/schemaSubject/schemaVersion 字段，
 	// 解码失败置 decodeError（不中断消费）。
 	Schema *SchemaRef `json:"schema,omitempty"`
+
+	// Type 是预设类型标记（Phase 2 监控方案复用同一 presets store；issue
+	// #75）：消费预设缺省不写，"monitor" = MonitorPanel 监控方案。此前缺
+	// 该字段，encoding/json 反序列化静默丢弃前端下发的 type 键，save 返回
+	// success 但 list 回来后前端按 params.type==="monitor" 过滤全部落空
+	// ——监控方案保存后下拉列表恒空。
+	Type string `json:"type,omitempty"`
+	// Monitor 是 type="monitor" 时的监控方案载荷（MonitorPanel 保存/恢复的
+	// 最小快照）；消费预设恒 nil。缺字段时载荷同样被静默丢弃（issue #75）。
+	Monitor *MonitorParams `json:"monitor,omitempty"`
 }
 
 // ConsumeFieldFilter 字段级过滤（三通道 + JSON path + 数值比较）。

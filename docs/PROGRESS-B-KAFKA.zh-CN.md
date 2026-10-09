@@ -822,3 +822,51 @@ client 接口抽象（超出本轮"不重构"约束，登记不实施）。
 **测试**：新增 `TestDecompressBombGuard`（全解压分支超限）、`TestMessageTruncationAtLimit` 扩展（valueText 截断）、`TestConsumePoolPutSkipsInUseReplacement` + `TestConsumePoolPutConcurrentInUseGuard`（-race）、`TestTextMatcherRegexUsesPrecompiledCache`、`TestSettingsPersistRoundtrip` 扩展、`TestStartStreamValidationOffline` 扩展（无僵尸会话断言）、`TestSchemaRegistryClientTLSTransport`、`TestConnectAuditsInsecureSkipVerify`、`TestDeleteGroupGateMatrix` 扩展（confirmGroup 矩阵）；GroupsPanel spec 补输入确认门禁/参数上送断言。
 
 **验证终值**：`go build/vet/gofmt` 0 告警、`go test ./...` 全绿（kafkaconn/mcp/lifecycle/store；池并发用例 `-race -count=2` 通过）；前端 `vue-tsc` 通过、vitest 346/346（含 i18n 七语对齐 spec）；smoke `total=18 PASS=13 FAIL=0 SKIP=5`（SKIP 均环境性：Glue/PROTOBUF/OAUTH/SASL/TLS matrix）；smoke_mcp `19/19`（K18 消费池 churn 50 轮压 M1 路径）。S17 TLS matrix SKIP 的 TLS 生效性由 L3/L5 单测覆盖。
+
+## 19. 监控方案保存后下拉列表恒空修复（GitHub issue #75，2026-10-08）
+
+> 用户 wangtaicheng 报告：监控方案保存后，下拉列表中无显示。main 分支
+> 工作区直改，无 commit/push；未改 host/ 与其他子模块。
+
+**根因**：监控方案复用 `kafka/presets/*`（`params.type="monitor"` +
+`params.monitor` 载荷，前端 `KafkaPreset.params` 类型与 mock 均按此形状），
+但 sidecar 端 `kafkaconn.ConsumeParams` 结构体从未声明 `type`/`monitor`
+两个字段——`encoding/json` 反序列化静默丢弃未知键。于是 save 返回
+success（`topic`/`offsetStrategy` 是合法字段）但 `presets.json` 里只剩
+`{topic:"", offsetStrategy:"latest"}`；`presets/list` 回来后前端
+MonitorPanel 按 `params.type==="monitor"` 过滤全部落空，下拉恒空
+（useConsumeForm 侧按 `type!=="monitor"` 过滤则表现为消费预设列表混入
+无参方案，两处症状同源）。bug 逃逸原因：前端测试走 mockDbxHost（原样
+透传不丢字段），真实 sidecar 的序列化丢字段只有 wire 层测试能抓住。
+
+**修复**（additive，向后兼容）：
+
+| 改动 | 位置 |
+|---|---|
+| `ConsumeParams` 尾部新增 `Type string`（json `type,omitempty`）与 `Monitor *MonitorParams`（json `monitor,omitempty`），注释记录 issue #75 与丢字段机理 | `backend/internal/kafkaconn/messages.go` |
+| 新增 `MonitorParams` 载荷类型（`group`/`topics`/`intervalSec`/`threshold`，形状与前端 `MonitorPresetParams` 一致；不绑 connection、凭据不落盘） | `backend/internal/kafkaconn/types.go`（ConsumePreset 旁） |
+| MCP digest schema 契约守卫：`type`/`monitor` 登记 `digestStructAllowlist`（预设存储专用，digest 无预设语义） | `backend/internal/mcp/consume_schema_parity_test.go` |
+| 新增 `TestMonitorPresetWireRoundTrip`：照 MonitorPanel.savePlan 真实 JSON 形状走 save → 落盘 → list 全程，断言 `type` 与 `monitor` 四字段保留、消费预设互不误伤（先红后绿锁定 bug） | `backend/wiring_test.go` |
+| 协议文档 §3.7 补「预设类型与监控方案载荷」小节（type 取值、monitor 载荷形状、旧 sidecar 缺陷行为、MCP 不暴露） | `docs/PROTOCOL_KAFKA.zh-CN.md` |
+
+**验证**：`CGO_ENABLED=0 go vet ./...` 0 告警；`go test ./... -count=1`
+全绿（main/kafkaconn/lifecycle/mcp/store，新增用例先红后绿）；前端零
+改动，`vue-tsc --noEmit` 通过、vitest 400/400。mock（mockDbxHost）透传
+形状与修复后真实桥一致，无需改。
+
+**独立复核**（2026-10-09，修复验证 agent）：HEAD 旧代码在临时 worktree
+上跑"save 带 type/monitor → list 原始 JSON 断言"运行时红测，复现丢字段
+（list 仅剩 `{"connectionId":"","topic":"","offsetStrategy":"latest"}`，
+即 bug 症状的直接机理）；工作区修复代码重跑 `go vet` 0 告警、
+`go test ./... -count=1` 全绿（含 `TestMonitorPresetWireRoundTrip`）、
+前端 `vue-tsc --noEmit` 通过、vitest 400/400；另以 `go build` 真实
+sidecar 二进制 + `sidecar_client_jsonl.py` 走 stdio-jsonl 全链路
+save/list 往返，`type`/`monitor` 四字段完整保留（wire PASS）。smoke
+S1–S15 无 presets/监控方案场景（纯本地存储无 Kafka 依赖），记 SKIP。
+复核用临时产物（worktree、二进制、脚本）均已清理，未触碰在途改动。
+
+**遗留风险**：已保存过的存量脏数据（`presets.json` 中缺 `type`/`monitor`
+的旧监控方案）无法凭空恢复，用户需重新保存一次；因保存当时返回过
+success，旧版本里用户无感知丢数据，建议发版说明提一句。真机宿主 UI
+下拉展示未在本环境复验（需 DBX.app 加载插件实测），由 wire 级验证与
+前端过滤逻辑等价覆盖。

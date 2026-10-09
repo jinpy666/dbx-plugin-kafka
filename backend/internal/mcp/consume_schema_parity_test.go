@@ -67,6 +67,8 @@ var digestStructAllowlist = map[string]string{
 	"consumeId":           "取消句柄属一次性消费传输层，digest 不支持取消",
 	"skipValueBase64":     "digest 固定跳过 valueBase64 通道，内部设置",
 	"retentionByteBudget": "digest 固定显式预算（digestRetentionByteBudget），内部设置",
+	"type":                "预设类型标记（issue #75 监控方案），仅 presets store 读写，digest 无预设语义",
+	"monitor":             "监控方案载荷（issue #75），仅 presets store 读写，digest 无预设语义",
 }
 
 func TestDigestSchemaCoversConsumeParams(t *testing.T) {

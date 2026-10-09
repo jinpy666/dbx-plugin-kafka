@@ -375,6 +375,17 @@ Host API 1.0 的 `plugin_connection_params` 只发送 `runtime.host:port`，且
 **`kafka/presets/remove`** — `id:string`；返回 `{success:true}`；未知 id →
 `-32000`。
 
+**预设类型与监控方案载荷**（issue #75 补契）：`params.type` 标记预设归属
+——缺省 = 消费预设（消息面板管），`"monitor"` = 监控方案（监控面板管，
+保存/加载/删除复用本组方法，跨连接复用不绑 connection）；`params.monitor`
+是 `type:"monitor"` 时的载荷 `{group?, topics?:string[], intervalSec?,
+threshold?}`（MonitorPanel 表单快照，`intervalSec` 5–60、`threshold` 0 =
+关告警）。两字段 additive：此前 sidecar 端 `ConsumeParams` 未声明该形状，
+encoding/json 落盘时静默丢弃（save 返回 success 但 list 回来 `type` 缺失，
+监控方案下拉恒空）；旧 sidecar 行为即此缺陷，读取方按缺省消费预设兜底。
+MCP `kafka_messages_digest` 不暴露这两个参数（预设存储专用，见
+consume_schema_parity_test allowlist）。
+
 **`kafka/connections/statuses`** — 无附加字段；返回 `statuses[]`，每条含
 `{connectionId, name, bootstrap, status, readOnly, connectedAt?, lastUsedAt?, error?}`，
 以及 Phase 2/3 摘要：`connectionSource`（`bootstrap`|`zookeeper`）、
