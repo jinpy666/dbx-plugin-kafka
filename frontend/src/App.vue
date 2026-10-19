@@ -10,7 +10,8 @@ import { isDbxPluginTheme, onHostThemeChange, themeToAppearance } from "./lib/ho
 import { setWorkbenchLocale, t } from "./lib/i18n";
 import { kafkaApi, setKafkaConnectionId, type KafkaStreamErrorEvent, type KafkaStreamMessagesEvent, type KafkaTopic } from "./lib/api";
 import { friendlyKafkaError } from "./lib/kafkaErrors";
-import { decideConnectRetry } from "./lib/connectRetry";
+import { decideConnectRetry, BOOT_RESTORE_REOPEN_FROM_ATTEMPT } from "./lib/connectRetry";
+import { useTransportWatch } from "./lib/useTransportWatch";
 import { parseAuditEvent, pushAuditItem, type AuditFeedItem } from "./lib/auditFeed";
 import { useUiIntent, type UiIntentOutcome, type UseUiIntentResult } from "../../shared/frontend/uiIntent";
 import { applyAppearanceColorVars, subscribeHostEnvironment } from "../../shared/frontend/hostThemeRuntime";
@@ -266,6 +267,8 @@ let loadTopicsSeq = 0;
 async function loadTopics() {
   const seq = ++loadTopicsSeq;
   const bootRestore = !bootTopicsLoaded;
+  // 本窗是否已请宿主 reopen（boot 窗过半触发，见下）：每次调用独立计数。
+  let bootReopenRequested = false;
   topicsLoading.value = true;
   topicsError.value = "";
   try {
@@ -288,6 +291,15 @@ async function loadTopics() {
       }
       if (seq !== loadTopicsSeq) return;
       attempt = decision.attempt;
+      // boot 窗过半仍未就绪 → 主动请宿主 reopen 一次：此前只被动等宿主
+      // connect 重放晚到，重放丢失/宿主重启的场景窗内没有自愈出口，耗尽后
+      // 只能落错误态靠手动重连。幂等安全（宿主重放 connect 在后端被短路
+      // 去重，KAFKA-M3）；每窗只发一次——宿主重开是异步全流程（重推配置 +
+      // connect），重发不加速反而叠加请求。
+      if (bootRestore && attempt >= BOOT_RESTORE_REOPEN_FROM_ATTEMPT && !bootReopenRequested) {
+        bootReopenRequested = true;
+        void requestHostReopenConnection();
+      }
       await new Promise((resolve) => setTimeout(resolve, decision.delayMs));
     }
   } finally {
@@ -321,6 +333,24 @@ async function requestHostReopenConnection() {
 async function reconnectConnection() {
   await requestHostReopenConnection();
   void loadTopics();
+}
+
+// -- 断链自愈（传输看守，移植 ssh 的 useTerminalTransportWatch）---------------------
+// web/docker 部署下浏览器↔宿主链路中断不产生任何 Kafka 事件（iframe 内 invoke
+// 挂起、宿主事件停发），此前只有手动刷新/重连一个出口。useTransportWatch 用
+// online/offline 即时信号 + 只读探测兜底（statuses：5s 间隔 / 8s 竞速超时 /
+// 2s 同源可达性门），恢复时 reopen → 重拉策略 → 重拉 topics；StreamPanel 在
+// 挂载中则补拉 status/会话清单并清背压缓冲。工作台未就绪（context 未到、无
+// connectionId）不探测不恢复，避免启动期误判断链。
+async function recoverFromTransportOutage() {
+  await requestHostReopenConnection();
+  void refreshBackendPolicy();
+  void loadTopics();
+  // StreamPanel 挂载中（访问过流式 tab）才有 ref：活跃会话补拉 status、会话
+  // 清单重拉（reopen 可能重建/回收 sidecar 会话），随后把断链期间滞留在背压
+  // 缓冲里的事件按序补发。
+  streamRef.value?.recoverTransport();
+  flushStreamEvents();
 }
 
 function selectTopic(topic: string) {
@@ -413,6 +443,14 @@ async function waitForHostApi(timeoutMs = 8000) {
   if (!window.dbxPlugin) throw new Error(t("hostApiUnavailable"));
   return window.dbxPlugin;
 }
+
+// 传输看守在 setup 期装配一次（retryInitialize 重跑 initialize 不再叠层）；
+// 卸载清理在 composable 内的 onBeforeUnmount 成对完成。
+useTransportWatch({
+  shouldProbe: () => ready.value && Boolean(connectionId.value),
+  probe: () => kafkaApi.connectionStatuses(),
+  recover: recoverFromTransportOutage,
+});
 
 async function initialize() {
   const api = await waitForHostApi();

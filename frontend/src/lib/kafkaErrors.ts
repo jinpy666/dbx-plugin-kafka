@@ -39,6 +39,10 @@ const RULES: ReadonlyArray<{ pattern: RegExp; key: string }> = [
   { pattern: /group.*(not.*(found|exist)|empty)|unknown member|illegal generation/i, key: "err.group" },
   { pattern: /record too large|message size.*larger|bytes.*exceed/i, key: "err.messageTooLarge" },
   { pattern: /not leader|leader.*not.*available|coordinator.*not.*available|rebalance/i, key: "err.meta" },
+  // 前端 invoke 竞速超时（lib/api.ts withInvokeTimeout 的稳定措辞）：宿主桥
+  // 挂起/断链，与 broker 侧 err.timeout 的指引不同——恢复出口是 Reconnect，
+  // 置于通用超时规则之前（"timed out" 与通用规则子串相交）。
+  { pattern: /invoke timed out/i, key: "err.invokeTimeout" },
   // 网络/超时类（网络先于通用超时）。connection lost/closed 覆盖流式/消费侧
   // 断连（含 mock 夹具的 "connection lost (fixture error injection)"）。
   {

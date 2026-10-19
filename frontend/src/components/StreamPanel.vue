@@ -228,6 +228,15 @@ function resetToIdle() {
   void refreshForeignSessions();
 }
 
+// 传输自愈（App 壳传输看守的恢复动作经 defineExpose 调入，无新事件总线）：
+// reopen 后 5s 状态轮询之外的即时补拉——活跃会话补拉 status（buffer/paused
+// 最新值），会话清单重拉（reopen 可能重建/回收 sidecar 会话，孤儿可见化
+// 保持准确）；无活跃会话时仅刷新清单。
+function recoverTransport() {
+  if (sessionId.value) void refreshStatus();
+  void refreshForeignSessions();
+}
+
 function applyStatus(status: StreamStatus) {
   paused.value = status.paused === true;
   if (typeof status.totalScanned === "number") totalScanned.value = status.totalScanned;
@@ -357,7 +366,7 @@ async function exportRows(format: "json" | "csv" | "tsv") {
   if (outcome.mode !== "canceled") emit("notify", t("messages.exportDone", { name: format.toUpperCase() }));
 }
 
-defineExpose({ pushEvent });
+defineExpose({ pushEvent, recoverTransport });
 </script>
 
 <template>

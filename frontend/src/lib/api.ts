@@ -419,11 +419,59 @@ function requireConnectionId(): string {
 
 // params 放宽为 object（接口类型无 index signature，调用面更贴合方法契约），
 // 组装载荷时收窄为记录展开。
+
+/**
+ * 前端默认 invoke 超时（断链自愈专项）：宿主 invoke 的 options.timeoutMs 管道
+ * 存在但 mock 宿主/旧宿主可能忽略第三个参数，超时必须在本页强制执行，否则
+ * 控制面调用（produce、stream 族）在宿主桥挂起时永久 pending 且无错误出口。
+ * 调用点显式传入的 options.timeoutMs 优先（一次性消费的后端扫描窗由此接管）。
+ */
+export const KAFKA_INVOKE_DEFAULT_TIMEOUT_MS = 15_000;
+
+// 一次性消费豁免（messagesConsume 不叠加前端默认超时）：该调用的时长边界由
+// 后端扫描窗（params.timeoutMs，用户可配到数十秒）给出，取消语义由前端生成
+// 的 consumeId + messagesConsumeCancel 提供（停止按钮返回 cancelled=true 的
+// 部分结果）；前端再叠 15s 竞速会把合法长扫描误杀成错误，保持既有管道不动。
+const INVOKE_TIMEOUT_EXEMPT_METHODS = new Set(["kafka/messages/consume"]);
+
+/** Promise.race 超时竞速（页面强制执行）：落败 reject 带方法名的稳定措辞，
+ *  供 lib/kafkaErrors.ts 的 friendlyKafkaError 映射成本地化可行动文案。 */
+function withInvokeTimeout<T>(operation: Promise<T>, method: string, timeoutMs: number): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    let settled = false;
+    const timer = window.setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      reject(new Error(`Kafka invoke timed out after ${timeoutMs} ms (frontend guard): ${method}`));
+    }, timeoutMs);
+    Promise.resolve(operation).then(
+      (value) => {
+        if (settled) return;
+        settled = true;
+        window.clearTimeout(timer);
+        resolve(value);
+      },
+      (cause: unknown) => {
+        if (settled) return;
+        settled = true;
+        window.clearTimeout(timer);
+        reject(cause);
+      },
+    );
+  });
+}
+
 async function callKafka<T>(method: string, params: object = {}, options?: { timeoutMs?: number }): Promise<T> {
   const api = window.dbxPlugin;
   if (!api) throw new Error("DBX Host API unavailable");
   const invoke = (api.invoke ?? api.request).bind(api);
-  return invoke<T>(method, { connectionId: requireConnectionId(), ...(params as Record<string, unknown>) }, options);
+  const payload = { connectionId: requireConnectionId(), ...(params as Record<string, unknown>) };
+  // 显式传入的超时走宿主管道原样透传；一次性消费豁免（见上）；其余统一接入
+  // 前端默认竞速超时，控制面不裸奔。
+  if (options?.timeoutMs !== undefined || INVOKE_TIMEOUT_EXEMPT_METHODS.has(method)) {
+    return invoke<T>(method, payload, options);
+  }
+  return withInvokeTimeout(invoke<T>(method, payload), method, KAFKA_INVOKE_DEFAULT_TIMEOUT_MS);
 }
 
 // -- domain methods (§5.2 of IMPL_PLAN_DBX_KAFKA) -----------------------------
@@ -538,6 +586,8 @@ export const kafkaApi = {
   }) {
     return callKafka<ProduceResult>("kafka/messages/produce", params);
   },
+  // 一次性消费：callKafka 的前端默认超时豁免本方法（后端扫描窗 params.timeoutMs
+  // + consumeId 取消已是完整的时长/取消边界，见 INVOKE_TIMEOUT_EXEMPT_METHODS）。
   messagesConsume(params: ConsumeParams, options?: { timeoutMs?: number }) {
     return callKafka<ConsumeResult>("kafka/messages/consume", params, options);
   },

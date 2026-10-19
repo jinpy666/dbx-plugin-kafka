@@ -35,6 +35,14 @@ export const BOOT_RESTORE_RETRY_MAX = 12;
 export const BOOT_RESTORE_RETRY_DELAY_MS = 1000;
 
 /**
+ * Boot 窗过半的主动 reopen：从第 6 轮（12 轮过半）起仍未就绪时，调用方应主动
+ * 请宿主重开连接一次——此前只被动等宿主 connect 重放晚到，重放丢失/宿主重启
+ * 的场景窗内没有自愈出口，耗尽后只能落错误态靠手动重连。重复触发是安全的：
+ * 宿主重放 connect 在后端被幂等短路（KAFKA-M3），reopen 本身同样幂等。
+ */
+export const BOOT_RESTORE_REOPEN_FROM_ATTEMPT = 6;
+
+/**
  * 手动入口窗口：用户点刷新/重连时连接由宿主重开才恢复，sidecar 注册表只在
  * 宿主 connect 重放时回填。固定 3s × 10 轮，给用户「从 DBX 左侧连接列表重新
  * 打开」留出操作时间，重开后自动自愈（与 ssh 的 INACTIVE_RETRY 对齐）。

@@ -57,4 +57,13 @@ describe("friendlyKafkaError", () => {
     expect(friendlyKafkaError("SASL authentication failed")).not.toBe(forbidden);
     expect(friendlyKafkaError("x509: certificate signed by unknown authority")).not.toBe(forbidden);
   });
+
+  // 断链自愈专项：前端 invoke 竞速超时（withInvokeTimeout 的稳定措辞）映射为
+  // err.invokeTimeout，先于通用超时规则（错误串含 "timed out" 子串）。
+  it("maps the frontend invoke guard timeout before the generic timeout rule", () => {
+    const guard = friendlyKafkaError(`Kafka invoke timed out after 15000 ms (frontend guard): kafka/messages/produce`);
+    expect(guard).toBe(t("err.invokeTimeout"));
+    // 不被通用超时规则吞掉（broker 侧超时的指引不同）。
+    expect(guard).not.toBe(t("err.timeout"));
+  });
 });

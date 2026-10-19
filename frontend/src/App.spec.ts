@@ -7,7 +7,7 @@ import { flushPromises, mount } from "@vue/test-utils";
 import App from "./App.vue";
 import MessagesPanel from "./components/MessagesPanel.vue";
 import { setKafkaConnectionId } from "./lib/api";
-import { BOOT_RESTORE_RETRY_DELAY_MS, BOOT_RESTORE_RETRY_MAX } from "./lib/connectRetry";
+import { BOOT_RESTORE_REOPEN_FROM_ATTEMPT, BOOT_RESTORE_RETRY_DELAY_MS, BOOT_RESTORE_RETRY_MAX } from "./lib/connectRetry";
 
 const invokeMock = vi.fn();
 // 宿主桥事件监听器列表（App壳 handleEvent 与 useUiIntent 各订阅一份）。
@@ -201,6 +201,34 @@ describe("App boot restore retry (web/docker 恢复自愈)", () => {
     // 窗口耗尽落终态：调用次数有界（首拍 + 12 轮），不再无限轮询。
     expect(getCalls()).toBe(BOOT_RESTORE_RETRY_MAX + 1);
     expect(wrapper.find(".tree-error").exists()).toBe(true);
+    wrapper.unmount();
+    vi.useRealTimers();
+  });
+
+  // 断链自愈 C 补强：boot 窗过半（第 6 轮起）仍未就绪时主动请宿主 reopen 一次
+  // ——此前只被动等宿主 connect 重放，重放丢失/宿主重启场景窗内无自愈出口。
+  it("proactively asks the host to reopen once once the boot window passes half", async () => {
+    vi.useFakeTimers();
+    const getCalls = mockTopics(() => new Error(INACTIVE));
+    const reopen = vi.fn(async () => undefined);
+    (window as unknown as { dbxPlugin: { reopenConnection?: unknown } }).dbxPlugin.reopenConnection = reopen;
+    const wrapper = mount(App);
+    await flushPromises();
+    // 前半窗（第 1–5 轮）只重试，不请宿主 reopen（首拍即时，后续每轮 1s）。
+    await vi.advanceTimersByTimeAsync((BOOT_RESTORE_REOPEN_FROM_ATTEMPT - 2) * BOOT_RESTORE_RETRY_DELAY_MS);
+    await flushPromises();
+    expect(reopen).not.toHaveBeenCalled();
+    // 第 6 轮（过半）仍未就绪：主动 reopen 一次（宿主重放 connect 幂等，KAFKA-M3）。
+    await vi.advanceTimersByTimeAsync(BOOT_RESTORE_RETRY_DELAY_MS);
+    await flushPromises();
+    expect(reopen).toHaveBeenCalledTimes(1);
+    expect(reopen).toHaveBeenCalledWith("conn-test");
+    // 窗内后续轮次不重复发：reopen 幂等但每窗只发一次，避免叠加宿主重开请求。
+    await vi.advanceTimersByTimeAsync(BOOT_RESTORE_RETRY_MAX * BOOT_RESTORE_RETRY_DELAY_MS);
+    await flushPromises();
+    expect(reopen).toHaveBeenCalledTimes(1);
+    // topics/list 调用次数仍有界（首拍 + 12 轮），reopen 不改变轮询节奏。
+    expect(getCalls()).toBe(BOOT_RESTORE_RETRY_MAX + 1);
     wrapper.unmount();
     vi.useRealTimers();
   });
