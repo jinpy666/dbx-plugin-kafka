@@ -188,7 +188,9 @@ button:disabled { filter: grayscale(.4); }
 .tree-rows { min-height: 0; flex: 1; overflow: auto; padding: 4px 2px; }
 
 .tree-node { border: 0; width: 100%; background: transparent; }
-.tree-row { display: flex; width: 100%; min-height: 26px; align-items: center; gap: 4px; border: 0; border-radius: 4px; padding: 2px 6px; text-align: left; cursor: default; color: var(--foreground); }
+/* 行是 <button>：必须钉住透明底，否则暗色 color-scheme 下落到 UA ButtonFace
+   灰底（DBX 规范：ssh/files 插件树行均显式 background: transparent）。 */
+.tree-row { display: flex; width: 100%; min-height: 26px; align-items: center; gap: 4px; border: 0; border-radius: 4px; padding: 2px 6px; text-align: left; cursor: default; background: transparent; color: var(--foreground); }
 .tree-row:hover { background: color-mix(in srgb, var(--accent) 65%, transparent); }
 /* 选中态：轻底 + 主色文字/图标高亮（不整行铺实底，避免与 hover 底色块混淆）。 */
 .tree-row.selected, .tree-row.selected:hover { background: color-mix(in srgb, var(--primary) 14%, transparent); color: var(--primary); }
