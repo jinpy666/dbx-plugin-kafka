@@ -870,3 +870,11 @@ S1–S15 无 presets/监控方案场景（纯本地存储无 Kafka 依赖），�
 success，旧版本里用户无感知丢数据，建议发版说明提一句。真机宿主 UI
 下拉展示未在本环境复验（需 DBX.app 加载插件实测），由 wire 级验证与
 前端过滤逻辑等价覆盖。
+
+## Windows 本地 smoke 修复（2026-10-28，issue 扫描轮）
+
+- `test.sh` sidecar 构建产物按 GOOS 补 `.exe` 后缀（此前无扩展名 PE 导致
+  `smoke_mcp` CreateProcess FileNotFoundError [WinError 2]）。
+- `sidecar_client_jsonl` 默认路径 Windows 解析 `.exe` 兜底。
+
+验证：`scripts/test.sh` 全绿（13 PASS / 6 SKIP）。
