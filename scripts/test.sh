@@ -48,7 +48,8 @@ python3 scripts/smoke_test.py
 
 echo "==> MCP smoke (sidecar auto-built; dev-cluster cases auto-SKIP)"
 if [ -f backend/go.mod ] && command -v go >/dev/null 2>&1; then
-  (cd backend && CGO_ENABLED=0 go build -trimpath -o bin/dbx-plugin-kafka .)
+  exe=""; [ "$(go env GOOS 2>/dev/null)" = "windows" ] && exe=".exe"
+  (cd backend && CGO_ENABLED=0 go build -trimpath -o "bin/dbx-plugin-kafka$exe" .)
 fi
 python3 scripts/smoke_mcp.py
 
