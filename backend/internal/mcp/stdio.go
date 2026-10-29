@@ -39,8 +39,16 @@ import (
 	"io.dbx.kafka.plugin/internal/store"
 )
 
-// MCPProtocolVersion 本插件 MCP 服务器声明的协议版本（照 ssh mcp.rs）。
+// MCPProtocolVersion initialize 请求未命中受支持集合时的回退协议版本（照
+// ssh mcp.rs）。2026-07-28 修订版移除了 initialize 握手（改为按请求 _meta
+// 版本化），该回退只对更早的 peer 生效。
 const MCPProtocolVersion = "2024-11-05"
+
+// MCPSupportedProtocolVersions 本 stdio MCP 面服务的协议修订版。2026 之前
+// 的修订版共享同一核心（initialize/ping/tools/list/tools/call）；2026-07-28
+// 额外要求每个成功结果携带 resultType（在 rpcResult 统一盖章），并可用
+// server/discover 做能力发现。
+var MCPSupportedProtocolVersions = []string{"2026-07-28", "2024-11-05"}
 
 // inlinePoolCap 进程内内联凭据连接池上限（参数 hash → 池化 connectionId；
 // 淘汰最旧并断开，防 AI 连续换凭据撑大连接表；与 cursor LRU ≤8 同量级）。
@@ -303,6 +311,23 @@ func readLineBounded(reader *bufio.Reader) (line []byte, tooLong bool, err error
 	}
 }
 
+// negotiatedProtocolVersion initialize 应答的协议版本：请求版本命中受支持
+// 集合时原样回显（各修订版通用协商规则），否则回落 MCPProtocolVersion——
+// 包括未携带 params 的 pre-versioning 调用方。
+func negotiatedProtocolVersion(params json.RawMessage) string {
+	var body struct {
+		ProtocolVersion string `json:"protocolVersion"`
+	}
+	if len(params) > 0 && json.Unmarshal(params, &body) == nil {
+		for _, version := range MCPSupportedProtocolVersions {
+			if version == body.ProtocolVersion {
+				return version
+			}
+		}
+	}
+	return MCPProtocolVersion
+}
+
 // handleLine 处理一行 JSON-RPC：返回要写回的响应；通知类（notifications/*，
 // 含未知通知名与缺 id 通知）返回 nil 不回包。请求形状按 JSON-RPC 分档
 // （MCP_ACCEPTANCE §2）：解析失败 -32700、非法请求（缺 id / method 缺失或
@@ -366,14 +391,28 @@ func (s *StdioServer) handleLine(line []byte) map[string]any {
 	switch method {
 	case "initialize":
 		return rpcResult(id, map[string]any{
-			"protocolVersion": MCPProtocolVersion,
+			"protocolVersion": negotiatedProtocolVersion(raw.Params),
 			"capabilities":    map[string]any{"tools": map[string]any{"listChanged": false}},
 			"serverInfo":      map[string]any{"name": "io.dbx.kafka", "version": s.version},
 		})
 	case "ping":
 		return rpcResult(id, map[string]any{})
+	// 2026-07-28 移除了 initialize 握手；版本发现改由本方法承担。客户端
+	// MAY 调用（也可直接按请求 _meta 版本化），所以不能回 -32601——否则
+	// 只会把服务器标成 pre-2026。
+	case "server/discover":
+		return rpcResult(id, map[string]any{
+			"supportedVersions": MCPSupportedProtocolVersions,
+			"capabilities":      map[string]any{"tools": map[string]any{"listChanged": false}},
+		})
 	case "tools/list":
-		return rpcResult(id, s.stdioToolList())
+		// 2026-07-28 把列表结果变成可缓存信封：ttlMs + cacheScope 在该修订版
+		// 为必填且严格校验（无兜底）。0/private = 永不缓存（连接态会带外
+		// 变化）；旧修订版 peer 忽略未知字段。
+		list := s.stdioToolList()
+		list["ttlMs"] = 0
+		list["cacheScope"] = "private"
+		return rpcResult(id, list)
 	case "tools/call":
 		var body struct {
 			Name      string         `json:"name"`
@@ -419,6 +458,15 @@ func validRequestID(raw json.RawMessage) bool {
 }
 
 func rpcResult(id json.RawMessage, result map[string]any) map[string]any {
+	if result == nil {
+		result = map[string]any{}
+	}
+	// 2026-07-28：所有成功结果必须携带 resultType（缺失即 complete 的桥接
+	// 只对更早修订版 peer 生效）。旧修订版 peer 忽略该字段；未来可能出现的
+	// input_required 结果自带类型时不覆盖。
+	if _, ok := result["resultType"]; !ok {
+		result["resultType"] = "complete"
+	}
 	return map[string]any{"jsonrpc": "2.0", "id": id, "result": result}
 }
 

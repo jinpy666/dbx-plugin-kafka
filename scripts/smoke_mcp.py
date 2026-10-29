@@ -940,13 +940,25 @@ def k12_stdio_offline() -> str:
     try:
         init = client.request("initialize", {"protocolVersion": "2024-11-05"})
         assert init["protocolVersion"] == "2024-11-05", init
+        # MCP 2026-07-28 一致性：成功结果统一带 resultType；受支持的请求
+        # 版本原样回显；server/discover 列出受支持集合。
+        assert init["resultType"] == "complete", init
         assert init["serverInfo"]["name"] == "io.dbx.kafka", init
         assert init["serverInfo"]["version"], init
+        negotiated = client.request("initialize", {"protocolVersion": "2026-07-28", "capabilities": {}})
+        assert negotiated["protocolVersion"] == "2026-07-28", negotiated
+        discover = client.request("server/discover")
+        assert discover["supportedVersions"] == ["2026-07-28", "2024-11-05"], discover
+        assert "tools" in discover["capabilities"], discover
         # notifications/initialized 不回包：下一条响应必须属于紧随其后的 ping。
         client.notify("notifications/initialized")
-        assert client.request("ping") == {}, "ping after notification"
+        assert client.request("ping") == {"resultType": "complete"}, "ping after notification"
         # tools/list：11 工具照常列出；连接类工具补内联凭据声明并放宽 required。
-        tools = client.request("tools/list")["tools"]
+        listing = client.request("tools/list")
+        # 2026-07-28 缓存信封：ttlMs/cacheScope 必填（严格校验、无兜底）；
+        # 0/private = 永不缓存（连接态会带外变化）。
+        assert listing["ttlMs"] == 0 and listing["cacheScope"] == "private", listing
+        tools = listing["tools"]
         names = [tool["name"] for tool in tools]
         assert len(names) == 11 and set(names) == set(EXPECTED_TOOLS), names
         digest = next(tool for tool in tools if tool["name"] == "kafka_messages_digest")
@@ -1078,11 +1090,11 @@ def k17_stdio_robustness() -> str:
             client.send_raw(raw)
             frame = client.read_frame(None)
             assert frame["error"]["code"] == -32700 and frame["id"] is None, (name, frame)
-        assert client.alive() and client.request("ping") == {}, "alive after malformed lines"
+        assert client.alive() and client.request("ping") == {"resultType": "complete"}, "alive after malformed lines"
 
         # 2) notification（无 id，含未知通知名）→ 不响应，流不错位。
         client.send_raw(b'{"jsonrpc":"2.0","method":"notifications/unknown/x"}\n')
-        assert client.request("ping") == {}, "notification must not corrupt the stream"
+        assert client.request("ping") == {"resultType": "complete"}, "notification must not corrupt the stream"
 
         # 3) 请求形状分档（MCP_ACCEPTANCE §2）：缺 id / id 为 object /
         #    method 缺失或非字符串 / jsonrpc 版本非法 → -32600 结构化报错。
@@ -1100,7 +1112,7 @@ def k17_stdio_robustness() -> str:
             assert frame["error"]["code"] == -32600, (name, frame)
             if frame_id is not None:
                 assert frame["id"] == frame_id, (name, frame)
-        assert client.request("ping") == {}, "alive after invalid request shapes"
+        assert client.request("ping") == {"resultType": "complete"}, "alive after invalid request shapes"
 
         # 4) 8 MiB 单行 arguments → 优雅工具层报错（连接门引导），不 panic 不挂死。
         huge = "x" * (8 * 1024 * 1024)
@@ -1112,7 +1124,7 @@ def k17_stdio_robustness() -> str:
                        "arguments": {"topic": f"t{huge}"}}}).encode() + b"\n")
         frame = client.read_frame(big_id)
         assert "error" not in frame and frame["result"]["isError"] is True, frame
-        assert client.request("ping") == {}, "alive after the 8MiB line"
+        assert client.request("ping") == {"resultType": "complete"}, "alive after the 8MiB line"
 
         # 5) pipelining：不等待响应连发 3 个不同 id 请求 → 一一对应。
         client.next_id += 1
@@ -1127,11 +1139,11 @@ def k17_stdio_robustness() -> str:
                 assert frame["error"]["code"] == -32601, frame
             seen.add(frame["id"])
         assert seen == set(ids), (seen, ids)
-        assert client.request("ping") == {}, "alive after pipelining"
+        assert client.request("ping") == {"resultType": "complete"}, "alive after pipelining"
 
         # 6) 空行 / CRLF 容忍。
         client.send_raw(b"\r\n\n   \r\n")
-        assert client.request("ping") == {}, "blank/CRLF lines tolerated"
+        assert client.request("ping") == {"resultType": "complete"}, "blank/CRLF lines tolerated"
         assert client.alive(), "process must survive the whole flood"
         return ("malformed bytes -32700; notifications silent; shapes -32600; 8MiB line; "
                 "pipelining 3 ids; CRLF — alive throughout")

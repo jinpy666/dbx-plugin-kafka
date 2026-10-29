@@ -49,12 +49,33 @@ func TestStdioInitialize(t *testing.T) {
 	if result["protocolVersion"] != MCPProtocolVersion {
 		t.Fatalf("protocolVersion: %v", result["protocolVersion"])
 	}
+	// 2026-07-28：所有成功结果必须带 resultType（缺失即 complete 的桥接
+	// 只对更早修订版 peer 生效）。
+	if result["resultType"] != "complete" {
+		t.Fatalf("resultType: %v", result["resultType"])
+	}
 	info := result["serverInfo"].(map[string]any)
 	if info["name"] != "io.dbx.kafka" || info["version"] != "0.0.0-test" {
 		t.Fatalf("serverInfo: %v", info)
 	}
 	if decoded["id"] != float64(1) {
 		t.Fatalf("id roundtrip: %v", decoded["id"])
+	}
+
+	// 版本协商：请求命中受支持集合时原样回显（各修订版通用规则）。
+	negotiated := decodeResponse(t, server.handleLine([]byte(`{"jsonrpc":"2.0","id":5,"method":"initialize","params":{"protocolVersion":"2026-07-28"}}`)))
+	if got := negotiated["result"].(map[string]any)["protocolVersion"]; got != "2026-07-28" {
+		t.Fatalf("2026-07-28 must be echoed, got %v", got)
+	}
+	// server/discover：2026-07-28 起的版本/能力发现通道。
+	discover := decodeResponse(t, server.handleLine([]byte(`{"jsonrpc":"2.0","id":6,"method":"server/discover"}`)))
+	discoverResult := discover["result"].(map[string]any)
+	versions, _ := discoverResult["supportedVersions"].([]any)
+	if len(versions) != 2 || versions[0] != "2026-07-28" || versions[1] != "2024-11-05" {
+		t.Fatalf("supportedVersions: %v", discoverResult["supportedVersions"])
+	}
+	if _, ok := discoverResult["capabilities"].(map[string]any)["tools"]; !ok {
+		t.Fatalf("discover capabilities: %v", discoverResult["capabilities"])
 	}
 }
 
@@ -65,7 +86,8 @@ func TestStdioProtocolSemantics(t *testing.T) {
 		t.Fatalf("notification must stay silent, got %v", response)
 	}
 	decoded := decodeResponse(t, server.handleLine([]byte(`{"jsonrpc":"2.0","id":2,"method":"ping"}`)))
-	if _, ok := decoded["result"].(map[string]any); !ok {
+	pingResult, ok := decoded["result"].(map[string]any)
+	if !ok || pingResult["resultType"] != "complete" {
 		t.Fatalf("ping result: %v", decoded)
 	}
 	decoded = decodeResponse(t, server.handleLine([]byte(`{"jsonrpc":"2.0","id":3,"method":"mcp/nonexistent","params":{}}`)))
@@ -83,7 +105,16 @@ func TestStdioProtocolSemantics(t *testing.T) {
 func TestStdioToolsList(t *testing.T) {
 	server := newTestStdioServer()
 	decoded := decodeResponse(t, server.handleLine([]byte(`{"jsonrpc":"2.0","id":4,"method":"tools/list"}`)))
-	tools := decoded["result"].(map[string]any)["tools"].([]any)
+	listResult := decoded["result"].(map[string]any)
+	// 2026-07-28 缓存信封：列表结果必须带 ttlMs/cacheScope（严格校验、
+	// 无兜底）；0/private = 永不缓存（连接态会带外变化）。
+	if listResult["ttlMs"] != float64(0) || listResult["cacheScope"] != "private" {
+		t.Fatalf("tools/list cache envelope: ttlMs=%v cacheScope=%v", listResult["ttlMs"], listResult["cacheScope"])
+	}
+	if listResult["resultType"] != "complete" {
+		t.Fatalf("tools/list resultType: %v", listResult["resultType"])
+	}
+	tools := listResult["tools"].([]any)
 	if len(tools) != 11 {
 		t.Fatalf("tool count: %d", len(tools))
 	}
@@ -126,6 +157,10 @@ func TestStdioUIToolsUnavailable(t *testing.T) {
 		result := decoded["result"].(map[string]any)
 		if result["isError"] != true {
 			t.Fatalf("%s must return isError=true: %v", name, result)
+		}
+		// 2026-07-28：工具级错误也是成功 JSON-RPC 结果，同样带 resultType。
+		if result["resultType"] != "complete" {
+			t.Fatalf("%s resultType: %v", name, result["resultType"])
 		}
 		content := result["content"].([]any)[0].(map[string]any)
 		text := content["text"].(string)

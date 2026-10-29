@@ -37,8 +37,9 @@ v2，ssh `mcp.rs` 骨架 → ldap Go 版 → kafka 同构移植）。实现在 s
 
 ## 方式二：独立 stdio 模式（`--mcp`）
 
-sidecar 二进制直接作为 MCP 服务器运行（MCP `2024-11-05`，换行分隔
-JSON-RPC 2.0 over stdio；ssh `run_mcp_stdio` 的 Go 移植，ldap Go 版同构）：
+sidecar 二进制直接作为 MCP 服务器运行（MCP `2026-07-28` / `2024-11-05`，
+换行分隔 JSON-RPC 2.0 over stdio；ssh `run_mcp_stdio` 的 Go 移植，ldap Go
+版同构）：
 
 ```bash
 dbx-plugin-kafka --mcp
@@ -46,11 +47,20 @@ dbx-plugin-kafka --mcp
 
 - **入口互斥**：`--mcp` 与 DBX 插件协议模式互斥，同一进程只跑其中一种；
   stdio 模式不启动 Emitter/插件协议循环/流式会话（MCP 仍不订阅 stream）。
+- **协议版本（2026-07-28 一致性，与 ssh 同款）**：支持 `2026-07-28` 与
+  `2024-11-05`；`initialize` 的 `protocolVersion` 命中受支持集合时原样
+  回显，否则回落 `2024-11-05`。所有成功 `result` 统一携带
+  `resultType:"complete"`（2026-07-28 硬性要求；缺失即 complete 的桥接只
+  对更早修订版 peer 生效，旧 peer 忽略该字段）。`server/discover` 返回
+  `{supportedVersions, capabilities}`（2026-07-28 起 initialize 握手移除后
+  的发现通道，MAY 调用）。`tools/list` 结果另带缓存信封
+  `ttlMs:0` + `cacheScope:"private"`（该修订版必填且严格校验，0/private =
+  永不缓存——连接态会带外变化）。
 - **协议方法**：`initialize`（serverInfo.name=`io.dbx.kafka`，version 取
-  构建版本）、`notifications/initialized`（通知不回包）、`tools/list`、
-  `tools/call`、`ping`；未知方法返回 JSON-RPC 错误（-32601）不崩。请求逐
-  个 goroutine 处理，慢 digest 不阻塞 `ping`/`tools/list`（响应可能乱序，
-  以 id 关联）；stdin EOF 后 drain 在途请求至多 300s 再退出。
+  构建版本）、`server/discover`、`notifications/initialized`（通知不回包）、
+  `tools/list`、`tools/call`、`ping`；未知方法返回 JSON-RPC 错误（-32601）
+  不崩。请求逐个 goroutine 处理，慢 digest 不阻塞 `ping`/`tools/list`
+  （响应可能乱序，以 id 关联）；stdin EOF 后 drain 在途请求至多 300s 再退出。
 - **请求形状分档（2026-09-13 可靠性纵深轮，ldap 同构）**：解析失败
   -32700（id null）；非法请求 -32600——缺 id（非通知）、`id` 为
   object/array/布尔、`method` 缺失/空/非字符串、`jsonrpc` 存在且非

@@ -58,8 +58,7 @@ export interface HostEnvironmentApiLike<A, T> {
 }
 
 export interface HostEnvironmentHandlers<A, T> {
-  /** 每条 env 事件（无论是否携带 locale/theme）都触发；供以 api.locale 等桥字段
-   * 为权威源的插件同步状态（如 files：SDK 先更新 api.locale 再投递 env）。 */
+  /** 每条 env 事件（无论是否携带 locale/theme）都触发。 */
   onEnv?(): void;
   /** env 推送的 locale（真桥 updateLocale 语义）。 */
   onLocale?(locale: string): void;

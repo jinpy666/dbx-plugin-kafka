@@ -878,3 +878,27 @@ success，旧版本里用户无感知丢数据，建议发版说明提一句。�
 - `sidecar_client_jsonl` 默认路径 Windows 解析 `.exe` 兜底。
 
 验证：`scripts/test.sh` 全绿（13 PASS / 6 SKIP）。
+
+## MCP 2026-07-28 协议一致性（2026-10-29，对齐 ssh）
+
+ssh 插件 2026-10-28 完成的新版 MCP 适配（`eca213fd` + `5663f1a5`）同款
+应用到 kafka stdio 面（`backend/internal/mcp/stdio.go`，ldap 同构）：
+
+- `MCPSupportedProtocolVersions = [2026-07-28, 2024-11-05]`；`initialize`
+  按请求 `protocolVersion` 原样回显，未命中回落 `MCPProtocolVersion`。
+- 新增 `server/discover` → `{supportedVersions, capabilities}`（2026-07-28
+  起 initialize 握手移除后的发现通道）。
+- `rpcResult` 统一为成功结果盖 `resultType:"complete"`（含 `isError` 工具
+  结果；错误响应不带 result）。
+- `tools/list` 增补缓存信封 `ttlMs:0` + `cacheScope:"private"`（严格宿主
+  校验必填，0/private = 永不缓存——连接态会带外变化）。
+
+验证：`go test ./internal/mcp/...` PASS；`scripts/smoke_mcp.py`
+13 PASS / 0 FAIL / 6 SKIP（K12 钉住 resultType、版本回显、discover 与缓存
+信封）；`shared/mcp_schema_check.py --plugin io.dbx.kafka` RESULT: CLEAN。
+`docs/MCP.zh-CN.md` 已同步协议版本章节；`shared/MCP_ACCEPTANCE.zh-CN.md`
+登记四插件同款契约。
+
+全量 `scripts/test.sh`：前端 typecheck、vitest、Go vet/test、UI walkthrough、
+打包及 MCP smoke 均通过；容器/开发集群段按设计 SKIP（MCP 13 PASS / 6 SKIP）。
+> 变更相关的后端单测、MCP smoke 与族级门禁均全绿。
