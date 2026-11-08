@@ -26,6 +26,10 @@ type fakeRegistry struct {
 	compatSubject map[string]string
 	byIDHits      int    // /schemas/ids/<id> 命中计数（缓存测试）
 	lastNormalize string // 最近一次 register POST 的 normalize 查询参数（"" = 未携带）
+	// protoText 模拟 Confluent SR ≥7.x 的 PROTOBUF 默认响应（issue #76）：
+	// 命中 subject 的元数据 GET 不带 format=serialized 时返回 .proto 源码
+	// 文本，只有显式带该参数才返回注册时的 serialized schema。
+	protoText map[string]string
 }
 
 func newFakeRegistry() *fakeRegistry {
@@ -34,6 +38,7 @@ func newFakeRegistry() *fakeRegistry {
 		subjects:      map[string]map[int64]SchemaMeta{},
 		compatGlobal:  "BACKWARD",
 		compatSubject: map[string]string{},
+		protoText:     map[string]string{},
 	}
 }
 
@@ -60,6 +65,29 @@ func (f *fakeRegistry) register(subject, schema, schemaType string) (int, int64)
 		Subject: subject, Version: version, ID: id, Schema: schema, SchemaType: schemaType,
 	}
 	return id, version
+}
+
+// serveProtoText 让该 subject 的 PROTOBUF 元数据默认返回 .proto 源码文本
+// （对齐 Confluent SR 7.x 实测行为，issue #76 复现环境）；调用方须直调
+// （测试前置，无并发）。
+func (f *fakeRegistry) serveProtoText(subject, text string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.protoText[subject] = text
+}
+
+// effectiveMeta 按上述模拟行为裁剪 PROTOBUF 元数据的 schema 字段（仅
+// PROTOBUF 且命中 protoText 且未带 format=serialized 时替换为文本）。
+func (f *fakeRegistry) effectiveMeta(r *http.Request, meta SchemaMeta) SchemaMeta {
+	if meta.SchemaType != "PROTOBUF" {
+		return meta
+	}
+	text, ok := f.protoText[meta.Subject]
+	if !ok || text == "" || r.URL.Query().Get("format") == "serialized" {
+		return meta
+	}
+	meta.Schema = text
+	return meta
 }
 
 // handler 是假 Registry 的全部路由（手工 switch，路径语义对齐 Confluent REST）。
@@ -117,6 +145,7 @@ func (f *fakeRegistry) handler(w http.ResponseWriter, r *http.Request) {
 		for _, versions := range f.subjects {
 			for _, meta := range versions {
 				if meta.ID == id {
+					meta = f.effectiveMeta(r, meta)
 					writeJSON(map[string]any{"schema": meta.Schema, "schemaType": meta.SchemaType})
 					return
 				}
@@ -172,7 +201,7 @@ func (f *fakeRegistry) handler(w http.ResponseWriter, r *http.Request) {
 				http.Error(w, `{"error_code":40402,"message":"version not found"}`, http.StatusNotFound)
 				return
 			}
-			writeJSON(meta)
+			writeJSON(f.effectiveMeta(r, meta))
 			return
 		case len(parts) == 4 && parts[2] == "versions" && r.Method == http.MethodDelete:
 			version := atoi64(parts[3])

@@ -232,6 +232,69 @@ func (c *schemaRegistryClient) getSchemaByID(ctx context.Context, id int) (Schem
 	return meta, nil
 }
 
+// --- 编解码用元数据取数（issue #76） ---
+//
+// Confluent SR ≥7.x 对 PROTOBUF subject 的元数据 GET 默认返回 .proto 源码
+// 文本，base64(FileDescriptorSet) 只有带 ?format=serialized 才回；而本侧
+// 编解码（dynamicpb）的消费约定是 FDSet 形态。管理面（getSchema/getSchemaByID，
+// schema 面板展示）保持 SR 默认响应不动（文本可读性更好），编解码路径经
+// ForCodec 变体取数，在默认响应无法按 FDSet 解析时对同一路径按需追加
+// ?format=serialized 重取一次。
+
+// getSchemaForCodec 取编解码用 subject 元数据（见上方说明）。
+func (c *schemaRegistryClient) getSchemaForCodec(ctx context.Context, subject string, version int64) (SchemaMeta, error) {
+	vPath := "latest"
+	if version > 0 {
+		vPath = strconv.FormatInt(version, 10)
+	}
+	meta, err := c.getSchema(ctx, subject, version)
+	if err != nil {
+		return SchemaMeta{}, err
+	}
+	return c.ensureProtobufSerialized(ctx, "/subjects/"+url.PathEscape(subject)+"/versions/"+vPath, meta), nil
+}
+
+// getSchemaByIDForCodec 取编解码用 schemaID 元数据（见上方说明）。
+func (c *schemaRegistryClient) getSchemaByIDForCodec(ctx context.Context, id int) (SchemaMeta, error) {
+	meta, err := c.getSchemaByID(ctx, id)
+	if err != nil {
+		return SchemaMeta{}, err
+	}
+	return c.ensureProtobufSerialized(ctx, "/schemas/ids/"+strconv.Itoa(id), meta), nil
+}
+
+// ensureProtobufSerialized 确保 PROTOBUF 元数据的 schema 字段为
+// base64(FileDescriptorSet)：默认响应已是该形态（老 SR）时原样返回；是
+// .proto 源码文本时按 path 追加 ?format=serialized 重取。缺省不发可选
+// query 参数的兼容立场不变（见 registerSchema），只在确认拿到文本形态时
+// 补发；重取失败或仍非 FDSet 形态则保留默认响应，交由既有解码错误路径
+// 兜底。身份字段（subject/version/id）以首次响应为准。
+func (c *schemaRegistryClient) ensureProtobufSerialized(ctx context.Context, path string, meta SchemaMeta) SchemaMeta {
+	if normalizeConfluentSchemaType(meta.SchemaType) != "PROTOBUF" || protobufSerializedSchema(meta.Schema) {
+		return meta
+	}
+	var retry SchemaMeta
+	if err := c.request(ctx, http.MethodGet, path+"?format=serialized", nil, &retry); err != nil || !protobufSerializedSchema(retry.Schema) {
+		return meta
+	}
+	if meta.SchemaType == "" {
+		meta.SchemaType = retry.SchemaType
+	}
+	meta.Schema = retry.Schema
+	return meta
+}
+
+// protobufSerializedSchema 判断 schema 字段是否 base64(FileDescriptorSet)
+// 形态（编解码侧的消费约定）；.proto 源码文本不是合法 base64，无法通过。
+func protobufSerializedSchema(schema string) bool {
+	raw, err := base64.StdEncoding.DecodeString(strings.TrimSpace(schema))
+	if err != nil || len(raw) == 0 {
+		return false
+	}
+	var fdset descriptorpb.FileDescriptorSet
+	return proto.Unmarshal(raw, &fdset) == nil
+}
+
 func (c *schemaRegistryClient) registerSchema(ctx context.Context, subject string, format, schema string, refs []SchemaReference, normalize bool) (SchemaMeta, error) {
 	// normalize 是 Confluent REST 的可选查询参数（SR 侧归一化存储文本；
 	// 缺省不发参数，保持与老 sidecar/代理的最大兼容）。
@@ -1494,7 +1557,7 @@ func (d *schemaDecoder) decode(ctx context.Context, value []byte) ([]byte, schem
 		if cached, ok := d.cache.lookupBySubjectVersion(trimSpace(req.Subject), req.Version); ok {
 			meta = cached
 		} else {
-			meta, err = d.client.getSchema(ctx, trimSpace(req.Subject), req.Version)
+			meta, err = d.client.getSchemaForCodec(ctx, trimSpace(req.Subject), req.Version)
 			if err != nil {
 				return nil, schemaValueInfo{}, err
 			}
@@ -1507,7 +1570,7 @@ func (d *schemaDecoder) decode(ctx context.Context, value []byte) ([]byte, schem
 		if cached, ok := d.cache.lookupByID(schemaID); ok {
 			meta = cached
 		} else {
-			meta, err = d.client.getSchemaByID(ctx, schemaID)
+			meta, err = d.client.getSchemaByIDForCodec(ctx, schemaID)
 			if err != nil {
 				return nil, schemaValueInfo{}, err
 			}
@@ -1555,7 +1618,7 @@ func encodeForProduce(ctx context.Context, client *schemaRegistryClient, ref *Sc
 	if subject == "" {
 		return nil, SchemaGetResult{}, errf("schema.subject is required")
 	}
-	meta, err := client.getSchema(ctx, subject, ref.Version)
+	meta, err := client.getSchemaForCodec(ctx, subject, ref.Version)
 	if err != nil {
 		return nil, SchemaGetResult{}, err
 	}
