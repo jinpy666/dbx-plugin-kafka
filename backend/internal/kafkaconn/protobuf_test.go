@@ -121,6 +121,51 @@ func TestProtobufDecodeViaWireFrameAndRegistry(t *testing.T) {
 	}
 }
 
+// TestProtobufMetaFetchProtoTextRetry 回归 issue #76：Confluent SR ≥7.x 对
+// PROTOBUF subject 的元数据 GET 默认返回 .proto 源码文本，base64
+// (FileDescriptorSet) 只有带 ?format=serialized 才回。编解码侧必须在默认
+// 响应无法按 FDSet 解析时按需重取（bySubject 与 byID 两条路径都要覆盖）；
+// 管理面 getSchema（schema 面板展示）保持 SR 默认响应不动。
+func TestProtobufMetaFetchProtoTextRetry(t *testing.T) {
+	protoText, err := os.ReadFile(filepath.Join("..", "..", "..", "scripts", "kafka-seed", "protobuf", "orders.proto"))
+	if err != nil {
+		t.Fatalf("read orders.proto: %v", err)
+	}
+	registry := newFakeRegistry()
+	id, _ := registry.register("order-value", ordersFDSetB64(t), "PROTOBUF")
+	registry.serveProtoText("order-value", string(protoText))
+	server := newTestHTTPServer(t, registry.handler)
+	client, err := newSchemaRegistryClient(Profile{SRURL: server.URL}, connSecrets{})
+	if err != nil {
+		t.Fatalf("newSchemaRegistryClient() error = %v", err)
+	}
+	// 管理面（展示路径）：getSchema 保持默认响应（.proto 文本）。
+	if meta, err := client.getSchema(context.Background(), "order-value", 0); err != nil || !strings.Contains(meta.Schema, "message Order") {
+		t.Errorf("getSchema() schema = %.40q, err = %v (want .proto text)", meta.Schema, err)
+	}
+	// 编码（bySubject 路径）：文本形态须重取 serialized 后才能编码。
+	ref := &SchemaRef{Subject: "order-value", Format: "protobuf"}
+	encoded, got, err := encodeForProduce(context.Background(), client, ref, []byte(`{"id":"o-3","amount":"9","item":"bolt"}`))
+	if err != nil {
+		t.Fatalf("encodeForProduce(protobuf) error = %v", err)
+	}
+	if got.ID != id {
+		t.Errorf("encode result id = %d, want %d", got.ID, id)
+	}
+	// 解码（byID 路径）：反查 schemaID 同理按需重取。
+	decoder := newSchemaDecoder(client, nil)
+	decoded, info, err := decoder.decode(context.Background(), encoded)
+	if err != nil {
+		t.Fatalf("decode(protobuf wire) error = %v", err)
+	}
+	if info.ID != id {
+		t.Errorf("info.ID = %d, want %d", info.ID, id)
+	}
+	if !strings.Contains(string(decoded), `"id":"o-3"`) {
+		t.Errorf("decoded = %s", decoded)
+	}
+}
+
 func TestProtobufMessageDisambiguation(t *testing.T) {
 	fdset := multiMessageFDSetB64(t)
 	payload := []byte{0x0a, 0x02, 'a', 'b'} // field1 len-delim "ab"（两 message 各自 field1）
