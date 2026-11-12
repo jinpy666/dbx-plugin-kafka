@@ -30,6 +30,9 @@ type fakeRegistry struct {
 	// 命中 subject 的元数据 GET 不带 format=serialized 时返回 .proto 源码
 	// 文本，只有显式带该参数才返回注册时的 serialized schema。
 	protoText map[string]string
+	// serializedFDP 模拟 ?format=serialized 的真实响应形态：
+	// base64(FileDescriptorProto)（单个 .proto 文件），而非 FileDescriptorSet。
+	serializedFDP map[string]string
 }
 
 func newFakeRegistry() *fakeRegistry {
@@ -39,6 +42,7 @@ func newFakeRegistry() *fakeRegistry {
 		compatGlobal:  "BACKWARD",
 		compatSubject: map[string]string{},
 		protoText:     map[string]string{},
+		serializedFDP: map[string]string{},
 	}
 }
 
@@ -82,8 +86,14 @@ func (f *fakeRegistry) effectiveMeta(r *http.Request, meta SchemaMeta) SchemaMet
 	if meta.SchemaType != "PROTOBUF" {
 		return meta
 	}
+	if r.URL.Query().Get("format") == "serialized" {
+		if fdp, ok := f.serializedFDP[meta.Subject]; ok && fdp != "" {
+			meta.Schema = fdp
+		}
+		return meta
+	}
 	text, ok := f.protoText[meta.Subject]
-	if !ok || text == "" || r.URL.Query().Get("format") == "serialized" {
+	if !ok || text == "" {
 		return meta
 	}
 	meta.Schema = text
