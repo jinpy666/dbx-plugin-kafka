@@ -16,7 +16,7 @@
   "source": "https://github.com/jinpy666/dbx-plugin-kafka",
   "homepage": "https://github.com/jinpy666/dbx-plugin-kafka",
   "license": "MIT",
-  "releaseNotes": "Kafka Studio v0.1.56 正式版。相对 v0.1.55：修复 PROTOBUF 消息值解码（issue #76）——Confluent SR ≥7.x 对 PROTOBUF subject 的元数据默认返回 .proto 源码文本，解码侧按 base64(FileDescriptorSet) 消费导致解码失败，编解码路径现按需对同一路径追加 ?format=serialized 重取 serialized 元数据，老 SR 与重取失败行为不变，schema 面板仍显示可读 .proto 文本；backend/frontend 依赖例行升级（franz-go、lz4、klauspost/compress、glue、jsonschema-go；vite、@codemirror/commands、@lezer/highlight、@types/node、vue-tsc）。",
+  "releaseNotes": "Kafka Studio v0.1.57 正式版。相对 v0.1.56：修复 Confluent SR 7.x 下 PROTOBUF 消息值仍解码失败的问题（issue #76 跟进）——?format=serialized 实际返回 base64(FileDescriptorProto)（单个 .proto 文件），此前按 FileDescriptorSet 校验会否掉重取结果并回退到 .proto 文本；现统一归一化为 FDSet，bySubject 编码与 byID 解码均生效，schema 面板仍显示可读 .proto 文本。",
   "localizations": {
     "zh-CN": {
       "name": "Kafka Studio",
