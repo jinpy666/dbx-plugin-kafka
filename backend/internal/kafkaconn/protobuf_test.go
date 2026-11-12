@@ -32,6 +32,30 @@ func ordersFDSetB64(t *testing.T) string {
 	return trimmed
 }
 
+// serveFileDescriptorProto 让该 subject 的 ?format=serialized 响应返回
+// base64(FileDescriptorProto)（Confluent SR 真实形态，issue #76 跟进）：
+// 取已注册 FDSet 的第一个文件单独序列化。
+func (f *fakeRegistry) serveFileDescriptorProto(subject string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for _, meta := range f.subjects[subject] {
+		raw, err := base64.StdEncoding.DecodeString(strings.TrimSpace(meta.Schema))
+		if err != nil {
+			continue
+		}
+		var set descriptorpb.FileDescriptorSet
+		if err := proto.Unmarshal(raw, &set); err != nil || len(set.File) == 0 {
+			continue
+		}
+		fdp, err := proto.Marshal(set.File[0])
+		if err != nil {
+			continue
+		}
+		f.serializedFDP[subject] = base64.StdEncoding.EncodeToString(fdp)
+		return
+	}
+}
+
 // multiMessageFDSetB64 构造含两个 message（Order/Shipment）的 FDSet b64，
 // 用于消歧分支测试。
 func multiMessageFDSetB64(t *testing.T) string {
@@ -166,6 +190,59 @@ func TestProtobufMetaFetchProtoTextRetry(t *testing.T) {
 	}
 }
 
+// TestProtobufMetaFetchSerializedFDP 回归 issue #76 跟进：Confluent SR 的
+// ?format=serialized 返回 base64(FileDescriptorProto)（单个 .proto 文件），
+// 不是 FileDescriptorSet。重取结果必须按 FDP 归一化后通过校验，否则会回退
+// 到 .proto 文本并在解码时报 illegal base64。
+func TestProtobufMetaFetchSerializedFDP(t *testing.T) {
+	protoText, err := os.ReadFile(filepath.Join("..", "..", "..", "scripts", "kafka-seed", "protobuf", "orders.proto"))
+	if err != nil {
+		t.Fatalf("read orders.proto: %v", err)
+	}
+	registry := newFakeRegistry()
+	id, _ := registry.register("order-value", ordersFDSetB64(t), "PROTOBUF")
+	registry.serveProtoText("order-value", string(protoText))
+	registry.serveFileDescriptorProto("order-value")
+	server := newTestHTTPServer(t, registry.handler)
+	client, err := newSchemaRegistryClient(Profile{SRURL: server.URL}, connSecrets{})
+	if err != nil {
+		t.Fatalf("newSchemaRegistryClient() error = %v", err)
+	}
+
+	// FDP 形态本身必须被识别为可编解码 schema，并可直接构建描述符。
+	fdpB64 := registry.serializedFDP["order-value"]
+	if fdpB64 == "" {
+		t.Fatal("fake registry did not prepare FileDescriptorProto fixture")
+	}
+	if !protobufSerializedSchema(fdpB64) {
+		t.Fatal("protobufSerializedSchema() rejected FileDescriptorProto")
+	}
+	if _, err := protobufFilesFromSchema(fdpB64); err != nil {
+		t.Fatalf("protobufFilesFromSchema(FDP) error = %v", err)
+	}
+
+	// 编码（bySubject）与解码（byID）都必须走通 FDP 重取路径。
+	ref := &SchemaRef{Subject: "order-value", Format: "protobuf"}
+	encoded, got, err := encodeForProduce(context.Background(), client, ref, []byte(`{"id":"o-4","amount":"11","item":"nut"}`))
+	if err != nil {
+		t.Fatalf("encodeForProduce(protobuf) error = %v", err)
+	}
+	if got.ID != id {
+		t.Errorf("encode result id = %d, want %d", got.ID, id)
+	}
+	decoder := newSchemaDecoder(client, nil)
+	decoded, info, err := decoder.decode(context.Background(), encoded)
+	if err != nil {
+		t.Fatalf("decode(protobuf wire) error = %v", err)
+	}
+	if info.ID != id {
+		t.Errorf("info.ID = %d, want %d", info.ID, id)
+	}
+	if !strings.Contains(string(decoded), `"id":"o-4"`) {
+		t.Errorf("decoded = %s", decoded)
+	}
+}
+
 func TestProtobufMessageDisambiguation(t *testing.T) {
 	fdset := multiMessageFDSetB64(t)
 	payload := []byte{0x0a, 0x02, 'a', 'b'} // field1 len-delim "ab"（两 message 各自 field1）
@@ -202,6 +279,40 @@ func TestProtobufMessageDisambiguation(t *testing.T) {
 		if !strings.Contains(err.Error(), candidate) {
 			t.Errorf("error %q missing candidate %q", err, candidate)
 		}
+	}
+}
+
+// TestProtobufDescriptorSetNormalization 覆盖 FDSet 透传与 FDP 归一化；
+// FDP 的 file name 取 "default"（Confluent SR 实测形态，issue #76 跟进）。
+func TestProtobufDescriptorSetNormalization(t *testing.T) {
+	fdsetB64 := ordersFDSetB64(t)
+	if !protobufSerializedSchema(fdsetB64) {
+		t.Fatal("protobufSerializedSchema() rejected FileDescriptorSet")
+	}
+	raw, err := base64.StdEncoding.DecodeString(fdsetB64)
+	if err != nil {
+		t.Fatalf("decode fixture: %v", err)
+	}
+	var set descriptorpb.FileDescriptorSet
+	if err := proto.Unmarshal(raw, &set); err != nil || len(set.File) == 0 {
+		t.Fatalf("unmarshal fixture: %v", err)
+	}
+	fdp := proto.Clone(set.File[0]).(*descriptorpb.FileDescriptorProto)
+	fdp.Name = proto.String("default")
+	rawFDP, err := proto.Marshal(fdp)
+	if err != nil {
+		t.Fatalf("marshal FDP: %v", err)
+	}
+	fdpB64 := base64.StdEncoding.EncodeToString(rawFDP)
+	if !protobufSerializedSchema(fdpB64) {
+		t.Fatal("protobufSerializedSchema() rejected FileDescriptorProto")
+	}
+	files, err := protobufFilesFromSchema(fdpB64)
+	if err != nil {
+		t.Fatalf("protobufFilesFromSchema(FDP) error = %v", err)
+	}
+	if _, err := files.FindDescriptorByName("com.dbx.test.Order"); err != nil {
+		t.Errorf("FDP-derived registry missing com.dbx.test.Order: %v", err)
 	}
 }
 

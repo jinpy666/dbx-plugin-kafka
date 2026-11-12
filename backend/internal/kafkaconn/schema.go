@@ -38,6 +38,7 @@ import (
 	jsonschema "github.com/google/jsonschema-go/jsonschema"
 	goavro "github.com/linkedin/goavro/v2"
 	"google.golang.org/protobuf/encoding/protojson"
+	"google.golang.org/protobuf/encoding/protowire"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/reflect/protodesc"
 	"google.golang.org/protobuf/reflect/protoreflect"
@@ -235,11 +236,12 @@ func (c *schemaRegistryClient) getSchemaByID(ctx context.Context, id int) (Schem
 // --- 编解码用元数据取数（issue #76） ---
 //
 // Confluent SR ≥7.x 对 PROTOBUF subject 的元数据 GET 默认返回 .proto 源码
-// 文本，base64(FileDescriptorSet) 只有带 ?format=serialized 才回；而本侧
-// 编解码（dynamicpb）的消费约定是 FDSet 形态。管理面（getSchema/getSchemaByID，
-// schema 面板展示）保持 SR 默认响应不动（文本可读性更好），编解码路径经
-// ForCodec 变体取数，在默认响应无法按 FDSet 解析时对同一路径按需追加
-// ?format=serialized 重取一次。
+// 文本，序列化描述符只有带 ?format=serialized 才回（形态为
+// base64(FileDescriptorProto)，即单个文件；老 SR/插件注册响应可能已是
+// base64(FileDescriptorSet)）。管理面（getSchema/getSchemaByID，schema 面板
+// 展示）保持 SR 默认响应不动（文本可读性更好），编解码路径经 ForCodec 变体
+// 取数，在默认响应无法按描述符解析时对同一路径按需追加 ?format=serialized
+// 重取一次；FDP 形态由 protobufDescriptorSet 统一归一化为 FDSet。
 
 // getSchemaForCodec 取编解码用 subject 元数据（见上方说明）。
 func (c *schemaRegistryClient) getSchemaForCodec(ctx context.Context, subject string, version int64) (SchemaMeta, error) {
@@ -263,12 +265,12 @@ func (c *schemaRegistryClient) getSchemaByIDForCodec(ctx context.Context, id int
 	return c.ensureProtobufSerialized(ctx, "/schemas/ids/"+strconv.Itoa(id), meta), nil
 }
 
-// ensureProtobufSerialized 确保 PROTOBUF 元数据的 schema 字段为
-// base64(FileDescriptorSet)：默认响应已是该形态（老 SR）时原样返回；是
-// .proto 源码文本时按 path 追加 ?format=serialized 重取。缺省不发可选
-// query 参数的兼容立场不变（见 registerSchema），只在确认拿到文本形态时
-// 补发；重取失败或仍非 FDSet 形态则保留默认响应，交由既有解码错误路径
-// 兜底。身份字段（subject/version/id）以首次响应为准。
+// ensureProtobufSerialized 确保 PROTOBUF 元数据的 schema 字段为已序列化的
+// 描述符（FDSet 或 FDP，见 protobufDescriptorSet）：默认响应已是该形态
+// （老 SR）时原样返回；是 .proto 源码文本时按 path 追加 ?format=serialized
+// 重取。缺省不发可选 query 参数的兼容立场不变（见 registerSchema），只在
+// 确认拿到文本形态时补发；重取失败或仍非描述符形态则保留默认响应，交由
+// 既有解码错误路径兜底。身份字段（subject/version/id）以首次响应为准。
 func (c *schemaRegistryClient) ensureProtobufSerialized(ctx context.Context, path string, meta SchemaMeta) SchemaMeta {
 	if normalizeConfluentSchemaType(meta.SchemaType) != "PROTOBUF" || protobufSerializedSchema(meta.Schema) {
 		return meta
@@ -284,15 +286,55 @@ func (c *schemaRegistryClient) ensureProtobufSerialized(ctx context.Context, pat
 	return meta
 }
 
-// protobufSerializedSchema 判断 schema 字段是否 base64(FileDescriptorSet)
-// 形态（编解码侧的消费约定）；.proto 源码文本不是合法 base64，无法通过。
+// protobufSerializedSchema 判断 schema 字段是否已序列化的描述符形态
+// （base64(FileDescriptorSet) 或 base64(FileDescriptorProto)）；.proto 源码
+// 文本不是合法 base64，无法通过。
 func protobufSerializedSchema(schema string) bool {
 	raw, err := base64.StdEncoding.DecodeString(strings.TrimSpace(schema))
-	if err != nil || len(raw) == 0 {
+	if err != nil {
 		return false
 	}
+	_, err = protobufDescriptorSet(raw)
+	return err == nil
+}
+
+// protobufDescriptorSet 归一化 PROTOBUF schema 原始字节为 FileDescriptorSet。
+//
+// Confluent SR 的 ?format=serialized 对 PROTOBUF 返回 base64(FileDescriptorProto)
+// （单个 .proto 文件），而本侧 protodesc 的消费约定是 FileDescriptorSet；
+// 老 SR 或经本插件注册的响应也可能直接是 FDSet。先按 FDSet 解析，解析失败
+// 或缺少文件名时再按 `0a + varint(len) + raw` 包一层（等价 FDSet.file[0]）。
+func protobufDescriptorSet(raw []byte) (*descriptorpb.FileDescriptorSet, error) {
+	if len(raw) == 0 {
+		return nil, errf("empty protobuf schema")
+	}
 	var fdset descriptorpb.FileDescriptorSet
-	return proto.Unmarshal(raw, &fdset) == nil
+	if err := proto.Unmarshal(raw, &fdset); err == nil && usableProtobufDescriptorSet(&fdset) {
+		return &fdset, nil
+	}
+	wrapped := protowire.AppendTag(nil, 1, protowire.BytesType)
+	wrapped = protowire.AppendBytes(wrapped, raw)
+	var single descriptorpb.FileDescriptorSet
+	if err := proto.Unmarshal(wrapped, &single); err != nil {
+		return nil, fmt.Errorf("parse protobuf FileDescriptorProto: %w", err)
+	}
+	if !usableProtobufDescriptorSet(&single) {
+		return nil, errf("protobuf schema is neither FileDescriptorSet nor FileDescriptorProto")
+	}
+	return &single, nil
+}
+
+// usableProtobufDescriptorSet 校验归一化结果至少含一个带文件名的描述符。
+func usableProtobufDescriptorSet(fdset *descriptorpb.FileDescriptorSet) bool {
+	if fdset == nil || len(fdset.File) == 0 {
+		return false
+	}
+	for _, file := range fdset.File {
+		if strings.TrimSpace(file.GetName()) == "" {
+			return false
+		}
+	}
+	return true
 }
 
 func (c *schemaRegistryClient) registerSchema(ctx context.Context, subject string, format, schema string, refs []SchemaReference, normalize bool) (SchemaMeta, error) {
@@ -1352,21 +1394,32 @@ func selectProtobufMessage(messages []protoreflect.MessageDescriptor, subject st
 		subject, strings.Join(names, ", "))
 }
 
-// protobufFilesFromSchema base64(FileDescriptorSet) → protoregistry.Files。
+// protobufFilesFromSchema base64(FileDescriptorSet|FileDescriptorProto) →
+// protoregistry.Files。
 func protobufFilesFromSchema(fdsetB64 string) (*protoregistry.Files, error) {
 	raw, err := base64.StdEncoding.DecodeString(strings.TrimSpace(fdsetB64))
 	if err != nil {
-		return nil, fmt.Errorf("decode protobuf FileDescriptorSet base64: %w", err)
+		return nil, fmt.Errorf("decode protobuf schema base64: %w", err)
 	}
-	var fdset descriptorpb.FileDescriptorSet
-	if err := proto.Unmarshal(raw, &fdset); err != nil {
-		return nil, fmt.Errorf("parse protobuf FileDescriptorSet: %w", err)
-	}
-	files, err := protodesc.NewFiles(&fdset)
+	fdset, err := protobufDescriptorSet(raw)
 	if err != nil {
-		return nil, fmt.Errorf("build protobuf descriptors: %w", err)
+		return nil, err
 	}
-	return files, nil
+	files, err := protodesc.NewFiles(fdset)
+	if err == nil {
+		return files, nil
+	}
+	// 单文件 FDP 的依赖可能只含 well-known types（未随 serialized 响应
+	// 下发），从全局注册表解析。
+	if len(fdset.File) == 1 {
+		if file, ferr := protodesc.NewFile(fdset.File[0], protoregistry.GlobalFiles); ferr == nil {
+			registry := new(protoregistry.Files)
+			if rerr := registry.RegisterFile(file); rerr == nil {
+				return registry, nil
+			}
+		}
+	}
+	return nil, fmt.Errorf("build protobuf descriptors: %w", err)
 }
 
 // collectProtobufMessages 遍历 FDSet 全部文件收集 message 描述符（含嵌套）。
