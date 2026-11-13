@@ -88,29 +88,43 @@ func TestProtobufMessageIndexPath(t *testing.T) {
 	}
 }
 
-// TestStripProtobufMessageIndexes 表驱动覆盖 varint 剥离（含截断/溢出）。
-func TestStripProtobufMessageIndexes(t *testing.T) {
+// TestParseConfluentMessageIndexes 表驱动覆盖 Confluent message index 段
+// 解析（[0] 单字节优化、zigzag 长度前缀 + zigzag 索引、截断/非法段回退）。
+func TestParseConfluentMessageIndexes(t *testing.T) {
 	cases := []struct {
-		name    string
-		payload []byte
-		depth   int
-		want    []byte
-		wantOK  bool
+		name     string
+		payload  []byte
+		want     []int
+		wantBody []byte
+		wantOK   bool
 	}{
-		{"depth 0 passthrough", []byte{0x01}, 0, []byte{0x01}, true},
-		{"single zero index", []byte{0x00, 0x0a, 0x01, 'a'}, 1, []byte{0x0a, 0x01, 'a'}, true},
-		{"multi varint", []byte{0x00, 0x01, 0xff, 0x7f}, 3, []byte{}, true},
-		{"truncated varint", []byte{0x00, 0x80}, 2, nil, false},
-		{"empty payload", []byte{}, 1, nil, false},
+		{"[0] optimization", []byte{0x00, 0x0a, 0x01, 'a'}, []int{0}, []byte{0x0a, 0x01, 'a'}, true},
+		{"[11] real Confluent frame", []byte{0x02, 0x16, 0x0a, 0x01, 'a'}, []int{11}, []byte{0x0a, 0x01, 'a'}, true},
+		{"nested [0,1]", []byte{0x04, 0x00, 0x02, 0x0a, 0x01, 'a'}, []int{0, 1}, []byte{0x0a, 0x01, 'a'}, true},
+		{"truncated index", []byte{0x02, 0x80}, nil, nil, false},
+		{"negative index", []byte{0x02, 0x01}, nil, nil, false},
+		{"legacy payload without indexes", []byte{0x0a, 0x01, 'a'}, nil, nil, false},
+		{"empty payload", []byte{}, nil, nil, false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got, ok := stripProtobufMessageIndexes(tc.payload, tc.depth)
+			got, body, ok := parseConfluentMessageIndexes(tc.payload)
 			if ok != tc.wantOK {
 				t.Fatalf("ok = %v, want %v", ok, tc.wantOK)
 			}
-			if ok && string(got) != string(tc.want) {
-				t.Fatalf("rest = %v, want %v", got, tc.want)
+			if !ok {
+				return
+			}
+			if len(got) != len(tc.want) {
+				t.Fatalf("indexes = %v, want %v", got, tc.want)
+			}
+			for i := range tc.want {
+				if got[i] != tc.want[i] {
+					t.Fatalf("indexes = %v, want %v", got, tc.want)
+				}
+			}
+			if string(body) != string(tc.wantBody) {
+				t.Fatalf("body = %v, want %v", body, tc.wantBody)
 			}
 		})
 	}
@@ -126,9 +140,10 @@ func TestProtobufProduceWireFramingIncludesMessageIndexes(t *testing.T) {
 		payload   string
 		wantWire5 []byte // wire frame 第 6 字节起的 index 段期望值
 	}{
+		// Confluent 段：zigzag 长度 + zigzag 各索引（[0] 单字节优化）。
 		{"single message indexes [0]", ordersFDSetB64(t), "order-value", `{"id":"o-3","amount":"9","item":"nut"}`, []byte{0x00}},
-		{"second message indexes [1]", multiMessageFDSetB64(t), "shipment-value", `{"tracking":"t-1"}`, []byte{0x01}},
-		{"nested indexes [0,0]", nestedFDSetB64(t), "entry-value", `{"id":"e-1"}`, []byte{0x00, 0x00}},
+		{"second message indexes [1]", multiMessageFDSetB64(t), "shipment-value", `{"tracking":"t-1"}`, []byte{0x02, 0x02}},
+		{"nested indexes [0,0]", nestedFDSetB64(t), "entry-value", `{"id":"e-1"}`, []byte{0x04, 0x00, 0x00}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
