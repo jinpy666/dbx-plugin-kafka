@@ -9,6 +9,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -383,5 +384,247 @@ func TestProtobufSubjectTailHelpers(t *testing.T) {
 	}
 	if got := messageFullNameTail("com.dbx.test.Order"); got != "Order" {
 		t.Errorf("messageFullNameTail = %q", got)
+	}
+}
+
+// mapEntryFDSetB64 构造一个含 map 字段的 FDSet，字段名与 map entry 名由
+// 参数指定。malformed=true 复现真实 SR 描述符的另外两个缺陷：type_name
+// 写成不带包的短名、字段 Type 漏填（默认 TYPE_DOUBLE）。
+func mapEntryFDSetB64(t *testing.T, fieldName, entryName string, malformed bool) string {
+	t.Helper()
+	field := func(name string, number int32) *descriptorpb.FieldDescriptorProto {
+		return &descriptorpb.FieldDescriptorProto{
+			Name:   proto.String(name),
+			Number: proto.Int32(number),
+			Label:  descriptorpb.FieldDescriptorProto_LABEL_OPTIONAL.Enum(),
+			Type:   descriptorpb.FieldDescriptorProto_TYPE_STRING.Enum(),
+		}
+	}
+	entry := &descriptorpb.DescriptorProto{
+		Name:    proto.String(entryName),
+		Field:   []*descriptorpb.FieldDescriptorProto{field("key", 1), field("value", 2)},
+		Options: &descriptorpb.MessageOptions{MapEntry: proto.Bool(true)},
+	}
+	mapField := &descriptorpb.FieldDescriptorProto{
+		Name:   proto.String(fieldName),
+		Number: proto.Int32(1),
+		Label:  descriptorpb.FieldDescriptorProto_LABEL_REPEATED.Enum(),
+	}
+	if malformed {
+		mapField.TypeName = proto.String(entryName)
+	} else {
+		mapField.Type = descriptorpb.FieldDescriptorProto_TYPE_MESSAGE.Enum()
+		mapField.TypeName = proto.String(".rcs.v1.RobotStateRawMsg." + entryName)
+	}
+	msg := &descriptorpb.DescriptorProto{
+		Name:       proto.String("RobotStateRawMsg"),
+		Field:      []*descriptorpb.FieldDescriptorProto{mapField},
+		NestedType: []*descriptorpb.DescriptorProto{entry},
+	}
+	fdset := &descriptorpb.FileDescriptorSet{File: []*descriptorpb.FileDescriptorProto{{
+		Name:        proto.String("rcs.proto"),
+		Package:     proto.String("rcs.v1"),
+		Syntax:      proto.String("proto3"),
+		MessageType: []*descriptorpb.DescriptorProto{msg},
+	}}}
+	raw, err := proto.Marshal(fdset)
+	if err != nil {
+		t.Fatalf("marshal map-entry FDSet: %v", err)
+	}
+	return base64.StdEncoding.EncodeToString(raw)
+}
+
+// TestNormalizeProtobufMapEntryNames 回归 issue #83 ①：SR 描述符里 map
+// entry 命名为小写驼峰时 protodesc.NewFiles 会拒绝整个 FDSet；归一化后
+// 应能构建出合规名，并同步修正 type_name 使 map 字段可解码。
+func TestNormalizeProtobufMapEntryNames(t *testing.T) {
+	cases := []struct {
+		field, entry, want string
+	}{
+		{"triggerParams", "triggerParamsEntry", "TriggerParamsEntry"},
+		{"parameters", "parametersEntry", "ParametersEntry"},
+		{"commandParams", "commandParamsEntry", "CommandParamsEntry"},
+		{"changes", "changesEntry", "ChangesEntry"},
+		{"trigger_params", "triggerParamsEntry", "TriggerParamsEntry"},
+		// 已合规的 entry 不应被改动（幂等，旧 SR 的合法 FDSet 不受影响）。
+		{"triggerParams", "TriggerParamsEntry", "TriggerParamsEntry"},
+	}
+	for _, tc := range cases {
+		for _, malformed := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/%s/malformed=%v", tc.field, tc.entry, malformed), func(t *testing.T) {
+				b64 := mapEntryFDSetB64(t, tc.field, tc.entry, malformed)
+				files, err := protobufFilesFromSchema(b64)
+				if err != nil {
+					t.Fatalf("protobufFilesFromSchema() error = %v", err)
+				}
+				want := "rcs.v1.RobotStateRawMsg." + tc.want
+				found := false
+				for _, md := range collectProtobufMessages(files) {
+					if string(md.FullName()) == want {
+						found = true
+					}
+				}
+				if !found {
+					t.Fatalf("normalized FDSet missing %s", want)
+				}
+				// field1(map) → entry{key:"k", value:"val"}，验证 type_name 同步改名。
+				payload := []byte{0x0a, 0x08, 0x0a, 0x01, 'k', 0x12, 0x03, 'v', 'a', 'l'}
+				decoded, err := decodeSchemaPayload(payload, b64, "PROTOBUF", "robot-state-raw-msg-value")
+				if err != nil {
+					t.Fatalf("decode map field error = %v", err)
+				}
+				if !strings.Contains(string(decoded), tc.field) || !strings.Contains(string(decoded), "val") {
+					t.Errorf("decoded = %s, want map field %q with value", decoded, tc.field)
+				}
+				// 重复归一化必须无变化。
+				raw, _ := base64.StdEncoding.DecodeString(b64)
+				set, err := protobufDescriptorSet(raw)
+				if err != nil {
+					t.Fatalf("protobufDescriptorSet() error = %v", err)
+				}
+				once, _ := proto.Marshal(set)
+				normalizeProtobufMapEntryNames(set)
+				twice, _ := proto.Marshal(set)
+				if string(once) != string(twice) {
+					t.Error("normalizeProtobufMapEntryNames() is not idempotent")
+				}
+			})
+		}
+	}
+}
+
+// manyMessageFDSetB64 构造 count 个顶层 message（最后一个 field1 名为
+// marker，其余为 id），并给第一个 message 加一个嵌套 message Inner。
+func manyMessageFDSetB64(t *testing.T, count int) string {
+	t.Helper()
+	strField := func(name string) *descriptorpb.FieldDescriptorProto {
+		return &descriptorpb.FieldDescriptorProto{
+			Name:   proto.String(name),
+			Number: proto.Int32(1),
+			Label:  descriptorpb.FieldDescriptorProto_LABEL_OPTIONAL.Enum(),
+			Type:   descriptorpb.FieldDescriptorProto_TYPE_STRING.Enum(),
+		}
+	}
+	msgs := make([]*descriptorpb.DescriptorProto, 0, count)
+	for i := 0; i < count; i++ {
+		fieldName := "id"
+		if i == count-1 {
+			fieldName = "marker"
+		}
+		msgs = append(msgs, &descriptorpb.DescriptorProto{
+			Name:  proto.String(fmt.Sprintf("Msg%d", i)),
+			Field: []*descriptorpb.FieldDescriptorProto{strField(fieldName)},
+		})
+	}
+	msgs[0].NestedType = []*descriptorpb.DescriptorProto{{
+		Name:  proto.String("Inner"),
+		Field: []*descriptorpb.FieldDescriptorProto{strField("inner_value")},
+	}}
+	fdset := &descriptorpb.FileDescriptorSet{File: []*descriptorpb.FileDescriptorProto{{
+		Name:        proto.String("many.proto"),
+		Package:     proto.String("com.dbx.test"),
+		Syntax:      proto.String("proto3"),
+		MessageType: msgs,
+	}}}
+	raw, err := proto.Marshal(fdset)
+	if err != nil {
+		t.Fatalf("marshal many-message FDSet: %v", err)
+	}
+	return base64.StdEncoding.EncodeToString(raw)
+}
+
+// TestSelectProtobufMessageByWireIndexes 回归 issue #83 ②：真实 Confluent
+// 帧 02 16 指向第 12 个顶层 message，按 subject 猜会选错；解析出的真实
+// indexes 必须优先用于选 message，非法/缺失段则回退 subject 约定。
+func TestSelectProtobufMessageByWireIndexes(t *testing.T) {
+	fdset := manyMessageFDSetB64(t, 12)
+	registry := newFakeRegistry()
+	id, _ := registry.register("msg0-value", fdset, "PROTOBUF")
+	client := newTestSRClient(t, registry)
+	body := []byte{0x0a, 0x04, 'w', 'i', 'r', 'e'} // field1 string "wire"
+
+	cases := []struct {
+		name    string
+		segment []byte
+		wantKey string
+	}{
+		{"real frame 02 16 selects 12th message", []byte{0x02, 0x16}, "marker"},
+		{"[0] single-byte optimization", []byte{0x00}, "id"},
+		{"nested indexes [0,0]", []byte{0x04, 0x00, 0x00}, "inner_value"},
+		{"missing indexes falls back to subject", nil, "id"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			segmented := append(append([]byte{}, tc.segment...), body...)
+			decoder := newSchemaDecoder(client, nil)
+			if tc.segment == nil {
+				// 无 index 段的历史载荷只能靠 subject 消歧（按 schemaID
+				// 反查时元数据不带 subject）。
+				decoder = newSchemaDecoder(client, &SchemaRef{Subject: "msg0-value", Format: "protobuf"})
+			}
+			decoded, _, err := decoder.decode(context.Background(), encodeWireFrame(id, segmented))
+			if err != nil {
+				t.Fatalf("decode() error = %v", err)
+			}
+			if !strings.Contains(string(decoded), `"`+tc.wantKey+`"`) {
+				t.Errorf("decoded = %s, want key %q (wrong message selected)", decoded, tc.wantKey)
+			}
+		})
+	}
+
+	desc, err := resolveProtobufMessageByIndexes(fdset, "msg0-value", []int{11})
+	if err != nil {
+		t.Fatalf("resolve(indexes=[11]) error = %v", err)
+	}
+	if got := string(desc.FullName()); got != "com.dbx.test.Msg11" {
+		t.Errorf("resolve(indexes=[11]) = %s, want com.dbx.test.Msg11", got)
+	}
+	desc, err = resolveProtobufMessageByIndexes(fdset, "msg0-value", []int{999})
+	if err != nil {
+		t.Fatalf("resolve(indexes=[999]) fallback error = %v", err)
+	}
+	if got := string(desc.FullName()); got != "com.dbx.test.Msg0" {
+		t.Errorf("resolve(indexes=[999]) = %s, want subject fallback com.dbx.test.Msg0", got)
+	}
+}
+
+// TestConfluentMessageIndexesEncodeDecodeRoundtrip 校验 Confluent 段编码与
+// 解析互逆（含 [0] 单字节优化与真实帧 02 16）。
+func TestConfluentMessageIndexesEncodeDecodeRoundtrip(t *testing.T) {
+	cases := []struct {
+		indexes []int
+		want    []byte
+	}{
+		{[]int{0}, []byte{0x00}},
+		{[]int{1}, []byte{0x02, 0x02}},
+		{[]int{11}, []byte{0x02, 0x16}},
+		{[]int{0, 0}, []byte{0x04, 0x00, 0x00}},
+		{[]int{0, 1}, []byte{0x04, 0x00, 0x02}},
+		{[]int{3, 2, 1}, []byte{0x06, 0x06, 0x04, 0x02}},
+	}
+	body := []byte{0x0a, 0x01, 'a'}
+	for _, tc := range cases {
+		t.Run(fmt.Sprint(tc.indexes), func(t *testing.T) {
+			encoded := encodeProtobufMessageIndexes(tc.indexes)
+			if string(encoded) != string(tc.want) {
+				t.Fatalf("encode(%v) = %v, want %v", tc.indexes, encoded, tc.want)
+			}
+			framed := append(append([]byte{}, encoded...), body...)
+			got, rest, ok := parseConfluentMessageIndexes(framed)
+			if !ok {
+				t.Fatalf("parse(%v) rejected valid Confluent segment", encoded)
+			}
+			if len(got) != len(tc.indexes) {
+				t.Fatalf("parse(%v) indexes = %v, want %v", encoded, got, tc.indexes)
+			}
+			for i := range tc.indexes {
+				if got[i] != tc.indexes[i] {
+					t.Fatalf("parse(%v) indexes = %v, want %v", encoded, got, tc.indexes)
+				}
+			}
+			if string(rest) != string(body) {
+				t.Errorf("parse(%v) body = %v, want %v", encoded, rest, body)
+			}
+		})
 	}
 }
