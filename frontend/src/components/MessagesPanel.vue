@@ -204,11 +204,11 @@ const {
   openDetail,
 } = useConsumeResults({ detail, onCopyJson: (row) => void copyMessageJson(row) });
 
-/** 跳到最新（R 路）：滚回结果区锚点 + 经 DbxAgGrid.goToLatest 跳分页末页并
- *  把最后一行滚入视口底部（最新数据行可见；分页模式由 gridApi 处理）。 */
+/** 跳到最新（R 路）：结果表按时间倒序，最新消息在首页首行——滚回结果区
+ *  锚点 + 经 DbxAgGrid.goToFirst 切第一页并把首行滚入视口顶部。 */
 function jumpToLatest() {
   resultMetaEl.value?.scrollIntoView({ block: "start" });
-  messagesGrid.value?.goToLatest();
+  messagesGrid.value?.goToFirst();
 }
 
 // -- field filters 编辑 / 参数构建 / 表单校验：见 useConsumeForm（composable）。
@@ -827,6 +827,7 @@ watch(() => props.topic, () => void loadPresets(), { immediate: true });
               </label>
             </template>
           </div>
+          <p v-if="schemaEnabled && !glueSchemaDisabled" class="hint">{{ t("messages.schemaAutoHint") }}</p>
           <p v-if="glueSchemaDisabled" class="hint">{{ t("messages.schemaGlueDisabled") }}</p>
         </div>
       </div>

@@ -430,6 +430,37 @@ describe("条件重置", () => {
 });
 
 describe("schema 挂载联动", () => {
+  it("连接配置了 Confluent SR：默认勾选挂载，Subject 任意/版本最新即下发 auto 挂载", async () => {
+    installBridge({ "kafka/schema/subjects/list": { subjects: [] } });
+    const form = makeForm({ srProvider: () => "confluent" });
+    await flushPromises();
+    expect(form.schemaEnabled.value).toBe(true);
+    expect(form.schemaSubject.value).toBe("");
+    expect(form.schemaVersionText.value).toBe("");
+    expect(form.schemaFormat.value).toBe("protobuf");
+    // 空 subject/format → 后端按 wire format 的 schemaID 反查 subject/version。
+    expect(form.buildParams().schema).toEqual({ subject: "", format: "" });
+  });
+
+  it("未配置 SR 的连接：不默认勾选、不下发 schema（避免多余 SR 请求）", () => {
+    const form = makeForm();
+    expect(form.schemaEnabled.value).toBe(false);
+    expect(form.buildParams().schema).toBeUndefined();
+  });
+
+  it("显式选 subject 时回落到显式模式并带上格式", async () => {
+    installBridge({
+      "kafka/schema/subjects/list": { subjects: [{ subject: "order-value", formats: ["json", "avro"], latestVersion: 3 }] },
+    });
+    const form = makeForm({ srProvider: () => "confluent" });
+    await flushPromises();
+    form.schemaSubject.value = "order-value";
+    await flushPromises(); // watch(schemaSubject) 先重置 version 并联动 format
+    form.schemaVersionText.value = "2";
+    await flushPromises();
+    expect(form.buildParams().schema).toEqual({ subject: "order-value", version: 2, format: "json" });
+  });
+
   it("glue provider：挂载区禁用、开关被 watch 复位、attach 恒 undefined", async () => {
     // computed 依赖必须响应式：provider 用 ref 承载，闭包变量驱动不了重算。
     const provider = ref<string | undefined>("confluent");
@@ -470,7 +501,7 @@ describe("schema 挂载联动", () => {
     form.schemaSubject.value = "any";
     form.schemaVersionText.value = "3";
     await flushPromises();
-    expect(form.buildParams().schema).toEqual({ subject: "any", format: "avro" });
+    expect(form.buildParams().schema).toEqual({ subject: "any", format: "protobuf" });
   });
 });
 
