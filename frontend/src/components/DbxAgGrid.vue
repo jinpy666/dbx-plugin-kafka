@@ -278,7 +278,15 @@ function goToLatest() {
   const last = gridApi.getDisplayedRowCount() - 1;
   if (last >= 0) gridApi.ensureIndexVisible(last, "bottom");
 }
-defineExpose({ goToLatest });
+
+/** 跳到首行（时间倒序结果表的「最新」）：切第一页 + 首行滚入视口顶部。
+ *  StreamPanel 等按时间升序追加的表格仍用 goToLatest（末页）。 */
+function goToFirst() {
+  if (!gridApi) return;
+  gridApi.paginationGoToFirstPage();
+  gridApi.ensureIndexVisible(0, "top");
+}
+defineExpose({ goToLatest, goToFirst });
 </script>
 
 <template>

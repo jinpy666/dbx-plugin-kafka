@@ -47,9 +47,11 @@ export interface KafkaMessage {
 export type SchemaFormat = "avro" | "json" | "protobuf";
 
 export interface SchemaAttach {
+  /** produce 必填；consume/stream 空串 = Subject「任意」，后端按消息内 schemaID 自动反查 subject/version。 */
   subject: string;
   version?: number;
-  format: SchemaFormat;
+  /** 空串 = 自动模式，由 SR 注册元数据的 schemaType 决定格式。 */
+  format: SchemaFormat | "";
 }
 
 export interface FieldFilter {
