@@ -31,6 +31,7 @@ vi.mock("ag-grid-community", () => ({
       setGridOption: vi.fn(),
       paginationGetPageSize: vi.fn(() => gridMock.pendingSize),
       paginationGoToLastPage: vi.fn(),
+      paginationGoToFirstPage: vi.fn(),
       ensureIndexVisible: vi.fn(),
       getDisplayedRowCount: vi.fn(() => 5),
       destroy: vi.fn(),
@@ -169,6 +170,17 @@ describe("DbxAgGrid", () => {
     };
     expect(api.paginationGoToLastPage).toHaveBeenCalledTimes(1);
     expect(api.ensureIndexVisible).toHaveBeenCalledWith(4, "bottom");
+  });
+
+  it("goToFirst jumps to the first page and scrolls the first row into view", () => {
+    const wrapper = mountGrid();
+    (wrapper.vm as unknown as { goToFirst: () => void }).goToFirst();
+    const api = lastApi(wrapper) as unknown as {
+      paginationGoToFirstPage: ReturnType<typeof vi.fn>;
+      ensureIndexVisible: ReturnType<typeof vi.fn>;
+    };
+    expect(api.paginationGoToFirstPage).toHaveBeenCalledTimes(1);
+    expect(api.ensureIndexVisible).toHaveBeenCalledWith(0, "top");
   });
 
   it("opens the copy and custom management actions from a row context menu", async () => {

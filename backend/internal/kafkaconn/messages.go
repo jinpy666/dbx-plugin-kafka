@@ -1013,12 +1013,40 @@ func consumeOffset(strategy, offsetTime string, hasGroup, directPartitions bool,
 	return offset, nil
 }
 
+// consumeRecentBrowsesLatest 判断是否为「纯浏览型」recent 消费：没有任何
+// 过滤/范围/聚合条件，用户意图就是看 topic 最新的 limit 条。
+// 有过滤时必须在较大的历史面上才可能找够 limit 条命中；digest 聚合等
+// 非工作台调用也需要完整扫描面，两种情况都保留原 maxScan 窗口。
+func consumeRecentBrowsesLatest(params ConsumeParams) bool {
+	if params.RetentionByteBudget != 0 || params.SkipValueBase64 {
+		return false
+	}
+	return trimSpace(params.Filter) == "" &&
+		trimSpace(params.KeyFilter) == "" &&
+		trimSpace(params.ValueFilter) == "" &&
+		trimSpace(params.HeaderFilter) == "" &&
+		len(params.FieldFilters) == 0 &&
+		params.TimestampFrom == nil && params.TimestampTo == nil &&
+		params.OffsetFrom == nil && params.OffsetTo == nil
+}
+
+// consumeRecentWindow 计算 recent 策略的回退窗口：纯浏览时只回退 limit 条，
+// 从日志末端起读即可拿到最新的 limit 条（默认 maxScan=10000 时若回退整个
+// 扫描窗口，顺序读到的会是窗口起点附近的一批历史数据）；其余情况保持
+// maxScan 扫描窗口不变。
+func consumeRecentWindow(params ConsumeParams) int64 {
+	if normalizeOffsetStrategyName(params.OffsetStrategy) == "recent" && consumeRecentBrowsesLatest(params) {
+		return int64(clampConsumeLimit(params.Limit))
+	}
+	return int64(consumeMaxScanRecords(params.Limit, params.MaxScanRecords))
+}
+
 // buildConsumeOpts 组装消费 opts（tinyrdm buildKgoConsumeOpts :3894 重写）。
 // strategy=offset 而 partitionOffsets 缺失时返回错误（对齐 tinyrdm
 // kafkaConsumePartitionExactOffsets 的必填校验）。
 func buildConsumeOpts(params ConsumeParams, topic, groupID string, partitions []int32, partitionOffsets map[int32]int64, isolation kgo.IsolationLevel) ([]kgo.Opt, error) {
 	var opts []kgo.Opt
-	recentWindow := int64(consumeMaxScanRecords(params.Limit, params.MaxScanRecords))
+	recentWindow := consumeRecentWindow(params)
 	opts = append(opts, kgo.FetchIsolationLevel(isolation))
 	// 注意：DisableAutoCommit 必须与 ConsumerGroup 同生共死（franz-go 对
 	// 「禁自动提交但未指定 group」直接拒建 client）。group 模式仅存在于

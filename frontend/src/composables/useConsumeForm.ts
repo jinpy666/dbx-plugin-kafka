@@ -77,10 +77,10 @@ const FORM_DEFAULTS = {
   offsetTo: "",
   decode: "none" as DecodeMode,
   decompression: "none" as Decompression,
-  schemaEnabled: false,
+  // schemaEnabled 不设固定默认值：由连接是否配置 Confluent SR 决定（srAutoMount）。
   schemaSubject: "",
   schemaVersionText: "",
-  schemaFormat: "avro" as SchemaFormat,
+  schemaFormat: "protobuf" as SchemaFormat,
 };
 
 export function useConsumeForm(options: UseConsumeFormOptions) {
@@ -293,11 +293,21 @@ export function useConsumeForm(options: UseConsumeFormOptions) {
 
   // -- schema mount（Phase 2：SR 解码挂载，version 空 = latest）---------------------
 
-  const schemaEnabled = ref(false);
+  // 连接配置了 Confluent SR 时默认勾选挂载：Subject「任意」+ 版本「最新」，
+  // 后端按消息内 schemaID 自动反查 subject/version，无需每个 topic 选一次。
+  // Glue 仅管理面（下方 watch 强制关闭）；未配 SR 的连接不默认开启，避免
+  // 给普通连接引入多余的 subjects/list 请求与 decodeError。
+  const srAutoMount = computed(() => options.srProvider() === "confluent");
+  const schemaEnabled = ref(srAutoMount.value);
+  // 连接状态由 App 异步填充，切换连接时按新连接重置默认值；同一连接内
+  // 用户手动开关不会被覆盖。
+  watch(srAutoMount, (enabled) => {
+    schemaEnabled.value = enabled;
+  });
   const schemaSubjects = ref<SchemaSubject[]>([]);
-  const schemaSubject = ref("");
-  const schemaVersionText = ref("");
-  const schemaFormat = ref<SchemaFormat>("avro");
+  const schemaSubject = ref(FORM_DEFAULTS.schemaSubject);
+  const schemaVersionText = ref(FORM_DEFAULTS.schemaVersionText);
+  const schemaFormat = ref<SchemaFormat>(FORM_DEFAULTS.schemaFormat);
   // Phase P：Glue 仅管理面（消息编解码仅 Confluent wire format，后端 -32000 拒绝），
   // 前端同步禁用挂载区并提示（保留 discoverability，不隐藏）。
   const glueSchemaDisabled = computed(() => options.srProvider() === "glue");
@@ -321,20 +331,32 @@ export function useConsumeForm(options: UseConsumeFormOptions) {
     }
   }
 
-  watch(schemaEnabled, (enabled) => {
-    if (enabled && schemaSubjects.value.length === 0) void loadSchemaSubjects();
-  });
+  // immediate：默认勾选（初值即 true）时 watch 不会因赋值触发，须在创建时拉取。
+  watch(
+    schemaEnabled,
+    (enabled) => {
+      if (enabled && schemaSubjects.value.length === 0) void loadSchemaSubjects();
+    },
+    { immediate: true },
+  );
 
   watch(schemaSubject, () => {
     schemaVersionText.value = "";
     const found = schemaSubjects.value.find((row) => row.subject === schemaSubject.value);
-    if (found?.formats?.length) schemaFormat.value = (found.formats[0] as SchemaFormat) ?? "avro";
+    if (found?.formats?.length) {
+      schemaFormat.value = (found.formats.includes("protobuf")
+        ? "protobuf"
+        : (found.formats[0] as SchemaFormat)) ?? "protobuf";
+    }
   });
 
   function buildSchemaAttach(): SchemaAttach | undefined {
     if (glueSchemaDisabled.value) return undefined;
-    if (!schemaEnabled.value || !schemaSubject.value) return undefined;
+    if (!schemaEnabled.value) return undefined;
     const version = Number.parseInt(schemaVersionText.value, 10);
+    // 自动模式：Subject「任意」→ 下发空 subject/format，后端按 wire format
+    // 里的 schemaID 反查，格式由 SR 注册元数据 schemaType 决定（不误锁 protobuf）。
+    if (!schemaSubject.value) return { subject: "", format: "" };
     return {
       subject: schemaSubject.value,
       ...(Number.isFinite(version) && version > 0 ? { version } : {}),
@@ -384,7 +406,7 @@ export function useConsumeForm(options: UseConsumeFormOptions) {
     offsetTo.value = FORM_DEFAULTS.offsetTo;
     decode.value = FORM_DEFAULTS.decode;
     decompression.value = FORM_DEFAULTS.decompression;
-    schemaEnabled.value = FORM_DEFAULTS.schemaEnabled;
+    schemaEnabled.value = srAutoMount.value; // 挂载开关按连接的 SR 配置，而非固定默认
     schemaSubject.value = FORM_DEFAULTS.schemaSubject;
     schemaVersionText.value = FORM_DEFAULTS.schemaVersionText;
     schemaFormat.value = FORM_DEFAULTS.schemaFormat;

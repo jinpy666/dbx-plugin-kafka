@@ -45,16 +45,19 @@ export function useConsumeResults(options: UseConsumeResultsOptions) {
     toggleWorkbenchTimestampTz();
   }
 
-  /** 行数组重建（tz 切换/结果落地共用）：capRows 裁剪 → toMessageRows（按当前
-   *  时区格式化）→ 引用替换一次性提交。 */
+  /** 行数组重建（tz 切换/结果落地共用）：capRows 裁剪 → 倒序（最新在前）→
+   *  toMessageRows（按当前时区格式化）→ 引用替换一次性提交。
+   *  后端按 offset 升序返回（= 时间升序），倒序后最新消息落在首行，与其它
+   *  Kafka 工作台的时间倒序展示一致；capRows 必须先取尾部（最新 N 条）再
+   *  倒序，否则会把最旧的一批翻到前面。 */
   function rebuildRows() {
     const capped = capRows(result.value?.messages ?? []);
-    messageRows.value = toMessageRows(capped.rows);
+    messageRows.value = toMessageRows([...capped.rows].reverse());
     triggerRef(messageRows);
     rowsTotal.value = capped.total;
   }
 
-  /** 消费结果落地（唯一入口）：capRows 裁剪（保留最新 N 条）→ 批量构建行数组 →
+  /** 消费结果落地（唯一入口）：capRows 裁剪（保留最新 N 条）→ 倒序构建行数组 →
    *  引用替换一次性提交（DbxAgGrid 以单次 setGridOption 批量应用，配合稳定
    *  getRowId，无逐条更新）。 */
   function applyResult(next: ConsumeResult | null) {

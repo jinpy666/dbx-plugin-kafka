@@ -168,6 +168,50 @@ func TestBuildConsumeOptsOffsetStrategyRequiresOffsets(t *testing.T) {
 	}
 }
 
+// 纯浏览型 recent 只看 topic 最新的 limit 条；任何过滤/范围/聚合条件都
+// 保留完整扫描窗口（否则筛不到足够命中、聚合面也被截断）。
+func TestConsumeRecentWindowBrowsesLatest(t *testing.T) {
+	from := int64(1)
+	base := ConsumeParams{OffsetStrategy: "recent", Limit: 100, MaxScanRecords: 10000}
+	fullWindow := int64(consumeMaxScanRecords(base.Limit, base.MaxScanRecords))
+	browse := consumeRecentWindow(base)
+	if browse != 100 {
+		t.Fatalf("pure browse recent window = %d, want 100 (limit)", browse)
+	}
+	if browse >= fullWindow {
+		t.Fatalf("browse window %d should be smaller than scan window %d", browse, fullWindow)
+	}
+
+	cases := []struct {
+		name   string
+		mutate func(*ConsumeParams)
+	}{
+		{"text filter", func(p *ConsumeParams) { p.Filter = "x" }},
+		{"key filter", func(p *ConsumeParams) { p.KeyFilter = "k" }},
+		{"value filter", func(p *ConsumeParams) { p.ValueFilter = "v" }},
+		{"header filter", func(p *ConsumeParams) { p.HeaderFilter = "h" }},
+		{"field filter", func(p *ConsumeParams) { p.FieldFilters = []ConsumeFieldFilter{{}} }},
+		{"timestamp range", func(p *ConsumeParams) { p.TimestampFrom = &from }},
+		{"offset range", func(p *ConsumeParams) { p.OffsetTo = &from }},
+		{"digest aggregation", func(p *ConsumeParams) { p.RetentionByteBudget = -1 }},
+		{"aggregation skip base64", func(p *ConsumeParams) { p.SkipValueBase64 = true }},
+		{"earliest strategy", func(p *ConsumeParams) { p.OffsetStrategy = "earliest" }},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			params := base
+			tc.mutate(&params)
+			if got := consumeRecentWindow(params); got != fullWindow {
+				t.Errorf("window = %d, want full scan window %d", got, fullWindow)
+			}
+		})
+	}
+
+	if got := consumeRecentWindow(ConsumeParams{OffsetStrategy: "recent", MaxScanRecords: 10000}); got != 100 {
+		t.Errorf("default limit window = %d, want 100", got)
+	}
+}
+
 func TestNormalizeConsumePartitions(t *testing.T) {
 	got, err := normalizeConsumePartitions([]int32{2, 0, 2, 1})
 	if err != nil {

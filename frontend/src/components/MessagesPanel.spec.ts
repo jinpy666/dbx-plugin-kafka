@@ -18,6 +18,7 @@ import { serializeMessagesToCsv, serializeMessagesToJson } from "../lib/messageE
 
 // -- DbxAgGrid 轻量 stub（镜像真实桥形状，见 GroupsPanel.spec 同款） -----------------
 let goToLatestCalls = 0;
+let goToFirstCalls = 0;
 const DbxAgGridStub = defineComponent({
   name: "DbxAgGridStub",
   props: {
@@ -32,6 +33,9 @@ const DbxAgGridStub = defineComponent({
     expose({
       goToLatest: () => {
         goToLatestCalls += 1;
+      },
+      goToFirst: () => {
+        goToFirstCalls += 1;
       },
     });
     return () =>
@@ -105,9 +109,39 @@ beforeEach(() => {
   localStorage.clear();
   setKafkaConnectionId("conn-test");
   goToLatestCalls = 0;
+  goToFirstCalls = 0;
 });
 
 describe("MessagesPanel", () => {
+  it("结果表按时间倒序：最新消息在首行，跳到最新走首页", async () => {
+    setWorkbenchTimestampTz("local");
+    const base = 1_700_000_000_000;
+    const mk = (offset: number, ts: number): KafkaMessage => ({
+      topic: "order-events", partition: 0, offset, timestamp: ts, valueText: `{"v":${offset}}`,
+    });
+    installBridge({
+      "kafka/presets/list": { presets: [] },
+      "kafka/messages/consume": {
+        messages: [mk(1, base), mk(2, base + 1000), mk(3, base + 2000)],
+        scanned: 3, matched: 3, limited: false, hasMore: false,
+      },
+    });
+    const wrapper = mountPanel();
+    await flushPromises();
+    await wrapper.find(".form-footer .primary-button").trigger("click");
+    await flushPromises();
+    const rows = wrapper.findAll(".grid-stub-row");
+    expect(rows).toHaveLength(3);
+    expect(rows[0].text()).toContain(formatTimestamp(base + 2000, "local"));
+    expect(rows[2].text()).toContain(formatTimestamp(base, "local"));
+    // 倒序后最新在首页，「跳到最新」走 goToFirst，不再跳末页。
+    const jump = wrapper.findAll("button").find((button) => button.attributes("title") === t("messages.uiJumpLatest"));
+    expect(jump).toBeTruthy();
+    await jump?.trigger("click");
+    expect(goToFirstCalls).toBe(1);
+    expect(goToLatestCalls).toBe(0);
+  });
+
   // P1-6：<input type="number"> 的 v-model 赋 number，optionalNumber 直接 .trim()
   // 曾抛 TypeError（「value.trim is not a function」）导致消费请求根本不发出。
   it("consumes with an offset range and forwards offsetFrom/offsetTo as numbers (P1-6)", async () => {
