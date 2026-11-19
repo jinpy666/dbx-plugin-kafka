@@ -669,9 +669,11 @@ func (r *StreamRegistry) runLoop(session *streamSession) {
 		return
 	}
 	// schema 挂载（Phase 2）：per-session 解码器（SR 客户端 + 元数据缓存）。
+	// 取数预算挂在会话 context 上（见 schemaDecoder.requestContext）。
 	var schemaDec *schemaDecoder
 	if session.req.Schema != nil && session.schemaClient != nil {
 		schemaDec = newSchemaDecoder(session.schemaClient, session.req.Schema)
+		schemaDec.bindContext(session.ctx)
 	}
 
 	batch := make([]ConsumedMessage, 0, StreamBatchSize)

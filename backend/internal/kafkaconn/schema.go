@@ -24,6 +24,7 @@ import (
 	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -310,6 +311,7 @@ func protobufDescriptorSet(raw []byte) (*descriptorpb.FileDescriptorSet, error) 
 	}
 	var fdset descriptorpb.FileDescriptorSet
 	if err := proto.Unmarshal(raw, &fdset); err == nil && usableProtobufDescriptorSet(&fdset) {
+		normalizeProtobufMapEntryNames(&fdset)
 		return &fdset, nil
 	}
 	wrapped := protowire.AppendTag(nil, 1, protowire.BytesType)
@@ -321,6 +323,7 @@ func protobufDescriptorSet(raw []byte) (*descriptorpb.FileDescriptorSet, error) 
 	if !usableProtobufDescriptorSet(&single) {
 		return nil, errf("protobuf schema is neither FileDescriptorSet nor FileDescriptorProto")
 	}
+	normalizeProtobufMapEntryNames(&single)
 	return &single, nil
 }
 
@@ -335,6 +338,180 @@ func usableProtobufDescriptorSet(fdset *descriptorpb.FileDescriptorSet) bool {
 		}
 	}
 	return true
+}
+
+// normalizeProtobufMapEntryNames 把 map entry 嵌套 message 的名字归一化成
+// protoc 约定（引用字段名 PascalCase + "Entry"）。
+//
+// 部分非 protoc 生成器（含某些 Confluent SR 上登记的 .proto 描述符）把 map
+// 字段的 entry 命名为小写驼峰，例如字段 triggerParams 对应
+// triggerParamsEntry；protodesc.NewFiles 的 checkValidMap 会按字段名反推
+// 期望名 TriggerParamsEntry 并强校验，一处不符整个 FDSet 构建失败
+// （"incorrect implicit map entry name"），消息无法解码。同类描述符还常见
+// 两个缺陷：type_name 写成不带包的短名、字段 Type 漏填（默认 TYPE_DOUBLE
+// 而非 TYPE_MESSAGE）。这里一并补齐。
+//
+// 本 helper 位于唯一的 FDSet 收敛点（protobufDescriptorSet），两遍处理：
+// 先由引用字段算出 oldFullName → newFullName，再改 entry.Name、把引用字段
+// 的 type_name 改成全限定新名并修正 Type。已合规的名字不进映射（幂等，
+// 合法 FDSet 不受影响）。
+func normalizeProtobufMapEntryNames(fdset *descriptorpb.FileDescriptorSet) {
+	if fdset == nil {
+		return
+	}
+
+	// visitMessages 递归访问文件内所有 message（含嵌套），给出全限定名。
+	var visitMessages func(prefix string, msgs []*descriptorpb.DescriptorProto, visit func(string, *descriptorpb.DescriptorProto))
+	visitMessages = func(prefix string, msgs []*descriptorpb.DescriptorProto, visit func(string, *descriptorpb.DescriptorProto)) {
+		for _, msg := range msgs {
+			full := msg.GetName()
+			if prefix != "" {
+				full = prefix + "." + full
+			}
+			visit(full, msg)
+			visitMessages(full, msg.GetNestedType(), visit)
+		}
+	}
+	// scopedField 记录字段及其声明作用域（message 全名；文件级扩展为包名）。
+	// 作用域是短类型名的解析起点：同一份 .proto 里多个 message 各有
+	// paramsEntry 这类同名 map entry 时，只按短名做全文件匹配必然歧义，
+	// 必须按 protobuf 词法作用域由内向外解析。
+	type scopedField struct {
+		field *descriptorpb.FieldDescriptorProto
+		scope string
+	}
+	var fields []scopedField
+	collectFields := func(scope string, list []*descriptorpb.FieldDescriptorProto) {
+		for _, field := range list {
+			fields = append(fields, scopedField{field: field, scope: scope})
+		}
+	}
+	for _, file := range fdset.File {
+		collectFields(file.GetPackage(), file.GetExtension())
+		visitMessages(file.GetPackage(), file.GetMessageType(), func(full string, msg *descriptorpb.DescriptorProto) {
+			collectFields(full, msg.GetField())
+			collectFields(full, msg.GetExtension())
+		})
+	}
+
+	// 第一遍：收集所有 message 全名、map entry（全名 + 短名索引）。
+	entries := map[string]*descriptorpb.DescriptorProto{}
+	allMessages := map[string]bool{}
+	entryFullByShort := map[string]string{}
+	ambiguousShort := map[string]bool{}
+	for _, file := range fdset.File {
+		visitMessages(file.GetPackage(), file.GetMessageType(), func(full string, msg *descriptorpb.DescriptorProto) {
+			allMessages[full] = true
+			if !msg.GetOptions().GetMapEntry() {
+				return
+			}
+			entries[full] = msg
+			short := full[strings.LastIndex(full, ".")+1:]
+			if existing, ok := entryFullByShort[short]; ok && existing != full {
+				ambiguousShort[short] = true
+			} else {
+				entryFullByShort[short] = full
+			}
+		})
+	}
+	if len(entries) == 0 {
+		return
+	}
+
+	// 引用字段决定期望名：type_name 既可能是全限定名，也可能是不带包的
+	// 短名（甚至是半限定名）；不按 Type/Label 过滤，因为畸形描述符常漏填
+	// Type。
+	//
+	// 解析顺序（protobuf 词法作用域规则，与 protoc 一致）：
+	//  1. 直接命中全名；
+	//  2. 由字段所在作用域逐级向外补前缀（"paramsEntry" 优先落到本 message
+	//     的嵌套 entry，而不是全文件里另一个同名 entry）；
+	//  3. 兜底全文件唯一短名（历史行为；同名 entry 出现多处时不再猜）。
+	//
+	// 此前只做「全文件短名唯一才认」：一份 .proto 里 TaskEventMsg 与
+	// RobotDiagnosisMsg 都有 params map、entry 都叫 paramsEntry 时短名歧义，
+	// 两个字段全部跳过归一化，protodesc 直接以 "incorrect implicit map entry
+	// name" 拒绝整个 FDSet——目标消息本身没问题，也无法解码。
+	resolveEntry := func(scope, typeName string) (string, bool) {
+		target := strings.TrimPrefix(typeName, ".")
+		if target == "" {
+			return "", false
+		}
+		if _, ok := entries[target]; ok {
+			return target, true
+		}
+		for prefix := scope; prefix != ""; prefix = parentScope(prefix) {
+			if candidate := prefix + "." + target; entries[candidate] != nil {
+				return candidate, true
+			}
+		}
+		if !strings.Contains(target, ".") && !ambiguousShort[target] {
+			if full, ok := entryFullByShort[target]; ok {
+				return full, true
+			}
+		}
+		return "", false
+	}
+
+	fieldTargets := map[*descriptorpb.FieldDescriptorProto]string{} // field → old full
+	fieldForEntry := map[string]*descriptorpb.FieldDescriptorProto{}
+	for _, item := range fields {
+		full, ok := resolveEntry(item.scope, item.field.GetTypeName())
+		if !ok {
+			continue
+		}
+		fieldTargets[item.field] = full
+		if _, exists := fieldForEntry[full]; !exists {
+			fieldForEntry[full] = item.field
+		}
+	}
+
+	renames := map[string]string{}                           // old full → new full
+	entryNames := map[*descriptorpb.DescriptorProto]string{} // entry → 新短名
+	for full, entry := range entries {
+		field, ok := fieldForEntry[full]
+		if !ok {
+			continue
+		}
+		want := pascalCase(field.GetName()) + "Entry"
+		if want == "Entry" || entry.GetName() == want {
+			continue
+		}
+		newFull := strings.TrimSuffix(full, entry.GetName()) + want
+		if allMessages[newFull] {
+			// 目标名已被其它 message 占用，保守跳过，避免制造冲突。
+			continue
+		}
+		renames[full] = newFull
+		entryNames[entry] = want
+	}
+	// 第二遍：改 entry 名；引用字段在改名 / 非全限定名 / Type 漏填时统一
+	// 改成全限定名并修正 Type，使 protodesc 与 dynamicpb 都按合法 map 字段
+	// 处理（短名在批量改名后可能变成新的歧义，全限定名才稳定）。完全合规的
+	// FDSet 各条件都不成立，字节保持原样（幂等）。
+	for entry, name := range entryNames {
+		entry.Name = proto.String(name)
+	}
+	for field, oldFull := range fieldTargets {
+		newFull, renamed := renames[oldFull]
+		if !renamed {
+			newFull = oldFull
+		}
+		if renamed || strings.TrimPrefix(field.GetTypeName(), ".") != newFull {
+			field.TypeName = proto.String("." + newFull)
+		}
+		if field.GetType() != descriptorpb.FieldDescriptorProto_TYPE_MESSAGE {
+			field.Type = descriptorpb.FieldDescriptorProto_TYPE_MESSAGE.Enum()
+		}
+	}
+}
+
+// parentScope 取外层作用域（"a.b.C" → "a.b"、"a" → ""）。
+func parentScope(scope string) string {
+	if i := strings.LastIndex(scope, "."); i >= 0 {
+		return scope[:i]
+	}
+	return ""
 }
 
 func (c *schemaRegistryClient) registerSchema(ctx context.Context, subject string, format, schema string, refs []SchemaReference, normalize bool) (SchemaMeta, error) {
@@ -1282,6 +1459,13 @@ func encodeSchemaPayload(text []byte, schema, format, subject string) ([]byte, e
 // Schema 校验后原样；PROTOBUF：动态消息 → protojson）。
 // subject 仅 PROTOBUF 分支用于 message 消歧，可空。
 func decodeSchemaPayload(payload []byte, schema, format, subject string) ([]byte, error) {
+	return decodeSchemaPayloadWithIndexes(payload, schema, format, subject, nil)
+}
+
+// decodeSchemaPayloadWithIndexes 与 decodeSchemaPayload 相同，额外接受
+// Confluent wire format 的 message indexes（由 schemaDecoder.decode 从载荷
+// 头部解析）；indexes 非空时 PROTOBUF 分支优先按声明路径选 message。
+func decodeSchemaPayloadWithIndexes(payload []byte, schema, format, subject string, indexes []int) ([]byte, error) {
 	switch strings.ToUpper(strings.TrimSpace(format)) {
 	case "", "AVRO":
 		codec, err := goavro.NewCodec(schema)
@@ -1299,7 +1483,7 @@ func decodeSchemaPayload(payload []byte, schema, format, subject string) ([]byte
 		}
 		return payload, nil
 	case "PROTOBUF":
-		return decodeProtobufPayload(payload, schema, subject)
+		return decodeProtobufPayload(payload, schema, subject, indexes)
 	default:
 		return nil, errf("schema format must be AVRO, JSON, or PROTOBUF")
 	}
@@ -1313,9 +1497,10 @@ func decodeSchemaPayload(payload []byte, schema, format, subject string) ([]byte
 // encodeWireFrame(meta.ID) 复用）。int64/枚举的 JSON 表示与 Confluent 序列化
 // 器存在已知差异（protojson 输出 proto 字段名），登记不强行对齐（§12.7）。
 
-// decodeProtobufPayload 把 protobuf 二进制载荷解码为 JSON 文本。
-func decodeProtobufPayload(payload []byte, fdsetB64, subject string) ([]byte, error) {
-	desc, err := resolveProtobufMessage(fdsetB64, subject)
+// decodeProtobufPayload 把 protobuf 二进制载荷解码为 JSON 文本。indexes
+// 来自 Confluent wire format 的 message index 段，非空时优先按其选 message。
+func decodeProtobufPayload(payload []byte, fdsetB64, subject string, indexes []int) ([]byte, error) {
+	desc, err := resolveProtobufMessageByIndexes(fdsetB64, subject, indexes)
 	if err != nil {
 		return nil, err
 	}
@@ -1356,6 +1541,45 @@ func resolveProtobufMessage(fdsetB64, subject string) (protoreflect.MessageDescr
 		return nil, err
 	}
 	return selectProtobufMessage(collectProtobufMessages(files), subject)
+}
+
+// resolveProtobufMessageByIndexes 优先按 Confluent wire format 的 message
+// indexes 选 message；indexes 为空、解析失败或下钻不命中时回退到
+// selectProtobufMessage 的 subject 三分支（兼容「Subject 指定」与历史载荷）。
+func resolveProtobufMessageByIndexes(fdsetB64, subject string, indexes []int) (protoreflect.MessageDescriptor, error) {
+	files, err := protobufFilesFromSchema(fdsetB64)
+	if err != nil {
+		return nil, err
+	}
+	if len(indexes) > 0 {
+		if desc, ok := messageByIndexPath(files, indexes); ok {
+			return desc, nil
+		}
+	}
+	return selectProtobufMessage(collectProtobufMessages(files), subject)
+}
+
+// messageByIndexPath 按 message index 路径下钻：indexes[0] 是顶层 message
+// 在主 .proto 文件内的声明序号，后续元素逐级进入嵌套 message。Confluent
+// ?format=serialized 只返回单个文件，FDSet 多文件时逐个文件尝试完整命中
+// （依赖文件通常不含目标索引，不会被误选）。
+func messageByIndexPath(files *protoregistry.Files, indexes []int) (protoreflect.MessageDescriptor, bool) {
+	var found protoreflect.MessageDescriptor
+	files.RangeFiles(func(fd protoreflect.FileDescriptor) bool {
+		if len(indexes) == 0 || indexes[0] < 0 || indexes[0] >= fd.Messages().Len() {
+			return true
+		}
+		md := fd.Messages().Get(indexes[0])
+		for _, index := range indexes[1:] {
+			if index < 0 || index >= md.Messages().Len() {
+				return true
+			}
+			md = md.Messages().Get(index)
+		}
+		found = md
+		return false
+	})
+	return found, found != nil
 }
 
 // selectProtobufMessage 从收集的 message 描述符按 subject 约定选出目标
@@ -1419,7 +1643,27 @@ func protobufFilesFromSchema(fdsetB64 string) (*protoregistry.Files, error) {
 			}
 		}
 	}
-	return nil, fmt.Errorf("build protobuf descriptors: %w", err)
+	// 报错带上 FDSet 内的 .proto 文件名：畸形描述符的报错常指向同文件里的
+	// 兄弟 message（见 normalizeProtobufMapEntryNames），文件名是把报错对回
+	// SR subject 的关键线索。
+	return nil, fmt.Errorf("build protobuf descriptors (files: %s): %w", protobufFileNames(fdset, 3), err)
+}
+
+// protobufFileNames 列出 FDSet 内的文件名（最多 limit 个，其余折叠为 +N）。
+func protobufFileNames(fdset *descriptorpb.FileDescriptorSet, limit int) string {
+	names := make([]string, 0, len(fdset.GetFile()))
+	for _, file := range fdset.GetFile() {
+		if name := strings.TrimSpace(file.GetName()); name != "" {
+			names = append(names, name)
+		}
+	}
+	if len(names) == 0 {
+		return "unknown"
+	}
+	if limit > 0 && len(names) > limit {
+		return strings.Join(names[:limit], ", ") + sprintf(", +%d more", len(names)-limit)
+	}
+	return strings.Join(names, ", ")
 }
 
 // collectProtobufMessages 遍历 FDSet 全部文件收集 message 描述符（含嵌套）。
@@ -1581,6 +1825,14 @@ type schemaDecoder struct {
 	client *schemaRegistryClient
 	cache  *schemaMetaCache
 	req    *SchemaRef
+	// base 是取 SR 元数据时的根 context（consume/stream 会话级）。decode 的
+	// ctx 是「扫描窗口」，扫描慢/到点时它已失效，SR 请求会被直接判死——
+	// 线上表现就是满屏 "context deadline exceeded"（SR 是否健康都这样）。
+	base context.Context
+	// failures 缓存一次消费内的取数失败：同一 schema 只打一次 SR，SR 不可用
+	// 时不把 100 条消息放大成 100 次超时。
+	mu       sync.Mutex
+	failures map[string]error
 }
 
 // schemaValueInfo 是解码后附带进消息的 schema 定位信息。
@@ -1591,12 +1843,68 @@ type schemaValueInfo struct {
 }
 
 func newSchemaDecoder(client *schemaRegistryClient, req *SchemaRef) *schemaDecoder {
-	return &schemaDecoder{client: client, cache: newSchemaMetaCache(), req: req}
+	return &schemaDecoder{
+		client:   client,
+		cache:    newSchemaMetaCache(),
+		req:      req,
+		failures: map[string]error{},
+	}
+}
+
+// bindContext 把解码器挂到会话根 context（用户停止/会话结束仍可取消），
+// 使 SR 取数不再借用逐批的扫描窗口预算。
+func (d *schemaDecoder) bindContext(base context.Context) {
+	d.base = base
+}
+
+// requestContext 给 SR 取数派生独立预算（schemaRegistryTimeout）。根已取消
+// （用户点停止/会话结束）时直接返回根，让请求快速失败而不是重新计时。
+func (d *schemaDecoder) requestContext(ctx context.Context) (context.Context, context.CancelFunc) {
+	base := d.base
+	if base == nil {
+		base = ctx
+	}
+	if base.Err() != nil {
+		return base, func() {}
+	}
+	return context.WithTimeout(base, schemaRegistryTimeout)
+}
+
+// lookupFailure 取一次消费内该 schema 的既有失败（key 见 schemaIDKey /
+// schemaSubjectKey）。
+func (d *schemaDecoder) lookupFailure(key string) (error, bool) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	err, ok := d.failures[key]
+	return err, ok
+}
+
+// storeFailure 记录失败。用户取消导致的失败不记：会话已结束，缓存它没有
+// 意义，反而会污染后续重试。
+func (d *schemaDecoder) storeFailure(key string, err error) {
+	if err == nil || errors.Is(err, context.Canceled) {
+		return
+	}
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.failures == nil {
+		d.failures = map[string]error{}
+	}
+	d.failures[key] = err
+}
+
+func schemaIDKey(id int) string { return "id " + strconv.Itoa(id) }
+
+func schemaSubjectKey(subject string, version int64) string {
+	if version > 0 {
+		return "subject " + subject + " v" + strconv.FormatInt(version, 10)
+	}
+	return "subject " + subject + " latest"
 }
 
 // decode 解包 wire format 并解码载荷为 JSON 文本。
 // 返回 decoded 载荷 + schema 定位信息 + 错误（错误只进消息 decodeError，
-// 不中断消费）。
+// 不中断消费）。ctx 是扫描窗口；SR 取数走 requestContext 的独立预算。
 func (d *schemaDecoder) decode(ctx context.Context, value []byte) ([]byte, schemaValueInfo, error) {
 	schemaID, payload, err := decodeWireFrame(value)
 	if err != nil {
@@ -1607,25 +1915,40 @@ func (d *schemaDecoder) decode(ctx context.Context, value []byte) ([]byte, schem
 	if req != nil && strings.TrimSpace(req.Subject) != "" {
 		// 指定 subject：按 subject(+version) 取元数据（wire id 与元数据
 		// 不一致时以 wire id 兜底填充）。
-		if cached, ok := d.cache.lookupBySubjectVersion(trimSpace(req.Subject), req.Version); ok {
+		subject := trimSpace(req.Subject)
+		key := schemaSubjectKey(subject, req.Version)
+		if cached, ok := d.cache.lookupBySubjectVersion(subject, req.Version); ok {
 			meta = cached
+		} else if failed, ok := d.lookupFailure(key); ok {
+			return nil, schemaValueInfo{}, failed
 		} else {
-			meta, err = d.client.getSchemaForCodec(ctx, trimSpace(req.Subject), req.Version)
+			fetchCtx, cancel := d.requestContext(ctx)
+			meta, err = d.client.getSchemaForCodec(fetchCtx, subject, req.Version)
+			cancel()
 			if err != nil {
-				return nil, schemaValueInfo{}, err
+				wrapped := fmt.Errorf("fetch schema %s from registry: %w", key, err)
+				d.storeFailure(key, wrapped)
+				return nil, schemaValueInfo{}, wrapped
 			}
 			if meta.ID == 0 {
 				meta.ID = schemaID
 			}
-			d.cache.storeSubjectLookup(trimSpace(req.Subject), req.Version, meta)
+			d.cache.storeSubjectLookup(subject, req.Version, meta)
 		}
 	} else {
+		key := schemaIDKey(schemaID)
 		if cached, ok := d.cache.lookupByID(schemaID); ok {
 			meta = cached
+		} else if failed, ok := d.lookupFailure(key); ok {
+			return nil, schemaValueInfo{}, failed
 		} else {
-			meta, err = d.client.getSchemaByIDForCodec(ctx, schemaID)
+			fetchCtx, cancel := d.requestContext(ctx)
+			meta, err = d.client.getSchemaByIDForCodec(fetchCtx, schemaID)
+			cancel()
 			if err != nil {
-				return nil, schemaValueInfo{}, err
+				wrapped := fmt.Errorf("fetch schema %s from registry: %w", key, err)
+				d.storeFailure(key, wrapped)
+				return nil, schemaValueInfo{}, wrapped
 			}
 			d.cache.store(meta)
 		}
@@ -1637,21 +1960,21 @@ func (d *schemaDecoder) decode(ctx context.Context, value []byte) ([]byte, schem
 		format = normalizeConfluentSchemaType(meta.SchemaType)
 	}
 	// PROTOBUF：Confluent wire format 在 schemaID 与载荷之间还有 message
-	// index 数组段，按深度剥离后再解码（AVRO/JSON 原样传）。
+	// index 数组段（zigzag 长度前缀 + 各 zigzag 索引，[0] 用单字节 0x00）。
+	// 解析出真实 indexes 一并透传给解码侧，据此选 message，而不是按
+	// subject 猜出的深度剥段（AVRO/JSON 原样传）。
 	wirePayload := payload
 	stripped := false
+	var indexes []int
 	if format == "PROTOBUF" {
-		if indexes, indexErr := protobufMessageIndexesFromSchema(meta.Schema, meta.Subject); indexErr == nil {
-			if rest, ok := stripProtobufMessageIndexes(payload, len(indexes)); ok {
-				wirePayload = rest
-				stripped = true
-			}
+		if parsed, rest, ok := parseConfluentMessageIndexes(payload); ok {
+			indexes, wirePayload, stripped = parsed, rest, true
 		}
 	}
-	decoded, err := decodeSchemaPayload(wirePayload, meta.Schema, format, meta.Subject)
+	decoded, err := decodeSchemaPayloadWithIndexes(wirePayload, meta.Schema, format, meta.Subject, indexes)
 	if err != nil && stripped {
-		// 历史兼容：早期版本 produce 侧漏写 message index 段，剥段后解码
-		// 失败时按原始载荷重试一次（仍失败以剥段路径的错误为准）。
+		// 历史兼容：早期版本 produce 侧漏写 message index 段，或按 indexes
+		// 选错 message 时，按原始载荷 + subject 约定重试一次。
 		if fallback, fallbackErr := decodeSchemaPayload(payload, meta.Schema, format, meta.Subject); fallbackErr == nil {
 			decoded, err = fallback, nil
 		}
@@ -1699,10 +2022,14 @@ func encodeForProduce(ctx context.Context, client *schemaRegistryClient, ref *Sc
 //
 // Confluent PROTOBUF 的 wire format 在 4 字节 schemaID 之后、protobuf 载荷
 // 之前还有一段 message index 数组：目标 message 的声明序号路径（顶层序号 →
-// 逐级嵌套序号）各以一个 varint 紧密拼接，无长度前缀（单顶层 message =
-// 单字节 0x00）。AVRO/JSON 无此段。produce 侧按选中 message 补齐该段，
-// consume 侧按深度剥离；剥离失败/推导失败的载荷交给解码（历史版本 produce
-// 侧漏写该段，解码带一次按原始载荷的回退重试）。
+// 逐级嵌套序号）。该段按 Confluent 规范编码：
+//   - 路径恰为 [0]（第一个顶层 message）时只写单字节 0x00；
+//   - 否则先写数组长度 L，再依次写 L 个索引，全部是 zigzag 编码的 varint
+//     （Go 的 binary.Varint / binary.AppendVarint），不是普通 uvarint。
+//
+// 例如 [11] 编码为 02 16（长度 1、索引 11），[0,1] 编码为 04 00 02。
+// AVRO/JSON 无此段。produce 侧按选中 message 补齐；consume 侧解析出真实
+// indexes 用于选 message，解析失败则保留原始载荷并回退 subject 约定。
 
 // protobufMessageIndexesFromSchema 解析 FDSet 并返回选中 message 的
 // message index 路径（顶层序号 → 逐级嵌套序号）。
@@ -1759,30 +2086,49 @@ func protobufSiblingIndex(desc protoreflect.MessageDescriptor) int {
 }
 
 // encodeProtobufMessageIndexes 把 index 路径编码为 Confluent message index
-// 数组（每个元素一个 varint，紧密拼接，无长度前缀）。
+// 数组（[0] 单字节优化；否则 zigzag 长度 + zigzag 各索引）。
 func encodeProtobufMessageIndexes(indexes []int) []byte {
-	var out []byte
+	if len(indexes) == 1 && indexes[0] == 0 {
+		return []byte{0x00}
+	}
+	out := binary.AppendVarint(nil, int64(len(indexes)))
 	for _, index := range indexes {
-		out = binary.AppendUvarint(out, uint64(index))
+		out = binary.AppendVarint(out, int64(index))
 	}
 	return out
 }
 
-// stripProtobufMessageIndexes 从 wire 载荷头部剥掉 depth 个 varint index
-// （Confluent message index 数组）；varint 不完整/溢出返回 false。
-func stripProtobufMessageIndexes(payload []byte, depth int) ([]byte, bool) {
-	if depth <= 0 {
-		return payload, true
+// confluentMessageIndexesMaxLen 是 index 路径长度的防御上限（真实 schema
+// 的嵌套层级远小于该值；超限即视为非 Confluent 段，回退原载荷）。
+const confluentMessageIndexesMaxLen = 64
+
+// parseConfluentMessageIndexes 从 wire 载荷头部解析 Confluent message
+// indexes，返回索引路径与剥离后的 protobuf 载荷。段不合法（空载荷、截断、
+// 长度非法/超限、负索引）时 ok=false，调用方保留原始载荷并回退 subject
+// 约定（兼容历史 produce 侧漏写该段的载荷）。
+func parseConfluentMessageIndexes(payload []byte) (indexes []int, body []byte, ok bool) {
+	if len(payload) == 0 {
+		return nil, nil, false
 	}
-	rest := payload
-	for i := 0; i < depth; i++ {
-		_, n := binary.Uvarint(rest)
-		if n <= 0 {
-			return nil, false
+	if payload[0] == 0x00 {
+		// Confluent 对 [0] 的单字节优化。
+		return []int{0}, payload[1:], true
+	}
+	length, n := binary.Varint(payload)
+	if n <= 0 || length <= 0 || length > confluentMessageIndexesMaxLen {
+		return nil, nil, false
+	}
+	rest := payload[n:]
+	indexes = make([]int, 0, length)
+	for i := int64(0); i < length; i++ {
+		index, consumed := binary.Varint(rest)
+		if consumed <= 0 || index < 0 || index > 1<<31-1 {
+			return nil, nil, false
 		}
-		rest = rest[n:]
+		indexes = append(indexes, int(index))
+		rest = rest[consumed:]
 	}
-	return rest, true
+	return indexes, rest, true
 }
 
 // --- LCS 逐行 diff（tinyrdm kafkaSchemaTextDiff 重写为语义 hunks） ---

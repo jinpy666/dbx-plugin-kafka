@@ -69,11 +69,17 @@ function rebuildMessageRows() {
 watch(workbenchTimestampTz, () => rebuildMessageRows());
 
 // schema mount（Phase 2：流式消费同样支持 SR 解码挂载，version 空 = latest）
-const schemaEnabled = ref(false);
+// 连接配置了 Confluent SR 时默认勾选：Subject「任意」+ 版本「最新」，后端按
+// 消息内 schemaID 自动反查；未配 SR 的连接不默认开启。Glue 仅管理面，禁用。
+const srAutoMount = computed(() => props.srProvider === "confluent");
+const schemaEnabled = ref(srAutoMount.value);
+watch(srAutoMount, (enabled) => {
+  schemaEnabled.value = enabled;
+});
 const schemaSubjects = ref<SchemaSubject[]>([]);
 const schemaSubject = ref("");
 const schemaVersionText = ref("");
-const schemaFormat = ref<SchemaFormat>("avro");
+const schemaFormat = ref<SchemaFormat>("protobuf");
 // Phase P：Glue 仅管理面（消息编解码仅 Confluent wire format，后端 -32000 拒绝），
 // 前端同步禁用挂载区并提示（保留 discoverability，不隐藏）。
 const glueSchemaDisabled = computed(() => props.srProvider === "glue");
@@ -95,20 +101,31 @@ async function loadSchemaSubjects() {
   }
 }
 
-watch(schemaEnabled, (enabled) => {
-  if (enabled && schemaSubjects.value.length === 0) void loadSchemaSubjects();
-});
+// immediate：默认勾选（初值即 true）时 watch 不会因赋值触发，须在创建时拉取。
+watch(
+  schemaEnabled,
+  (enabled) => {
+    if (enabled && schemaSubjects.value.length === 0) void loadSchemaSubjects();
+  },
+  { immediate: true },
+);
 
 watch(schemaSubject, () => {
   schemaVersionText.value = "";
   const found = schemaSubjects.value.find((row) => row.subject === schemaSubject.value);
-  if (found?.formats?.length) schemaFormat.value = (found.formats[0] as SchemaFormat) ?? "avro";
+  if (found?.formats?.length) {
+    schemaFormat.value = (found.formats.includes("protobuf")
+      ? "protobuf"
+      : (found.formats[0] as SchemaFormat)) ?? "protobuf";
+  }
 });
 
 function buildSchemaAttach(): SchemaAttach | undefined {
   if (glueSchemaDisabled.value) return undefined;
-  if (!schemaEnabled.value || !schemaSubject.value) return undefined;
+  if (!schemaEnabled.value) return undefined;
   const version = Number.parseInt(schemaVersionText.value, 10);
+  // 自动模式：Subject「任意」→ 空 subject/format，后端按 wire schemaID 反查。
+  if (!schemaSubject.value) return { subject: "", format: "" };
   return {
     subject: schemaSubject.value,
     ...(Number.isFinite(version) && version > 0 ? { version } : {}),
@@ -440,6 +457,7 @@ defineExpose({ pushEvent, recoverTransport });
       </label>
     </div>
 
+    <p v-if="schemaEnabled && !glueSchemaDisabled" class="hint" style="padding: 0 8px">{{ t("messages.schemaAutoHint") }}</p>
     <p v-if="glueSchemaDisabled" class="hint" style="padding: 0 8px">{{ t("messages.schemaGlueDisabled") }}</p>
     <p class="hint" style="padding: 4px 8px 0">{{ t("stream.sessionHint") }}</p>
     <!-- 孤儿/跨标签会话：列出并给显式停止入口（多标签共享 sidecar，不能自动停） -->
