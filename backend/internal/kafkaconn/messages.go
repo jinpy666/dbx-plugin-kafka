@@ -676,6 +676,12 @@ func (s *Service) consumeMessages(ctx context.Context, params ConsumeParams) (co
 	// cancel 根同时覆盖启动与扫描两段；请求结束即注销。
 	cancelRoot, cancelRootFn := context.WithCancel(ctx)
 	defer cancelRootFn()
+	// SR 取数挂到会话根上：decode 侧传进来的 ctx 是扫描窗口，窗口到点后
+	// 仍在排队的消息会拿到已失效的 context（线上表现为满屏
+	// "context deadline exceeded"，与 SR 是否健康无关）。
+	if schemaDec != nil {
+		schemaDec.bindContext(cancelRoot)
+	}
 	var userCancelled atomic.Bool
 	if consumeID := trimSpace(params.ConsumeID); consumeID != "" {
 		handle := s.consumeCancels.register(consumeID, func() {

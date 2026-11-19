@@ -24,6 +24,7 @@ import (
 	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -371,19 +372,26 @@ func normalizeProtobufMapEntryNames(fdset *descriptorpb.FileDescriptorSet) {
 			visitMessages(full, msg.GetNestedType(), visit)
 		}
 	}
-	visitFields := func(visit func(*descriptorpb.FieldDescriptorProto)) {
-		for _, file := range fdset.File {
-			for _, field := range file.GetExtension() {
-				visit(field)
-			}
-			visitMessages(file.GetPackage(), file.GetMessageType(), func(_ string, msg *descriptorpb.DescriptorProto) {
-				for _, fields := range [][]*descriptorpb.FieldDescriptorProto{msg.GetField(), msg.GetExtension()} {
-					for _, field := range fields {
-						visit(field)
-					}
-				}
-			})
+	// scopedField 记录字段及其声明作用域（message 全名；文件级扩展为包名）。
+	// 作用域是短类型名的解析起点：同一份 .proto 里多个 message 各有
+	// paramsEntry 这类同名 map entry 时，只按短名做全文件匹配必然歧义，
+	// 必须按 protobuf 词法作用域由内向外解析。
+	type scopedField struct {
+		field *descriptorpb.FieldDescriptorProto
+		scope string
+	}
+	var fields []scopedField
+	collectFields := func(scope string, list []*descriptorpb.FieldDescriptorProto) {
+		for _, field := range list {
+			fields = append(fields, scopedField{field: field, scope: scope})
 		}
+	}
+	for _, file := range fdset.File {
+		collectFields(file.GetPackage(), file.GetExtension())
+		visitMessages(file.GetPackage(), file.GetMessageType(), func(full string, msg *descriptorpb.DescriptorProto) {
+			collectFields(full, msg.GetField())
+			collectFields(full, msg.GetExtension())
+		})
 	}
 
 	// 第一遍：收集所有 message 全名、map entry（全名 + 短名索引）。
@@ -411,27 +419,52 @@ func normalizeProtobufMapEntryNames(fdset *descriptorpb.FileDescriptorSet) {
 	}
 
 	// 引用字段决定期望名：type_name 既可能是全限定名，也可能是不带包的
-	// 短名；不按 Type/Label 过滤，因为畸形描述符常漏填 Type。
+	// 短名（甚至是半限定名）；不按 Type/Label 过滤，因为畸形描述符常漏填
+	// Type。
+	//
+	// 解析顺序（protobuf 词法作用域规则，与 protoc 一致）：
+	//  1. 直接命中全名；
+	//  2. 由字段所在作用域逐级向外补前缀（"paramsEntry" 优先落到本 message
+	//     的嵌套 entry，而不是全文件里另一个同名 entry）；
+	//  3. 兜底全文件唯一短名（历史行为；同名 entry 出现多处时不再猜）。
+	//
+	// 此前只做「全文件短名唯一才认」：一份 .proto 里 TaskEventMsg 与
+	// RobotDiagnosisMsg 都有 params map、entry 都叫 paramsEntry 时短名歧义，
+	// 两个字段全部跳过归一化，protodesc 直接以 "incorrect implicit map entry
+	// name" 拒绝整个 FDSet——目标消息本身没问题，也无法解码。
+	resolveEntry := func(scope, typeName string) (string, bool) {
+		target := strings.TrimPrefix(typeName, ".")
+		if target == "" {
+			return "", false
+		}
+		if _, ok := entries[target]; ok {
+			return target, true
+		}
+		for prefix := scope; prefix != ""; prefix = parentScope(prefix) {
+			if candidate := prefix + "." + target; entries[candidate] != nil {
+				return candidate, true
+			}
+		}
+		if !strings.Contains(target, ".") && !ambiguousShort[target] {
+			if full, ok := entryFullByShort[target]; ok {
+				return full, true
+			}
+		}
+		return "", false
+	}
+
 	fieldTargets := map[*descriptorpb.FieldDescriptorProto]string{} // field → old full
 	fieldForEntry := map[string]*descriptorpb.FieldDescriptorProto{}
-	visitFields(func(field *descriptorpb.FieldDescriptorProto) {
-		target := strings.TrimPrefix(field.GetTypeName(), ".")
-		if target == "" {
-			return
-		}
-		full := target
-		_, ok := entries[full]
-		if !ok && !strings.Contains(full, ".") && !ambiguousShort[full] {
-			full, ok = entryFullByShort[full]
-		}
+	for _, item := range fields {
+		full, ok := resolveEntry(item.scope, item.field.GetTypeName())
 		if !ok {
-			return
+			continue
 		}
-		fieldTargets[field] = full
+		fieldTargets[item.field] = full
 		if _, exists := fieldForEntry[full]; !exists {
-			fieldForEntry[full] = field
+			fieldForEntry[full] = item.field
 		}
-	})
+	}
 
 	renames := map[string]string{}                           // old full → new full
 	entryNames := map[*descriptorpb.DescriptorProto]string{} // entry → 新短名
@@ -452,9 +485,10 @@ func normalizeProtobufMapEntryNames(fdset *descriptorpb.FileDescriptorSet) {
 		renames[full] = newFull
 		entryNames[entry] = want
 	}
-	// 第二遍：改 entry 名；引用字段在改名 / 短名 / Type 漏填时统一改成
-	// 全限定名并修正 Type，使 protodesc 与 dynamicpb 都按合法 map 字段
-	// 处理。完全合规的 FDSet 三个条件都不成立，字节保持原样（幂等）。
+	// 第二遍：改 entry 名；引用字段在改名 / 非全限定名 / Type 漏填时统一
+	// 改成全限定名并修正 Type，使 protodesc 与 dynamicpb 都按合法 map 字段
+	// 处理（短名在批量改名后可能变成新的歧义，全限定名才稳定）。完全合规的
+	// FDSet 各条件都不成立，字节保持原样（幂等）。
 	for entry, name := range entryNames {
 		entry.Name = proto.String(name)
 	}
@@ -463,14 +497,21 @@ func normalizeProtobufMapEntryNames(fdset *descriptorpb.FileDescriptorSet) {
 		if !renamed {
 			newFull = oldFull
 		}
-		shortName := !strings.Contains(strings.TrimPrefix(field.GetTypeName(), "."), ".")
-		if renamed || shortName {
+		if renamed || strings.TrimPrefix(field.GetTypeName(), ".") != newFull {
 			field.TypeName = proto.String("." + newFull)
 		}
 		if field.GetType() != descriptorpb.FieldDescriptorProto_TYPE_MESSAGE {
 			field.Type = descriptorpb.FieldDescriptorProto_TYPE_MESSAGE.Enum()
 		}
 	}
+}
+
+// parentScope 取外层作用域（"a.b.C" → "a.b"、"a" → ""）。
+func parentScope(scope string) string {
+	if i := strings.LastIndex(scope, "."); i >= 0 {
+		return scope[:i]
+	}
+	return ""
 }
 
 func (c *schemaRegistryClient) registerSchema(ctx context.Context, subject string, format, schema string, refs []SchemaReference, normalize bool) (SchemaMeta, error) {
@@ -1602,7 +1643,27 @@ func protobufFilesFromSchema(fdsetB64 string) (*protoregistry.Files, error) {
 			}
 		}
 	}
-	return nil, fmt.Errorf("build protobuf descriptors: %w", err)
+	// 报错带上 FDSet 内的 .proto 文件名：畸形描述符的报错常指向同文件里的
+	// 兄弟 message（见 normalizeProtobufMapEntryNames），文件名是把报错对回
+	// SR subject 的关键线索。
+	return nil, fmt.Errorf("build protobuf descriptors (files: %s): %w", protobufFileNames(fdset, 3), err)
+}
+
+// protobufFileNames 列出 FDSet 内的文件名（最多 limit 个，其余折叠为 +N）。
+func protobufFileNames(fdset *descriptorpb.FileDescriptorSet, limit int) string {
+	names := make([]string, 0, len(fdset.GetFile()))
+	for _, file := range fdset.GetFile() {
+		if name := strings.TrimSpace(file.GetName()); name != "" {
+			names = append(names, name)
+		}
+	}
+	if len(names) == 0 {
+		return "unknown"
+	}
+	if limit > 0 && len(names) > limit {
+		return strings.Join(names[:limit], ", ") + sprintf(", +%d more", len(names)-limit)
+	}
+	return strings.Join(names, ", ")
 }
 
 // collectProtobufMessages 遍历 FDSet 全部文件收集 message 描述符（含嵌套）。
@@ -1764,6 +1825,14 @@ type schemaDecoder struct {
 	client *schemaRegistryClient
 	cache  *schemaMetaCache
 	req    *SchemaRef
+	// base 是取 SR 元数据时的根 context（consume/stream 会话级）。decode 的
+	// ctx 是「扫描窗口」，扫描慢/到点时它已失效，SR 请求会被直接判死——
+	// 线上表现就是满屏 "context deadline exceeded"（SR 是否健康都这样）。
+	base context.Context
+	// failures 缓存一次消费内的取数失败：同一 schema 只打一次 SR，SR 不可用
+	// 时不把 100 条消息放大成 100 次超时。
+	mu       sync.Mutex
+	failures map[string]error
 }
 
 // schemaValueInfo 是解码后附带进消息的 schema 定位信息。
@@ -1774,12 +1843,68 @@ type schemaValueInfo struct {
 }
 
 func newSchemaDecoder(client *schemaRegistryClient, req *SchemaRef) *schemaDecoder {
-	return &schemaDecoder{client: client, cache: newSchemaMetaCache(), req: req}
+	return &schemaDecoder{
+		client:   client,
+		cache:    newSchemaMetaCache(),
+		req:      req,
+		failures: map[string]error{},
+	}
+}
+
+// bindContext 把解码器挂到会话根 context（用户停止/会话结束仍可取消），
+// 使 SR 取数不再借用逐批的扫描窗口预算。
+func (d *schemaDecoder) bindContext(base context.Context) {
+	d.base = base
+}
+
+// requestContext 给 SR 取数派生独立预算（schemaRegistryTimeout）。根已取消
+// （用户点停止/会话结束）时直接返回根，让请求快速失败而不是重新计时。
+func (d *schemaDecoder) requestContext(ctx context.Context) (context.Context, context.CancelFunc) {
+	base := d.base
+	if base == nil {
+		base = ctx
+	}
+	if base.Err() != nil {
+		return base, func() {}
+	}
+	return context.WithTimeout(base, schemaRegistryTimeout)
+}
+
+// lookupFailure 取一次消费内该 schema 的既有失败（key 见 schemaIDKey /
+// schemaSubjectKey）。
+func (d *schemaDecoder) lookupFailure(key string) (error, bool) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	err, ok := d.failures[key]
+	return err, ok
+}
+
+// storeFailure 记录失败。用户取消导致的失败不记：会话已结束，缓存它没有
+// 意义，反而会污染后续重试。
+func (d *schemaDecoder) storeFailure(key string, err error) {
+	if err == nil || errors.Is(err, context.Canceled) {
+		return
+	}
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.failures == nil {
+		d.failures = map[string]error{}
+	}
+	d.failures[key] = err
+}
+
+func schemaIDKey(id int) string { return "id " + strconv.Itoa(id) }
+
+func schemaSubjectKey(subject string, version int64) string {
+	if version > 0 {
+		return "subject " + subject + " v" + strconv.FormatInt(version, 10)
+	}
+	return "subject " + subject + " latest"
 }
 
 // decode 解包 wire format 并解码载荷为 JSON 文本。
 // 返回 decoded 载荷 + schema 定位信息 + 错误（错误只进消息 decodeError，
-// 不中断消费）。
+// 不中断消费）。ctx 是扫描窗口；SR 取数走 requestContext 的独立预算。
 func (d *schemaDecoder) decode(ctx context.Context, value []byte) ([]byte, schemaValueInfo, error) {
 	schemaID, payload, err := decodeWireFrame(value)
 	if err != nil {
@@ -1790,25 +1915,40 @@ func (d *schemaDecoder) decode(ctx context.Context, value []byte) ([]byte, schem
 	if req != nil && strings.TrimSpace(req.Subject) != "" {
 		// 指定 subject：按 subject(+version) 取元数据（wire id 与元数据
 		// 不一致时以 wire id 兜底填充）。
-		if cached, ok := d.cache.lookupBySubjectVersion(trimSpace(req.Subject), req.Version); ok {
+		subject := trimSpace(req.Subject)
+		key := schemaSubjectKey(subject, req.Version)
+		if cached, ok := d.cache.lookupBySubjectVersion(subject, req.Version); ok {
 			meta = cached
+		} else if failed, ok := d.lookupFailure(key); ok {
+			return nil, schemaValueInfo{}, failed
 		} else {
-			meta, err = d.client.getSchemaForCodec(ctx, trimSpace(req.Subject), req.Version)
+			fetchCtx, cancel := d.requestContext(ctx)
+			meta, err = d.client.getSchemaForCodec(fetchCtx, subject, req.Version)
+			cancel()
 			if err != nil {
-				return nil, schemaValueInfo{}, err
+				wrapped := fmt.Errorf("fetch schema %s from registry: %w", key, err)
+				d.storeFailure(key, wrapped)
+				return nil, schemaValueInfo{}, wrapped
 			}
 			if meta.ID == 0 {
 				meta.ID = schemaID
 			}
-			d.cache.storeSubjectLookup(trimSpace(req.Subject), req.Version, meta)
+			d.cache.storeSubjectLookup(subject, req.Version, meta)
 		}
 	} else {
+		key := schemaIDKey(schemaID)
 		if cached, ok := d.cache.lookupByID(schemaID); ok {
 			meta = cached
+		} else if failed, ok := d.lookupFailure(key); ok {
+			return nil, schemaValueInfo{}, failed
 		} else {
-			meta, err = d.client.getSchemaByIDForCodec(ctx, schemaID)
+			fetchCtx, cancel := d.requestContext(ctx)
+			meta, err = d.client.getSchemaByIDForCodec(fetchCtx, schemaID)
+			cancel()
 			if err != nil {
-				return nil, schemaValueInfo{}, err
+				wrapped := fmt.Errorf("fetch schema %s from registry: %w", key, err)
+				d.storeFailure(key, wrapped)
+				return nil, schemaValueInfo{}, wrapped
 			}
 			d.cache.store(meta)
 		}

@@ -628,3 +628,97 @@ func TestConfluentMessageIndexesEncodeDecodeRoundtrip(t *testing.T) {
 		})
 	}
 }
+
+// ambiguousMapEntryFDSetB64 复现线上 rcs.v1 描述符：同一份 .proto 里多个
+// message（TaskEventMsg / RobotDiagnosisMsg）各有 params map，map entry 一律
+// 命名为小写驼峰 paramsEntry，字段 type_name 写成不带包的短名。短名在全文件
+// 内重复，只能按词法作用域解析到各自 message 的 entry。
+func ambiguousMapEntryFDSetB64(t *testing.T) string {
+	t.Helper()
+	strField := func(name string, number int32) *descriptorpb.FieldDescriptorProto {
+		return &descriptorpb.FieldDescriptorProto{
+			Name:   proto.String(name),
+			Number: proto.Int32(number),
+			Label:  descriptorpb.FieldDescriptorProto_LABEL_OPTIONAL.Enum(),
+			Type:   descriptorpb.FieldDescriptorProto_TYPE_STRING.Enum(),
+		}
+	}
+	message := func(name string) *descriptorpb.DescriptorProto {
+		return &descriptorpb.DescriptorProto{
+			Name: proto.String(name),
+			Field: []*descriptorpb.FieldDescriptorProto{
+				{
+					Name:     proto.String("params"),
+					Number:   proto.Int32(1),
+					Label:    descriptorpb.FieldDescriptorProto_LABEL_REPEATED.Enum(),
+					TypeName: proto.String("paramsEntry"), // 短名 + 与其他 message 重名
+				},
+				strField("diagnosis", 2),
+			},
+			NestedType: []*descriptorpb.DescriptorProto{{
+				Name:    proto.String("paramsEntry"),
+				Field:   []*descriptorpb.FieldDescriptorProto{strField("key", 1), strField("value", 2)},
+				Options: &descriptorpb.MessageOptions{MapEntry: proto.Bool(true)},
+			}},
+		}
+	}
+	fdset := &descriptorpb.FileDescriptorSet{File: []*descriptorpb.FileDescriptorProto{{
+		Name:        proto.String("rcs/v1/robot.proto"),
+		Package:     proto.String("rcs.v1"),
+		Syntax:      proto.String("proto3"),
+		MessageType: []*descriptorpb.DescriptorProto{message("TaskEventMsg"), message("RobotDiagnosisMsg")},
+	}}}
+	raw, err := proto.Marshal(fdset)
+	if err != nil {
+		t.Fatalf("marshal ambiguous map-entry FDSet: %v", err)
+	}
+	return base64.StdEncoding.EncodeToString(raw)
+}
+
+// TestNormalizeProtobufMapEntryNamesScopedShortNames 回归线上
+// rcs.scs.robot.diagnosis.2222 解码失败：多 message 同名短 entry 时旧的
+// 「全文件短名唯一才认」策略直接跳过归一化，protodesc 以
+// `message field "rcs.v1.TaskEventMsg.params" is an invalid map: incorrect
+// implicit map entry name` 拒绝整个 FDSet，目标消息 RobotDiagnosisMsg 也
+// 无法解码（报错里出现的 message 名只是同文件里的兄弟消息）。
+func TestNormalizeProtobufMapEntryNamesScopedShortNames(t *testing.T) {
+	fdsetB64 := ambiguousMapEntryFDSetB64(t)
+
+	files, err := protobufFilesFromSchema(fdsetB64)
+	if err != nil {
+		t.Fatalf("protobufFilesFromSchema() error = %v", err)
+	}
+	for _, want := range []string{
+		"rcs.v1.TaskEventMsg.ParamsEntry",
+		"rcs.v1.RobotDiagnosisMsg.ParamsEntry",
+	} {
+		found := false
+		for _, md := range collectProtobufMessages(files) {
+			if string(md.FullName()) == want {
+				found = true
+			}
+		}
+		if !found {
+			t.Fatalf("normalized FDSet missing %s", want)
+		}
+	}
+
+	// 端到端：schemaID 反查（subject 为空的自动模式）+ message index [1]
+	// 选中 RobotDiagnosisMsg，map 字段按选中 message 的 entry 解码。
+	registry := newFakeRegistry()
+	id, _ := registry.register("rcs.scs.robot.diagnosis.2222-value", fdsetB64, "PROTOBUF")
+	client := newTestSRClient(t, registry)
+	// field1(params map) → entry{key:"k", value:"v"}；field2(diagnosis)="ok"。
+	body := []byte{0x0a, 0x06, 0x0a, 0x01, 'k', 0x12, 0x01, 'v', 0x12, 0x02, 'o', 'k'}
+	frame := encodeWireFrame(id, append([]byte{0x02, 0x02}, body...)) // indexes = [1]
+	decoded, _, err := newSchemaDecoder(client, nil).decode(context.Background(), frame)
+	if err != nil {
+		t.Fatalf("decode() error = %v", err)
+	}
+	text := string(decoded)
+	for _, want := range []string{`"params"`, `"v"`, `"diagnosis"`, `"ok"`} {
+		if !strings.Contains(text, want) {
+			t.Errorf("decoded = %s, want %s", text, want)
+		}
+	}
+}
