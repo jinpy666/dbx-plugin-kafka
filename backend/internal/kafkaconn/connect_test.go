@@ -14,6 +14,8 @@ import (
 	"math/big"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -310,6 +312,22 @@ func TestConnectMTLS(t *testing.T) {
 	defer client.http.CloseIdleConnections()
 	if err := client.request(context.Background(), "GET", "/", nil, nil); err != nil {
 		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	for name, value := range map[string]string{"ca.crt": serverPEM, "user.crt": clientPEM, "user.key": keyPEM} {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(value), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	fileClient, err := newConnectClient(ConnectCluster{URL: server.URL}, ConnectCredentials{
+		TLSCACert: filepath.Join(dir, "ca.crt"), TLSClientCert: filepath.Join(dir, "user.crt"), TLSClientKey: filepath.Join(dir, "user.key"),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer fileClient.http.CloseIdleConnections()
+	if err := fileClient.request(context.Background(), "GET", "/", nil, nil); err != nil {
+		t.Fatalf("file-backed mTLS handshake failed: %v", err)
 	}
 }
 
