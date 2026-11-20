@@ -189,13 +189,26 @@ func newConnectClient(cluster ConnectCluster, credentials ConnectCredentials) (*
 		if err != nil {
 			pool = x509.NewCertPool()
 		}
-		if !pool.AppendCertsFromPEM([]byte(credentials.TLSCACert)) {
+		material, err := readTLSMaterial(credentials.TLSCACert, "Kafka Connect tlsCaCert")
+		if err != nil {
+			return nil, err
+		}
+		if !pool.AppendCertsFromPEM(material) {
 			return nil, errors.New("Kafka Connect tlsCaCert must contain valid PEM certificates")
 		}
 		tlsConfig.RootCAs = pool
 	}
 	if credentials.TLSClientCert != "" {
-		cert, err := tls.X509KeyPair([]byte(credentials.TLSClientCert), []byte(credentials.TLSClientKey))
+		certPEM, err := readTLSMaterial(credentials.TLSClientCert, "Kafka Connect tlsClientCert")
+		if err != nil {
+			return nil, err
+		}
+		keyPEM, err := readTLSMaterial(credentials.TLSClientKey, "Kafka Connect tlsClientKey")
+		if err != nil {
+			return nil, err
+		}
+		defer clear(keyPEM)
+		cert, err := tls.X509KeyPair(certPEM, keyPEM)
 		if err != nil {
 			return nil, errors.New("Kafka Connect mTLS certificate/key are invalid")
 		}

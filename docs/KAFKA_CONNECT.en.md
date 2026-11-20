@@ -22,7 +22,11 @@ are preserved. URLs must not include credentials, query strings or fragments.
 The separate `connect_credentials` field uses DBX **secret binding**. It accepts
 a JSON object keyed by the same cluster names. Each value can contain `username`,
 `password`, `bearerToken`, `tlsCaCert`, `tlsClientCert` and `tlsClientKey`.
-Certificate and key values contain PEM text, not workstation file paths. Basic
+Certificate and key values accept PEM text or absolute file paths on the DBX
+server, never workstation file paths. Files must be regular, non-symlink files
+of at most 1 MiB; mount certificate directories read-only. Private-key paths stay
+in Secret Store bindings, and file contents are never returned to the browser.
+Reconnect after rotating files to reload the identity. Basic
 authentication requires username/password; bearer authentication requires a token;
 mutual TLS requires both certificate and private key. Keep real values out of Git.
 
