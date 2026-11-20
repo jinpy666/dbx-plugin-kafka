@@ -174,6 +174,35 @@ func (h *pluginHandler) Handle(
 	case "connection/disconnect":
 		return h.connectionDisconnect(params)
 
+	case "kafka/connect/clusters/list":
+		return h.connectCall(method, params)
+	case "kafka/connect/test":
+		return h.connectCall(method, params)
+	case "kafka/connect/connectors/list":
+		return h.connectCall(method, params)
+	case "kafka/connect/connectors/get":
+		return h.connectCall(method, params)
+	case "kafka/connect/config/get":
+		return h.connectCall(method, params)
+	case "kafka/connect/config/set":
+		return h.connectCall(method, params)
+	case "kafka/connect/plugins/list":
+		return h.connectCall(method, params)
+	case "kafka/connect/plugins/config":
+		return h.connectCall(method, params)
+	case "kafka/connect/config/validate":
+		return h.connectCall(method, params)
+	case "kafka/connect/connectors/create":
+		return h.connectCall(method, params)
+	case "kafka/connect/connectors/delete":
+		return h.connectCall(method, params)
+	case "kafka/connect/connectors/action":
+		return h.connectCall(method, params)
+	case "kafka/connect/tasks/restart":
+		return h.connectCall(method, params)
+	case "kafka/connect/offsets/reset":
+		return h.connectCall(method, params)
+
 	case "kafka/brokers/list":
 		return h.brokersList(params)
 	case "kafka/brokers/config":

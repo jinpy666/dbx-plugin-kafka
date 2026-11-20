@@ -28,6 +28,7 @@ import AuditFeedPanel from "./components/AuditFeedPanel.vue";
 const ProducePanel = defineAsyncComponent(() => import("./components/ProducePanel.vue"));
 const TopicsPanel = defineAsyncComponent(() => import("./components/TopicsPanel.vue"));
 const GroupsPanel = defineAsyncComponent(() => import("./components/GroupsPanel.vue"));
+const ConnectPanel = defineAsyncComponent(() => import("./components/ConnectPanel.vue"));
 const BrokersPanel = defineAsyncComponent(() => import("./components/BrokersPanel.vue"));
 const AclsPanel = defineAsyncComponent(() => import("./components/AclsPanel.vue"));
 const SchemasPanel = defineAsyncComponent(() => import("./components/SchemasPanel.vue"));
@@ -43,7 +44,7 @@ interface ConnectionSummary {
   external_config?: Record<string, unknown>;
 }
 
-type PanelKey = "messages" | "stream" | "produce" | "topics" | "groups" | "brokers" | "acls" | "schemas" | "monitor";
+type PanelKey = "connect" | "messages" | "stream" | "produce" | "topics" | "groups" | "brokers" | "acls" | "schemas" | "monitor";
 
 const hostContext = ref<Record<string, unknown>>({});
 const appearance = ref(resolveAppearance());
@@ -73,6 +74,17 @@ const topics = ref<KafkaTopic[]>([]);
 const topicsLoading = ref(false);
 const topicsError = ref("");
 const selectedTopic = ref("");
+const connectTopicFilter = ref("");
+const requestedGroup = ref("");
+function openConnectForTopic(topic: string) { connectTopicFilter.value = topic; openPanel("connect"); }
+function openConnectTopic(topic: string) { selectedTopic.value = topic; openPanel("messages"); }
+async function openConnectGroup(group: string) {
+  // Reopening the same group must also restore it after a manual selection change.
+  requestedGroup.value = "";
+  await nextTick();
+  requestedGroup.value = group;
+  openPanel("groups");
+}
 
 // F6-4：所选 topic 的分区数（topics/list 行已有该字段），供生产面板头部展示
 // 与 partition 上界行内校验；未选中或列表未到时缺省 undefined（不做上界校验）。
@@ -585,6 +597,7 @@ onBeforeUnmount(() => {
         <button type="button" :class="{ 'is-active': activePanel === 'produce' }" @click="openPanel('produce')">{{ t("tabs.produce") }}</button>
         <button type="button" :class="{ 'is-active': activePanel === 'topics' }" @click="openPanel('topics')">{{ t("tabs.topics") }}</button>
         <button type="button" :class="{ 'is-active': activePanel === 'groups' }" @click="openPanel('groups')">{{ t("tabs.groups") }}</button>
+        <button type="button" :class="{ 'is-active': activePanel === 'connect' }" @click="connectTopicFilter = ''; openPanel('connect')">{{ t("connect.title") }}</button>
         <button type="button" :class="{ 'is-active': activePanel === 'brokers' }" @click="openPanel('brokers')">{{ t("tabs.brokers") }}</button>
         <button type="button" :class="{ 'is-active': activePanel === 'acls' }" @click="openPanel('acls')">{{ t("tabs.acls") }}</button>
         <button type="button" :class="{ 'is-active': activePanel === 'schemas' }" @click="openPanel('schemas')">{{ t("tabs.schemas") }}</button>
@@ -649,9 +662,11 @@ onBeforeUnmount(() => {
             :can-delete="canDelete"
             @error="showError"
             @notify="showNotice"
+            @open-connect="openConnectForTopic"
             @refresh="loadTopics"
           />
-          <GroupsPanel v-if="hasVisited('groups')" v-show="activePanel === 'groups'" :can-write="canWrite" :can-delete="canDelete" @error="showError" @notify="showNotice" />
+          <ConnectPanel v-if="hasVisited('connect')" v-show="activePanel === 'connect'" :can-write="canWrite" :can-delete="canDelete" :topic-filter="connectTopicFilter" @clear-filter="connectTopicFilter = ''" @open-topic="openConnectTopic" @open-group="openConnectGroup" @error="showError" @notify="showNotice" />
+          <GroupsPanel :requested-group="requestedGroup" v-if="hasVisited('groups')" v-show="activePanel === 'groups'" :can-write="canWrite" :can-delete="canDelete" @error="showError" @notify="showNotice" />
           <BrokersPanel v-if="hasVisited('brokers')" v-show="activePanel === 'brokers'" @error="showError" />
           <AclsPanel v-if="hasVisited('acls')" v-show="activePanel === 'acls'" :can-write="canWrite" :can-delete="canDelete" @error="showError" @notify="showNotice" />
           <SchemasPanel

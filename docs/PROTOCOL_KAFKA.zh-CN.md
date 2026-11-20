@@ -884,3 +884,34 @@ SR provider 解析以 `schema_registry` 开关为准（`resolveSchemaProvider`�
   `propertiesImport: {mapped, mappedKeys?, ignored, ignoredKeys?}`（仅计数
   与键名，值一律不透出）；未使用导入时省略。工作台连接面板对当前连接
   展示「已映射 N 项 / 已忽略 M 项」。
+
+
+## Native Kafka Connect RPC extension
+
+See [Kafka Connect](KAFKA_CONNECT.en.md) for configuration and safety behavior.
+All methods below use the existing JSON-RPC transport and connection lifecycle.
+`connectionId` is required; `cluster` is the saved Connect cluster name (except
+`kafka/connect/clusters/list`). `connector` identifies a connector resource.
+
+| Method suffix under `kafka/connect/` | Additional input | Result |
+| --- | --- | --- |
+| `clusters/list` | none | `clusters[]` (public settings only) |
+| `test` | none | `version`, `commit`, `kafkaClusterId` |
+| `connectors/list` | none | `connectors[]`, including per-row errors |
+| `connectors/get` | `connector` | `connector` |
+| `config/get` | `connector` | `config`, `sensitiveKeys` |
+| `config/set` | `connector`, `config` | operation result |
+| `plugins/list` | none | `plugins[]` |
+| `plugins/config` | `plugin` | `definitions[]` |
+| `config/validate` | `plugin`, `config`, optional existing `connector` | `errorCount`, `fields[]` |
+| `connectors/create` | `connector`, `config` | operation result |
+| `connectors/delete` | `connector`, `confirmConnector` | operation result |
+| `connectors/action` | `connector`, `action` | operation result |
+| `tasks/restart` | `connector`, non-negative `taskId` | operation result |
+| `offsets/reset` | `connector`, `confirmConnector` | operation result |
+
+`config` is a string-valued JSON object. `action` is `pause`, `resume`, `stop`,
+`restart`, `restart-all` or `restart-failed`. Operation results contain `success`,
+`supported`, and optional `message`; `supported:false` means no successful mutation.
+Invalid input uses -32602 and operational failures use the existing -32000 mapping.
+No new event names, Host API permissions, plugin IDs or MCP tools are introduced.

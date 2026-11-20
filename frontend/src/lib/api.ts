@@ -476,7 +476,35 @@ async function callKafka<T>(method: string, params: object = {}, options?: { tim
 
 // -- domain methods (§5.2 of IMPL_PLAN_DBX_KAFKA) -----------------------------
 
+
+export interface ConnectCluster { name: string; url: string; auth?: "none" | "basic" | "bearer" }
+export interface ConnectTask { id: number; state: string; workerId: string; trace?: string }
+export interface ConnectConnector {
+  name: string; type?: string; state?: string; workerId?: string; trace?: string;
+  tasks: ConnectTask[]; topics: string[]; consumerGroup?: string; error?: string;
+}
+export interface ConnectPlugin { class: string; type: string; version: string }
+export interface ConnectDefinition { name: string; type: string; required: boolean; default_value?: unknown; documentation?: string }
+export interface ConnectValidation { errorCount: number; fields: Array<{ name: string; type: string; required: boolean; errorCount: number }> }
+export interface ConnectOperationResult { success: boolean; supported: boolean; message?: string }
+export type ConnectAction = "pause" | "resume" | "stop" | "restart" | "restart-all" | "restart-failed";
+
 export const kafkaApi = {
+  connectClusters() { return callKafka<{ clusters: ConnectCluster[] }>("kafka/connect/clusters/list"); },
+  connectTest(cluster: string) { return callKafka<{ version: string; commit: string; kafkaClusterId: string }>("kafka/connect/test", { cluster }); },
+  connectList(cluster: string) { return callKafka<{ connectors: ConnectConnector[] }>("kafka/connect/connectors/list", { cluster }); },
+  connectGet(cluster: string, connector: string) { return callKafka<{ connector: ConnectConnector }>("kafka/connect/connectors/get", { cluster, connector }); },
+  connectConfig(cluster: string, connector: string) { return callKafka<{ config: Record<string, string>; sensitiveKeys: string[] }>("kafka/connect/config/get", { cluster, connector }); },
+  connectSave(cluster: string, connector: string, config: Record<string, string>) { return callKafka<ConnectOperationResult>("kafka/connect/config/set", { cluster, connector, config }); },
+  connectPlugins(cluster: string) { return callKafka<{ plugins: ConnectPlugin[] }>("kafka/connect/plugins/list", { cluster }); },
+  connectDefinitions(cluster: string, plugin: string) { return callKafka<{ definitions: ConnectDefinition[] }>("kafka/connect/plugins/config", { cluster, plugin }); },
+  connectValidate(cluster: string, plugin: string, config: Record<string, string>, connector?: string) { return callKafka<ConnectValidation>("kafka/connect/config/validate", { cluster, plugin, config, ...(connector ? { connector } : {}) }); },
+  connectCreate(cluster: string, connector: string, config: Record<string, string>) { return callKafka<ConnectOperationResult>("kafka/connect/connectors/create", { cluster, connector, config }); },
+  connectDelete(cluster: string, connector: string, confirmConnector: string) { return callKafka<ConnectOperationResult>("kafka/connect/connectors/delete", { cluster, connector, confirmConnector }); },
+  connectAction(cluster: string, connector: string, action: ConnectAction) { return callKafka<ConnectOperationResult>("kafka/connect/connectors/action", { cluster, connector, action }); },
+  connectTaskRestart(cluster: string, connector: string, taskId: number) { return callKafka<ConnectOperationResult>("kafka/connect/tasks/restart", { cluster, connector, taskId }); },
+  connectResetOffsets(cluster: string, connector: string, confirmConnector: string) { return callKafka<ConnectOperationResult>("kafka/connect/offsets/reset", { cluster, connector, confirmConnector }); },
+
   // brokers
   brokersList() {
     return callKafka<BrokersListResult>("kafka/brokers/list");

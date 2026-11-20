@@ -135,6 +135,21 @@ test("MCP ui intent consumes a topic and reports state", async (page) => {
   }
 });
 
+test("Kafka Connect panel links tasks, config, topic and group", async (page, pageErrors) => {
+  await page.getByRole("button", { name: "Kafka Connect", exact: true }).click();
+  await page.locator(".connector-name").filter({ hasText: "orders-sink" }).click();
+  await page.locator(".connect-details").getByRole("button", { name: "connect-orders-sink", exact: true }).waitFor();
+  await page.locator('[data-action="config"]').click();
+  await page.locator(".connect-editor textarea").waitFor();
+  const config = JSON.parse(await page.locator(".connect-editor textarea").inputValue());
+  expectEqual(config.topics, "orders", "connector configuration");
+  await page.locator(".connect-editor header button").click();
+  if (process.env.CONNECT_UI_SCREENSHOT) await page.screenshot({ path: process.env.CONNECT_UI_SCREENSHOT, fullPage: true });
+  await page.locator(".connect-details").getByRole("button", { name: "orders", exact: true }).click();
+  await page.locator(".connect-panel").waitFor({ state: "hidden" });
+  expectEqual(pageErrors.length, 0, "Connect page errors");
+});
+
 // -- main ----------------------------------------------------------------------
 
 const playwright = await loadPlaywrightCore();
@@ -145,8 +160,8 @@ if (!existsSync(path.join(FRONTEND_DIR, "package.json"))) {
   skip("frontend scaffold not present yet (frontend path under parallel development)");
 }
 
-const server = spawn("pnpm", ["--dir", "frontend", "exec", "vite", "--port", String(PORT), "--strictPort"], {
-  cwd: PLUGIN_ROOT,
+const server = spawn("pnpm", ["exec", "vite", "--port", String(PORT), "--strictPort"], {
+  cwd: FRONTEND_DIR,
   stdio: ["ignore", "pipe", "pipe"],
 });
 // KAFKA-UIT-L10：环境无 pnpm 时 ChildProcess 会发 'error' 事件——不监听则

@@ -3,7 +3,7 @@
 // DbxAgGrid（列排序 + 列内过滤 + 分页持久化），行选择驱动 describe/load；
 // reset/delete 从行内按钮收敛为工具栏动作（作用于选中组），门禁不变：
 // reset 按 canWrite、delete 按 canDelete（read_only 下后端同规则拒绝）。
-import { computed, onMounted, ref } from "vue";
+import { computed, onMounted, ref, watch } from "vue";
 import { RefreshCw, Trash2 } from "@lucide/vue";
 import type { ColDef } from "ag-grid-community";
 import DbxAgGrid, { type GridContextMenuItem } from "./DbxAgGrid.vue";
@@ -29,6 +29,7 @@ import { friendlyKafkaError } from "../lib/kafkaErrors";
 import { t } from "../lib/i18n";
 
 const props = defineProps<{
+  requestedGroup?: string;
   canWrite: boolean;
   canDelete: boolean;
 }>();
@@ -224,6 +225,10 @@ function lagBadgeClass(lag: number): string {
   if (lag > 1000) return "badge-danger";
   return "badge-warn";
 }
+
+watch(() => props.requestedGroup, (group) => {
+  if (group) selectGroup(toGroupRows([{ group }])[0] ?? null);
+}, { immediate: true });
 
 onMounted(() => {
   void load();
