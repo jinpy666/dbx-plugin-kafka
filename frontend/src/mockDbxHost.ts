@@ -1,3 +1,4 @@
+import { mockConnect } from "./lib/mockConnect";
 /**
  * Visual fixture host bridge for the Kafka workbench (mock.html).
  *
@@ -731,7 +732,13 @@ const invoke: DbxPluginApi["invoke"] = async <T = unknown>(method: string, rawPa
   if (injectError && method !== "kafka/connections/statuses" && method !== "host.getContext") {
     throw new Error("connection lost (fixture error injection)");
   }
-  if (method === "kafka/brokers/list") {
+  if (method.startsWith("kafka/connect/")) {
+    if (["kafka/connect/config/set", "kafka/connect/connectors/create", "kafka/connect/connectors/delete", "kafka/connect/connectors/action", "kafka/connect/tasks/restart", "kafka/connect/offsets/reset"].includes(method)) {
+      const critical = method === "kafka/connect/connectors/delete" || method === "kafka/connect/offsets/reset";
+      guardWrite("connect", String(input.connector ?? ""), { critical, ...(critical ? { confirmTopic: String(input.confirmConnector ?? "") } : {}) });
+    }
+    result = mockConnect(method, input);
+  } else if (method === "kafka/brokers/list") {
     result = { brokers, connectionSource: "bootstrap" };
   } else if (method === "kafka/brokers/config") {
     result = { entries: brokerConfigs };

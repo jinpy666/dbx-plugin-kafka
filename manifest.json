@@ -411,7 +411,7 @@
         {
           "key": "tls_ca_cert",
           "label": "CA certificate (PEM)",
-          "description": "PEM-encoded CA certificate used to verify broker certificates; empty uses the system roots.",
+          "description": "PEM-encoded CA certificate or absolute path on the DBX server; empty uses system roots. Files must be regular files of at most 1 MiB.",
           "type": "textarea",
           "default": "",
           "binding": "config",
@@ -426,7 +426,7 @@
         {
           "key": "tls_client_cert",
           "label": "Client certificate (PEM)",
-          "description": "PEM-encoded client certificate for mutual TLS (mTLS).",
+          "description": "PEM-encoded client certificate or absolute path on the DBX server for mutual TLS (mTLS).",
           "type": "textarea",
           "default": "",
           "binding": "config",
@@ -441,7 +441,7 @@
         {
           "key": "tls_client_key",
           "label": "Client private key (PEM)",
-          "description": "Paste the complete PEM key including BEGIN/END lines, together with the client certificate for mutual TLS. Leave both empty for server-only TLS.",
+          "description": "Complete PEM private key or absolute path on the DBX server. Stored via Secret Store. Provide together with the client certificate; leave both empty for server-only TLS.",
           "type": "textarea",
           "default": "",
           "binding": "secret",
@@ -687,6 +687,21 @@
           "placeholder": "bootstrap.servers=broker1:9092,broker2:9092\nsecurity.protocol=SASL_SSL\nsasl.mechanism=SCRAM-SHA-512\nsasl.jaas.config=org.apache.kafka.common.security.scram.ScramLoginModule required username=\"alice\" password=\"...\";",
           "type": "textarea",
           "binding": "secret"
+        },
+        {
+          "key": "connect_clusters",
+          "label": "Kafka Connect clusters (JSON)",
+          "type": "textarea",
+          "binding": "config",
+          "description": "Optional array of {name,url,auth}. auth is none, basic or bearer. URLs may include a reverse-proxy base path; never put credentials in URLs.",
+          "placeholder": "[{\"name\":\"local\",\"url\":\"http://localhost:8083\",\"auth\":\"none\"}]"
+        },
+        {
+          "key": "connect_credentials",
+          "label": "Kafka Connect credentials (JSON)",
+          "type": "textarea",
+          "binding": "secret",
+          "description": "Optional object keyed by Connect cluster name. Values: username, password, bearerToken, tlsCaCert, tlsClientCert, tlsClientKey. TLS values accept PEM or absolute server paths. Stored only in the DBX Secret Store."
         }
       ]
     },
@@ -774,15 +789,15 @@
             },
             "tls_ca_cert": {
               "label": "CA 证书（PEM）",
-              "description": "用于校验 broker 证书的 PEM 编码 CA 证书；留空使用系统根证书。"
+              "description": "PEM-encoded CA certificate or absolute path on the DBX server; empty uses system roots. Files must be regular files of at most 1 MiB."
             },
             "tls_client_cert": {
               "label": "客户端证书（PEM）",
-              "description": "双向 TLS（mTLS）使用的 PEM 编码客户端证书。"
+              "description": "PEM-encoded client certificate or absolute path on the DBX server for mutual TLS (mTLS)."
             },
             "tls_client_key": {
               "label": "客户端私钥（PEM）",
-              "description": "粘贴完整 PEM 私钥（含 BEGIN/END 行），并配套填写客户端证书以使用双向 TLS；仅验证服务器时两项均留空。"
+              "description": "Complete PEM private key or absolute path on the DBX server. Stored via Secret Store. Provide together with the client certificate; leave both empty for server-only TLS."
             },
             "tls_insecure_skip_verify": {
               "label": "跳过 TLS 校验",
@@ -884,6 +899,14 @@
             "properties_import": {
               "label": "导入：粘贴客户端 properties",
               "description": "可选：粘贴 Kafka 客户端 properties 片段（bootstrap.servers、security.protocol、sasl.*、ssl.*、schema.registry.url、basic.auth.*）。保存或测试连接时可识别键合并进上方结构化字段（粘贴值优先）；Java keystore 路径类键（ssl.truststore.location 等）不支持，会列入忽略清单。粘贴文本经宿主 secret binding 加密存储，绝不明文落盘。"
+            },
+            "connect_clusters": {
+              "label": "Kafka Connect clusters (JSON)",
+              "description": "Optional array of {name,url,auth}. auth is none, basic or bearer. URLs may include a reverse-proxy base path; never put credentials in URLs."
+            },
+            "connect_credentials": {
+              "label": "Kafka Connect credentials (JSON)",
+              "description": "Optional object keyed by Connect cluster name. Values: username, password, bearerToken, tlsCaCert, tlsClientCert, tlsClientKey. TLS values accept PEM or absolute server paths. Stored only in the DBX Secret Store."
             }
           }
         },
@@ -968,15 +991,15 @@
             },
             "tls_ca_cert": {
               "label": "CA 憑證（PEM）",
-              "description": "用於驗證 broker 憑證的 PEM 編碼 CA 憑證；留空使用系統根憑證。"
+              "description": "PEM-encoded CA certificate or absolute path on the DBX server; empty uses system roots. Files must be regular files of at most 1 MiB."
             },
             "tls_client_cert": {
               "label": "用戶端憑證（PEM）",
-              "description": "雙向 TLS（mTLS）使用的 PEM 編碼用戶端憑證。"
+              "description": "PEM-encoded client certificate or absolute path on the DBX server for mutual TLS (mTLS)."
             },
             "tls_client_key": {
               "label": "用戶端私鑰（PEM）",
-              "description": "貼上完整 PEM 私鑰（含 BEGIN/END 行），並搭配客戶端憑證以使用雙向 TLS；僅驗證伺服器時兩項皆留空。"
+              "description": "Complete PEM private key or absolute path on the DBX server. Stored via Secret Store. Provide together with the client certificate; leave both empty for server-only TLS."
             },
             "tls_insecure_skip_verify": {
               "label": "略過 TLS 驗證",
@@ -1078,6 +1101,14 @@
             "properties_import": {
               "label": "匯入：貼上用戶端 properties",
               "description": "可選：貼上 Kafka 用戶端 properties 片段（bootstrap.servers、security.protocol、sasl.*、ssl.*、schema.registry.url、basic.auth.*）。儲存或測試連線時可識別鍵合併進上方結構化欄位（貼上值優先）；Java keystore 路徑類鍵（ssl.truststore.location 等）不支援，會列入忽略清單。貼上文字經宿主 secret binding 加密儲存，絕不明文落盤。"
+            },
+            "connect_clusters": {
+              "label": "Kafka Connect clusters (JSON)",
+              "description": "Optional array of {name,url,auth}. auth is none, basic or bearer. URLs may include a reverse-proxy base path; never put credentials in URLs."
+            },
+            "connect_credentials": {
+              "label": "Kafka Connect credentials (JSON)",
+              "description": "Optional object keyed by Connect cluster name. Values: username, password, bearerToken, tlsCaCert, tlsClientCert, tlsClientKey. TLS values accept PEM or absolute server paths. Stored only in the DBX Secret Store."
             }
           }
         },
@@ -1162,15 +1193,15 @@
             },
             "tls_ca_cert": {
               "label": "CA certificate (PEM)",
-              "description": "PEM-encoded CA certificate used to verify broker certificates; empty uses the system roots."
+              "description": "PEM-encoded CA certificate or absolute path on the DBX server; empty uses system roots. Files must be regular files of at most 1 MiB."
             },
             "tls_client_cert": {
               "label": "Client certificate (PEM)",
-              "description": "PEM-encoded client certificate for mutual TLS (mTLS)."
+              "description": "PEM-encoded client certificate or absolute path on the DBX server for mutual TLS (mTLS)."
             },
             "tls_client_key": {
               "label": "Client private key (PEM)",
-              "description": "Paste the complete PEM key including BEGIN/END lines, together with the client certificate for mutual TLS. Leave both empty for server-only TLS."
+              "description": "Complete PEM private key or absolute path on the DBX server. Stored via Secret Store. Provide together with the client certificate; leave both empty for server-only TLS."
             },
             "tls_insecure_skip_verify": {
               "label": "Skip TLS verification",
@@ -1272,6 +1303,14 @@
             "properties_import": {
               "label": "Import: paste client properties",
               "description": "Optional: paste a Kafka client properties snippet (bootstrap.servers, security.protocol, sasl.*, ssl.*, schema.registry.url, basic.auth.*). Recognized keys are merged into the fields above when the connection is saved or tested (pasted values win); Java keystore path keys (ssl.truststore.location and similar) are unsupported and reported as ignored. The pasted text is stored via host secret binding, never in plain text."
+            },
+            "connect_clusters": {
+              "label": "Kafka Connect clusters (JSON)",
+              "description": "Optional array of {name,url,auth}. auth is none, basic or bearer. URLs may include a reverse-proxy base path; never put credentials in URLs."
+            },
+            "connect_credentials": {
+              "label": "Kafka Connect credentials (JSON)",
+              "description": "Optional object keyed by Connect cluster name. Values: username, password, bearerToken, tlsCaCert, tlsClientCert, tlsClientKey. TLS values accept PEM or absolute server paths. Stored only in the DBX Secret Store."
             }
           }
         },
@@ -1356,15 +1395,15 @@
             },
             "tls_ca_cert": {
               "label": "Certificado CA (PEM)",
-              "description": "Certificado CA en formato PEM usado para verificar los certificados de los brokers; vacío usa las raíces del sistema."
+              "description": "PEM-encoded CA certificate or absolute path on the DBX server; empty uses system roots. Files must be regular files of at most 1 MiB."
             },
             "tls_client_cert": {
               "label": "Certificado de cliente (PEM)",
-              "description": "Certificado de cliente en formato PEM para TLS mutuo (mTLS)."
+              "description": "PEM-encoded client certificate or absolute path on the DBX server for mutual TLS (mTLS)."
             },
             "tls_client_key": {
               "label": "Clave privada del cliente (PEM)",
-              "description": "Pegue la clave PEM completa, incluidas BEGIN/END, junto con el certificado de cliente para TLS mutuo. Deje ambos vacíos para TLS solo de servidor."
+              "description": "Complete PEM private key or absolute path on the DBX server. Stored via Secret Store. Provide together with the client certificate; leave both empty for server-only TLS."
             },
             "tls_insecure_skip_verify": {
               "label": "Omitir verificación TLS",
@@ -1466,6 +1505,14 @@
             "properties_import": {
               "label": "Importar: pegar propiedades del cliente",
               "description": "Opcional: pegue un fragmento de propiedades del cliente Kafka (bootstrap.servers, security.protocol, sasl.*, ssl.*, schema.registry.url, basic.auth.*). Las claves reconocidas se fusionan en los campos anteriores al guardar o probar la conexión (los valores pegados tienen prioridad); las claves de ruta de keystore de Java (ssl.truststore.location y similares) no se admiten y se indican como ignoradas. El texto pegado se guarda mediante secret binding del host, nunca en texto plano."
+            },
+            "connect_clusters": {
+              "label": "Kafka Connect clusters (JSON)",
+              "description": "Optional array of {name,url,auth}. auth is none, basic or bearer. URLs may include a reverse-proxy base path; never put credentials in URLs."
+            },
+            "connect_credentials": {
+              "label": "Kafka Connect credentials (JSON)",
+              "description": "Optional object keyed by Connect cluster name. Values: username, password, bearerToken, tlsCaCert, tlsClientCert, tlsClientKey. TLS values accept PEM or absolute server paths. Stored only in the DBX Secret Store."
             }
           }
         },
@@ -1550,15 +1597,15 @@
             },
             "tls_ca_cert": {
               "label": "Certificato CA (PEM)",
-              "description": "Certificato CA in formato PEM usato per verificare i certificati dei broker; vuoto usa le radici di sistema."
+              "description": "PEM-encoded CA certificate or absolute path on the DBX server; empty uses system roots. Files must be regular files of at most 1 MiB."
             },
             "tls_client_cert": {
               "label": "Certificato client (PEM)",
-              "description": "Certificato client in formato PEM per TLS reciproco (mTLS)."
+              "description": "PEM-encoded client certificate or absolute path on the DBX server for mutual TLS (mTLS)."
             },
             "tls_client_key": {
               "label": "Chiave privata del client (PEM)",
-              "description": "Incolla la chiave PEM completa, incluse BEGIN/END, con il certificato client per TLS reciproco. Lascia entrambi vuoti per TLS solo server."
+              "description": "Complete PEM private key or absolute path on the DBX server. Stored via Secret Store. Provide together with the client certificate; leave both empty for server-only TLS."
             },
             "tls_insecure_skip_verify": {
               "label": "Salta verifica TLS",
@@ -1660,6 +1707,14 @@
             "properties_import": {
               "label": "Importa: incolla le proprietà del client",
               "description": "Facoltativo: incolla uno snippet di proprietà del client Kafka (bootstrap.servers, security.protocol, sasl.*, ssl.*, schema.registry.url, basic.auth.*). Le chiavi riconosciute vengono unite ai campi precedenti al salvataggio o al test della connessione (i valori incollati hanno priorità); le chiavi con percorso keystore Java (ssl.truststore.location e simili) non sono supportate e vengono indicate come ignorate. Il testo incollato viene salvato tramite secret binding dell'host, mai in chiaro."
+            },
+            "connect_clusters": {
+              "label": "Kafka Connect clusters (JSON)",
+              "description": "Optional array of {name,url,auth}. auth is none, basic or bearer. URLs may include a reverse-proxy base path; never put credentials in URLs."
+            },
+            "connect_credentials": {
+              "label": "Kafka Connect credentials (JSON)",
+              "description": "Optional object keyed by Connect cluster name. Values: username, password, bearerToken, tlsCaCert, tlsClientCert, tlsClientKey. TLS values accept PEM or absolute server paths. Stored only in the DBX Secret Store."
             }
           }
         },
@@ -1744,15 +1799,15 @@
             },
             "tls_ca_cert": {
               "label": "CA 証明書（PEM）",
-              "description": "ブローカー証明書の検証に使う PEM 形式の CA 証明書。空の場合はシステムのルート証明書を使用します。"
+              "description": "PEM-encoded CA certificate or absolute path on the DBX server; empty uses system roots. Files must be regular files of at most 1 MiB."
             },
             "tls_client_cert": {
               "label": "クライアント証明書（PEM）",
-              "description": "相互 TLS（mTLS）に使う PEM 形式のクライアント証明書。"
+              "description": "PEM-encoded client certificate or absolute path on the DBX server for mutual TLS (mTLS)."
             },
             "tls_client_key": {
               "label": "クライアント秘密鍵（PEM）",
-              "description": "BEGIN/END 行を含む完全な PEM 秘密鍵を貼り付けてください。相互 TLS ではクライアント証明書とセットで指定します。サーバー認証のみの場合は両方空欄にします。"
+              "description": "Complete PEM private key or absolute path on the DBX server. Stored via Secret Store. Provide together with the client certificate; leave both empty for server-only TLS."
             },
             "tls_insecure_skip_verify": {
               "label": "TLS 検証をスキップ",
@@ -1854,6 +1909,14 @@
             "properties_import": {
               "label": "インポート：クライアント properties を貼り付け",
               "description": "任意：Kafka クライアントの properties 断片（bootstrap.servers、security.protocol、sasl.*、ssl.*、schema.registry.url、basic.auth.*）を貼り付けます。接続の保存・テスト時に認識されたキーは上の構造化フィールドへ統合されます（貼り付け値が優先）。Java キーストアのパス系キー（ssl.truststore.location など）は非対応で「無視」として報告されます。貼り付けテキストはホストの secret binding で保存され、平文で永続化されることはありません。"
+            },
+            "connect_clusters": {
+              "label": "Kafka Connect clusters (JSON)",
+              "description": "Optional array of {name,url,auth}. auth is none, basic or bearer. URLs may include a reverse-proxy base path; never put credentials in URLs."
+            },
+            "connect_credentials": {
+              "label": "Kafka Connect credentials (JSON)",
+              "description": "Optional object keyed by Connect cluster name. Values: username, password, bearerToken, tlsCaCert, tlsClientCert, tlsClientKey. TLS values accept PEM or absolute server paths. Stored only in the DBX Secret Store."
             }
           }
         },
@@ -1938,15 +2001,15 @@
             },
             "tls_ca_cert": {
               "label": "Certificado CA (PEM)",
-              "description": "Certificado CA em formato PEM usado para verificar os certificados dos brokers; vazio usa as raízes do sistema."
+              "description": "PEM-encoded CA certificate or absolute path on the DBX server; empty uses system roots. Files must be regular files of at most 1 MiB."
             },
             "tls_client_cert": {
               "label": "Certificado do cliente (PEM)",
-              "description": "Certificado do cliente em formato PEM para TLS mútuo (mTLS)."
+              "description": "PEM-encoded client certificate or absolute path on the DBX server for mutual TLS (mTLS)."
             },
             "tls_client_key": {
               "label": "Chave privada do cliente (PEM)",
-              "description": "Cole a chave PEM completa, incluindo BEGIN/END, com o certificado de cliente para TLS mútuo. Deixe ambos vazios para TLS apenas do servidor."
+              "description": "Complete PEM private key or absolute path on the DBX server. Stored via Secret Store. Provide together with the client certificate; leave both empty for server-only TLS."
             },
             "tls_insecure_skip_verify": {
               "label": "Ignorar verificação TLS",
@@ -2048,6 +2111,14 @@
             "properties_import": {
               "label": "Importar: colar propriedades do cliente",
               "description": "Opcional: cole um trecho de propriedades do cliente Kafka (bootstrap.servers, security.protocol, sasl.*, ssl.*, schema.registry.url, basic.auth.*). As chaves reconhecidas são mescladas nos campos acima ao salvar ou testar a conexão (valores colados têm prioridade); chaves de caminho de keystore Java (ssl.truststore.location e similares) não são suportadas e são reportadas como ignoradas. O texto colado é armazenado via secret binding do host, nunca em texto simples."
+            },
+            "connect_clusters": {
+              "label": "Kafka Connect clusters (JSON)",
+              "description": "Optional array of {name,url,auth}. auth is none, basic or bearer. URLs may include a reverse-proxy base path; never put credentials in URLs."
+            },
+            "connect_credentials": {
+              "label": "Kafka Connect credentials (JSON)",
+              "description": "Optional object keyed by Connect cluster name. Values: username, password, bearerToken, tlsCaCert, tlsClientCert, tlsClientKey. TLS values accept PEM or absolute server paths. Stored only in the DBX Secret Store."
             }
           }
         },

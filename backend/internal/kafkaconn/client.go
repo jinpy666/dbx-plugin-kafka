@@ -37,6 +37,7 @@ import (
 
 // connSecrets 是 binding:secret 的连接凭据（仅存内存，禁止落日志/审计/事件）。
 type connSecrets struct {
+	ConnectCredentials  map[string]ConnectCredentials
 	SASLPassword        string
 	TLSClientKey        string
 	SRPassword          string
@@ -406,14 +407,27 @@ func buildTLSConfig(profile Profile, secrets connSecrets) (*tls.Config, error) {
 	// CA 证书（PEM textarea）：空 = 系统信任链。
 	if caCert := strings.TrimSpace(profile.TLSCACert); caCert != "" {
 		pool := x509.NewCertPool()
-		if !pool.AppendCertsFromPEM([]byte(caCert)) {
+		material, err := readTLSMaterial(caCert, "tlsCaCert")
+		if err != nil {
+			return nil, err
+		}
+		if !pool.AppendCertsFromPEM(material) {
 			return nil, errf("tlsCaCert contains no valid PEM certificate")
 		}
 		config.RootCAs = pool
 	}
 	// 客户端证书双向认证（cert 为 config，key 为 secret）。
 	if certPEM := strings.TrimSpace(profile.TLSClientCert); certPEM != "" || strings.TrimSpace(secrets.TLSClientKey) != "" {
-		pair, err := tls.X509KeyPair([]byte(profile.TLSClientCert), []byte(secrets.TLSClientKey))
+		cert, err := readTLSMaterial(profile.TLSClientCert, "tlsClientCert")
+		if err != nil {
+			return nil, err
+		}
+		key, err := readTLSMaterial(secrets.TLSClientKey, "tlsClientKey")
+		if err != nil {
+			return nil, err
+		}
+		defer clear(key)
+		pair, err := tls.X509KeyPair(cert, key)
 		if err != nil {
 			return nil, fmt.Errorf("load tls client certificate/key: %w", err)
 		}
@@ -628,6 +642,13 @@ func NewProfileFromLifecycle(params *lifecycle.Params) (Profile, connSecrets, er
 	if paste := params.SecretString("properties_import"); paste != "" {
 		profile.PropertiesImport = applyPropertiesImport(&profile, &secrets, paste)
 	}
+
+	clusters, credentials, connectErr := parseConnectSettings(params.ConfigString("connect_clusters"), params.SecretString("connect_credentials"))
+	if connectErr != nil {
+		return Profile{}, connSecrets{}, connectErr
+	}
+	profile.ConnectClusters = clusters
+	secrets.ConnectCredentials = credentials
 	profile = NormalizeProfile(profile)
 	if err := profile.Validate(); err != nil {
 		return Profile{}, connSecrets{}, err

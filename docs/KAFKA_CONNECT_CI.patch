@@ -1,0 +1,14 @@
+diff --git a/.github/workflows/ci.yml b/.github/workflows/ci.yml
+index 4d0662b..6643667 100644
+--- a/.github/workflows/ci.yml
++++ b/.github/workflows/ci.yml
+@@ -129,0 +130,2 @@ jobs:
++      - name: Kafka Connect acceptance (no skips)
++        run: python3 scripts/smoke_connect.py
+diff --git a/.github/workflows/release.yml b/.github/workflows/release.yml
+index 8cd0776..eac4715 100644
+--- a/.github/workflows/release.yml
++++ b/.github/workflows/release.yml
+@@ -99,0 +100,2 @@ jobs:
++      - name: Kafka Connect acceptance (no skips)
++        run: python3 scripts/smoke_connect.py

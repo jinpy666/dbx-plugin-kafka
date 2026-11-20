@@ -1,9 +1,11 @@
 import { ref } from "vue";
+import { connectMessages } from "./connectI18n";
 
 export type WorkbenchLocale = "en" | "es" | "it" | "ja" | "pt-BR" | "zh-CN" | "zh-TW";
 
 export const messages = {
   en: {
+    connect: connectMessages["en"],
     hostApiUnavailable: "DBX Host API unavailable",
     connectionMissing: "Kafka connection context is not ready. Open this workbench from a connected Kafka connection.",
     readOnly: "Read only",
@@ -635,6 +637,7 @@ export const messages = {
     },
   },
   "zh-CN": {
+    connect: connectMessages["zh-CN"],
     hostApiUnavailable: "DBX Host API 不可用",
     connectionMissing: "Kafka 连接上下文未就绪，请从已连接的 Kafka 连接打开此工作台。",
     readOnly: "只读",
@@ -1266,6 +1269,7 @@ export const messages = {
     },
   },
   "zh-TW": {
+    connect: connectMessages["zh-TW"],
     hostApiUnavailable: "DBX Host API 不可用",
     connectionMissing: "Kafka 連線上下文未就緒，請從已連線的 Kafka 連線開啟此工作台。",
     readOnly: "唯讀",
@@ -1897,6 +1901,7 @@ export const messages = {
     },
   },
   es: {
+    connect: connectMessages["es"],
     hostApiUnavailable: "La API Host de DBX no está disponible",
     connectionMissing: "El contexto de conexión Kafka no está listo. Abra este banco de trabajo desde una conexión Kafka activa.",
     readOnly: "Solo lectura",
@@ -2528,6 +2533,7 @@ export const messages = {
     },
   },
   it: {
+    connect: connectMessages["it"],
     hostApiUnavailable: "API Host di DBX non disponibile",
     connectionMissing: "Il contesto di connessione Kafka non è pronto. Apri questo workbench da una connessione Kafka attiva.",
     readOnly: "Sola lettura",
@@ -3159,6 +3165,7 @@ export const messages = {
     },
   },
   ja: {
+    connect: connectMessages["ja"],
     hostApiUnavailable: "DBX Host API を利用できません",
     connectionMissing: "Kafka 接続コンテキストが未準備です。接続済みの Kafka 接続からワークベンチを開いてください。",
     readOnly: "読み取り専用",
@@ -3790,6 +3797,7 @@ export const messages = {
     },
   },
   "pt-BR": {
+    connect: connectMessages["pt-BR"],
     hostApiUnavailable: "API Host do DBX indisponível",
     connectionMissing: "O contexto de conexão Kafka não está pronto. Abra este workbench a partir de uma conexão Kafka ativa.",
     readOnly: "Somente leitura",

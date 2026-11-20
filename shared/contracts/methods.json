@@ -53,6 +53,20 @@
     "kafka/schema/compatibility/check": { "keys": ["isCompatible", "messages"], "verifiable": false },
     "kafka/schema/register": { "keys": ["id", "version", "versionId"], "verifiable": false },
     "kafka/schema/delete": { "keys": ["deletedVersions"], "verifiable": false },
-    "kafka/schema/delete/version": { "keys": ["deletedVersions"], "verifiable": false }
+    "kafka/schema/delete/version": { "keys": ["deletedVersions"], "verifiable": false },
+    "kafka/connect/clusters/list": {"keys": ["clusters"], "verifiable": false},
+    "kafka/connect/test": {"keys": ["version", "commit", "kafkaClusterId"], "verifiable": false},
+    "kafka/connect/connectors/list": {"keys": ["connectors"], "verifiable": false},
+    "kafka/connect/connectors/get": {"keys": ["connector"], "verifiable": false},
+    "kafka/connect/config/get": {"keys": ["config", "sensitiveKeys"], "verifiable": false},
+    "kafka/connect/config/set": {"keys": ["success", "supported", "message"], "verifiable": false},
+    "kafka/connect/plugins/list": {"keys": ["plugins"], "verifiable": false},
+    "kafka/connect/plugins/config": {"keys": ["definitions"], "verifiable": false},
+    "kafka/connect/config/validate": {"keys": ["errorCount", "fields"], "verifiable": false},
+    "kafka/connect/connectors/create": {"keys": ["success", "supported", "message"], "verifiable": false},
+    "kafka/connect/connectors/delete": {"keys": ["success", "supported", "message"], "verifiable": false},
+    "kafka/connect/connectors/action": {"keys": ["success", "supported", "message"], "verifiable": false},
+    "kafka/connect/tasks/restart": {"keys": ["success", "supported", "message"], "verifiable": false},
+    "kafka/connect/offsets/reset": {"keys": ["success", "supported", "message"], "verifiable": false}
   }
 }

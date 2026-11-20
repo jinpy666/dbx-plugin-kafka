@@ -164,3 +164,9 @@ MCP 离线冒烟用 `python3 scripts/smoke_mcp.py`（容器类用例在环境不
 - [产品宣传页](docs/MEDIA.zh-CN.md) / [英文版](docs/MEDIA.en.md)：可直接引用的宣传素材。
 - [特性与竞品对比](docs/COMPARISON.zh-CN.md) / [英文版](docs/COMPARISON.en.md)：定位对比。
 - [独立仓库迁移说明](docs/REPOSITORY_SPLIT.zh-CN.md) / [英文版](docs/REPOSITORY_SPLIT.en.md)。
+
+## Kafka Connect
+
+Native connector/task operations, configuration validation, topic/group navigation,
+TLS and host-managed credentials: [Kafka Connect guide](docs/KAFKA_CONNECT.en.md).
+[Kafbat parity tracker](docs/KAFBAT_PARITY.en.md) records the remaining scope.
