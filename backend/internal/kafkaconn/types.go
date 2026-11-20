@@ -137,9 +137,10 @@ func NormalizeOauthTokenSource(value string) string {
 // Profile 是 sidecar 内存的连接配置（由 lifecycle 从宿主 params 构造）。
 // 凭据字段（SASL 密码、客户端私钥、SR 密码）不在此结构，见 connSecrets。
 type Profile struct {
-	ID               string   `json:"id"`
-	Name             string   `json:"name"`
-	BootstrapServers []string `json:"bootstrapServers"`
+	ConnectClusters  []ConnectCluster `json:"connectClusters,omitempty"`
+	ID               string           `json:"id"`
+	Name             string           `json:"name"`
+	BootstrapServers []string         `json:"bootstrapServers"`
 	// SecurityProtocol：PLAINTEXT | SSL | SASL_PLAINTEXT | SASL_SSL（§4 默认 PLAINTEXT）。
 	SecurityProtocol string `json:"securityProtocol"`
 	// SASLMechanism：PLAIN | SCRAM-SHA-256 | SCRAM-SHA-512 | GSSAPI |

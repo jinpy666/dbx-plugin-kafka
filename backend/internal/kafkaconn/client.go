@@ -37,6 +37,7 @@ import (
 
 // connSecrets 是 binding:secret 的连接凭据（仅存内存，禁止落日志/审计/事件）。
 type connSecrets struct {
+	ConnectCredentials  map[string]ConnectCredentials
 	SASLPassword        string
 	TLSClientKey        string
 	SRPassword          string
@@ -628,6 +629,13 @@ func NewProfileFromLifecycle(params *lifecycle.Params) (Profile, connSecrets, er
 	if paste := params.SecretString("properties_import"); paste != "" {
 		profile.PropertiesImport = applyPropertiesImport(&profile, &secrets, paste)
 	}
+
+	clusters, credentials, connectErr := parseConnectSettings(params.ConfigString("connect_clusters"), params.SecretString("connect_credentials"))
+	if connectErr != nil {
+		return Profile{}, connSecrets{}, connectErr
+	}
+	profile.ConnectClusters = clusters
+	secrets.ConnectCredentials = credentials
 	profile = NormalizeProfile(profile)
 	if err := profile.Validate(); err != nil {
 		return Profile{}, connSecrets{}, err

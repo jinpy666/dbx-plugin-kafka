@@ -13,6 +13,7 @@
 import { describe, expect, it } from "vitest";
 import contract from "../../../shared/contracts/methods.json";
 import mockSource from "../mockDbxHost.ts?raw";
+import mockConnectSource from "./mockConnect.ts?raw";
 import apiSource from "./api.ts?raw";
 import "../mockDbxHost";
 
@@ -31,7 +32,7 @@ const stripComments = (source: string) => source.replace(/\/\*[\s\S]*?\*\//g, ""
 
 // mock 源码里的方法字面量（`method === "kafka/..."` / `method === "connection/..."`）。
 const mockMethods = new Set(
-  [...stripComments(mockSource).matchAll(/method === "([^"]+)"/g)]
+  [...stripComments(mockSource + "\n" + mockConnectSource).matchAll(/(?:method === |case )"([^"]+)"/g)]
     .map((match) => match[1])
     .filter((method) => method.startsWith("kafka/") || method.startsWith("connection/")),
 );

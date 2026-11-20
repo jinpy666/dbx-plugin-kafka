@@ -45,6 +45,7 @@ const emit = defineEmits<{
   (e: "error", message: string): void;
   (e: "notify", message: string): void;
   (e: "refresh"): void;
+  (e: "open-connect", topic: string): void;
 }>();
 
 const selected = ref<KafkaTopic | null>(null);
@@ -380,6 +381,7 @@ watch(
         <button class="toolbar-button" :disabled="!canManage" :title="canManage ? t('topics.create') : t('readOnly')" @click="openCreate">
           <Plus aria-hidden="true" /><span>{{ t("topics.create") }}</span>
         </button>
+        <button class="toolbar-button" type="button" :disabled="!selected" @click="selected && emit('open-connect', selected.name)">{{ t("connect.title") }}</button>
         <button
           class="qb-add"
           type="button"

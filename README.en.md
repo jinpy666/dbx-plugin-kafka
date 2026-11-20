@@ -168,3 +168,9 @@ scenarios honestly SKIP when their environment is absent).
 - [Showcase](docs/MEDIA.en.md) / [Chinese](docs/MEDIA.zh-CN.md): copy-ready messaging.
 - [Feature comparison](docs/COMPARISON.en.md) / [Chinese](docs/COMPARISON.zh-CN.md): positioning against alternatives.
 - [Repository split notes](docs/REPOSITORY_SPLIT.en.md) / [Chinese](docs/REPOSITORY_SPLIT.zh-CN.md).
+
+## Kafka Connect
+
+Native connector/task operations, configuration validation, topic/group navigation,
+TLS and host-managed credentials: [Kafka Connect guide](docs/KAFKA_CONNECT.en.md).
+[Kafbat parity tracker](docs/KAFBAT_PARITY.en.md) records the remaining scope.
