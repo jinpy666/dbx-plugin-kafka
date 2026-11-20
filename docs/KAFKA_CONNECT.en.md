@@ -102,7 +102,8 @@ no pre-existing container, installed DBX data or production endpoint is touched.
 
 The companion `KAFKA_CONNECT_CI.patch` wires this acceptance gate into CI and release
 workflows before packaging. A maintainer with workflow write permission must apply
-it; this contribution author's OAuth token cannot update workflow files. Until it
+it with `git apply --unidiff-zero docs/KAFKA_CONNECT_CI.patch`; this contribution
+author's OAuth token cannot update workflow files. Until it
 is applied, run the acceptance command explicitly before any release.
 Separate DBX Web installation, signing, persistence and HEL1 acceptance remain
 required before a production rollout; passing sidecar tests does not prove them.
