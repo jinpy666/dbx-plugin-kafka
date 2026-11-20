@@ -2,25 +2,13 @@ diff --git a/.github/workflows/ci.yml b/.github/workflows/ci.yml
 index 4d0662b..6643667 100644
 --- a/.github/workflows/ci.yml
 +++ b/.github/workflows/ci.yml
-@@ -127,6 +127,8 @@ jobs:
-           KAFKA_TEST_REQUIRE: "1"
-           PYTHONUTF8: "1"
-         run: python3 scripts/smoke_container.py
+@@ -129,0 +130,2 @@ jobs:
 +      - name: Kafka Connect acceptance (no skips)
 +        run: python3 scripts/smoke_connect.py
- 
-   candidate:
-     name: Package candidate (${{ matrix.target }})
 diff --git a/.github/workflows/release.yml b/.github/workflows/release.yml
 index 8cd0776..eac4715 100644
 --- a/.github/workflows/release.yml
 +++ b/.github/workflows/release.yml
-@@ -97,6 +97,8 @@ jobs:
-           KAFKA_TEST_REQUIRE: "1"
-           PYTHONUTF8: "1"
-         run: python3 scripts/smoke_container.py
+@@ -99,0 +100,2 @@ jobs:
 +      - name: Kafka Connect acceptance (no skips)
 +        run: python3 scripts/smoke_connect.py
- 
-   # Build the target-independent UI once; every platform job below unpacks it
-   # as ui/ and packages it as-is (DBX_PREBUILT_UI) instead of rerunning the
