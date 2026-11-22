@@ -16,7 +16,7 @@
   "source": "https://github.com/jinpy666/dbx-plugin-kafka",
   "homepage": "https://github.com/jinpy666/dbx-plugin-kafka",
   "license": "MIT",
-  "releaseNotes": "Kafka Studio v0.1.57 正式版。相对 v0.1.56：修复 Confluent SR 7.x 下 PROTOBUF 消息值仍解码失败的问题（issue #76 跟进）——?format=serialized 实际返回 base64(FileDescriptorProto)（单个 .proto 文件），此前按 FileDescriptorSet 校验会否掉重取结果并回退到 .proto 文本；现统一归一化为 FDSet，bySubject 编码与 byID 解码均生效，schema 面板仍显示可读 .proto 文本。",
+  "releaseNotes": "Kafka Studio v0.1.58 正式版。相对 v0.1.57：PROTOBUF SR 解码增强（issue #83 跟进，PR #85）——Confluent SR 连接默认勾选解码挂载，subject 可留空、按消息 wire 中的 schemaID 反查 subject/version 自动挂载；Confluent message index（消息封装内嵌套 message 选择）按规范解析与编码（zigzag 长度前缀 + zigzag 索引、[0] 单字节优化），修复非平凡 index（如 Map 字段内嵌套消息）解码错误与 produce 编码不合规，旧格式载荷保留回退兼容；兼容非 protoc 生成器描述符（map entry 小驼峰命名、type_name 短名、字段类型缺失），按词法作用域归一化补齐；SR 取数改挂会话根 context + 失败缓存，扫描窗口到点后不再满屏 context deadline exceeded。体验：消费结果默认最新在前；「最近」纯浏览（无过滤/聚合条件）回退窗口收窄到 limit 条，不再回退整个 maxScan 扫描面；显式挂载默认格式 avro→protobuf。",
   "localizations": {
     "zh-CN": {
       "name": "Kafka Studio",
