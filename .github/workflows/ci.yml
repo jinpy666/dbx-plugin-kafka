@@ -127,6 +127,8 @@ jobs:
           KAFKA_TEST_REQUIRE: "1"
           PYTHONUTF8: "1"
         run: python3 scripts/smoke_container.py
+      - name: Kafka Connect acceptance (no skips)
+        run: python3 scripts/smoke_connect.py
 
   candidate:
     name: Package candidate (${{ matrix.target }})

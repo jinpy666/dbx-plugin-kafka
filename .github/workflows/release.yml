@@ -97,6 +97,8 @@ jobs:
           KAFKA_TEST_REQUIRE: "1"
           PYTHONUTF8: "1"
         run: python3 scripts/smoke_container.py
+      - name: Kafka Connect acceptance (no skips)
+        run: python3 scripts/smoke_connect.py
 
   # Build the target-independent UI once; every platform job below unpacks it
   # as ui/ and packages it as-is (DBX_PREBUILT_UI) instead of rerunning the
